@@ -111,6 +111,21 @@ duration and byte count could not.
 
 Assert on `ffprobe`-probed properties, never file hashes.
 
+## F8 — sd-api's checked-in `dist/` goes stale, and it fails as a 404
+
+`npm start` runs `dist/`, not `src/`. The tree as found had a `dist/` built on
+2026-08-01 against `src/` last touched 2026-08-10, so the server booted
+happily, served `/v1/models`, and returned
+`NOT_FOUND: Route not found` for **every** LLM and audio route — the whole
+surface viceroy depends on.
+
+Nothing in the logs says "stale build". It looks exactly like the feature
+isn't implemented.
+
+Run `npm run build` before `npm start`, or use `npm run dev`. If an sd-api
+route documented in its README 404s, check the build date before checking
+anything else.
+
 ---
 
 ## Local environment
@@ -118,6 +133,7 @@ Assert on `ffprobe`-probed properties, never file hashes.
 | Thing | Value |
 | ----- | ----- |
 | sd-api | `~/projects/sd-api`, port **3004**, `SD_ACCEL=cpu` |
+| Writer LLM | `mistral-nemo-12b` — Mistral Nemo Instruct 2407, Q4_K_M, 7.48 GB |
 | Image bundles | `ernie-image-turbo`, `flux2-klein-4b`, `flux2-klein-9b`, `ssd-1b` |
 | LLM bundles | `glm-4.6v-flash`, `smolvlm2-2.2b-instruct` (both VLMs — no writer yet) |
 | Audio bundles | `parakeet-tdt`, `pocket-tts`, `qwen3-tts`, `qwen3-tts-voicedesign` |
