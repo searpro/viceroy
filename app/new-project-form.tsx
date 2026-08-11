@@ -1,0 +1,132 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useState, useTransition } from "react";
+
+type Style = { id: string; name: string; description: string };
+
+export function NewProjectForm({
+  narrativeStyles,
+  voiceStyles,
+  imageStyles,
+}: {
+  narrativeStyles: Style[];
+  voiceStyles: Style[];
+  imageStyles: Style[];
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [idea, setIdea] = useState("");
+
+  async function submit(formData: FormData) {
+    setError(null);
+    const response = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        idea: formData.get("idea"),
+        narrativeStyleId: formData.get("narrativeStyleId"),
+        voiceStyleId: formData.get("voiceStyleId"),
+        imageStyleId: formData.get("imageStyleId"),
+        mode: formData.get("mode"),
+      }),
+    });
+
+    const body = await response.json();
+    if (!response.ok) {
+      setError(body.error ?? "Could not start the project");
+      return;
+    }
+    startTransition(() => router.push(`/projects/${body.project.id}`));
+  }
+
+  return (
+    <form action={submit} className="space-y-5">
+      <div>
+        <label htmlFor="idea" className="block text-sm font-medium">
+          The idea
+        </label>
+        <textarea
+          id="idea"
+          name="idea"
+          rows={3}
+          required
+          value={idea}
+          onChange={(event) => setIdea(event.target.value)}
+          placeholder="a plumber became mayor just by using his wits"
+          className="mt-2 w-full resize-none rounded-md border border-white/10 bg-black/20 px-3 py-2 text-base outline-none placeholder:text-white/25 focus:border-white/25"
+        />
+        <p className="mt-1.5 text-xs text-white/40">
+          One line is enough — the synopsis is written from it.
+        </p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Select label="Narrative style" name="narrativeStyleId" options={narrativeStyles} />
+        <Select label="Voice style" name="voiceStyleId" options={voiceStyles} />
+        <Select label="Image style" name="imageStyleId" options={imageStyles} />
+      </div>
+
+      <fieldset className="flex gap-4">
+        <legend className="mb-2 text-sm font-medium">Mode</legend>
+        {[
+          { value: "auto", label: "Full auto", hint: "Runs through; stops only on a threshold" },
+          { value: "manual", label: "Manual", hint: "Stops for review at each stage" },
+        ].map((option) => (
+          <label
+            key={option.value}
+            className="flex flex-1 cursor-pointer gap-3 rounded-md border border-white/10 bg-black/20 p-3 has-[:checked]:border-amber-400/50 has-[:checked]:bg-amber-400/5"
+          >
+            <input
+              type="radio"
+              name="mode"
+              value={option.value}
+              defaultChecked={option.value === "auto"}
+              className="mt-1 accent-amber-400"
+            />
+            <span>
+              <span className="block text-sm">{option.label}</span>
+              <span className="block text-xs text-white/40">{option.hint}</span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+
+      {error && (
+        <p role="alert" className="rounded-md bg-red-500/10 px-3 py-2 text-sm text-red-300">
+          {error}
+        </p>
+      )}
+
+      <button
+        type="submit"
+        disabled={pending || idea.trim().length < 8}
+        className="rounded-md bg-amber-400 px-4 py-2 text-sm font-medium text-black transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        {pending ? "Starting…" : "Start"}
+      </button>
+    </form>
+  );
+}
+
+function Select({ label, name, options }: { label: string; name: string; options: Style[] }) {
+  return (
+    <div>
+      <label htmlFor={name} className="block text-sm font-medium">
+        {label}
+      </label>
+      <select
+        id={name}
+        name={name}
+        className="mt-2 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none focus:border-white/25"
+      >
+        {options.map((option) => (
+          <option key={option.id} value={option.id} className="bg-neutral-900">
+            {option.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}

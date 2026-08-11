@@ -1,8 +1,18 @@
 import { resolveConfig } from "../lib/config";
 import { createDb, createSqlite } from "../lib/db/client";
 import { runMigrations } from "../lib/db/migrate";
-import { claim, fail, log, reclaimStale, succeed, type Job } from "../lib/queue";
+import {
+  claim,
+  fail,
+  isAbortRequested,
+  log,
+  reclaimStale,
+  reportProgress,
+  succeed,
+  type Job,
+} from "../lib/queue";
 import { createSdApi } from "../lib/sdapi";
+import { awaitReview, STAGE_HANDLERS, type StageContext } from "../lib/pipeline";
 
 const IDLE_POLL_MS = 1000;
 
@@ -53,6 +63,11 @@ async function main() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const { willRetry } = fail(db, job.id, message);
+      // A project whose job has given up is not "in progress" — without this
+      // it keeps its old stage in the list and looks like it is still working.
+      if (!willRetry && job.projectId) {
+        awaitReview(db, job.projectId, `${job.type} failed: ${message}`);
+      }
       console.error(`[${job.type}] ${job.id} failed${willRetry ? " (will retry)" : ""}: ${message}`);
     }
   }
@@ -61,10 +76,25 @@ async function main() {
   process.exit(0);
 
   async function runJob(job: Job): Promise<void> {
-    // Stage handlers land in PR2-PR5; until then an enqueued job should say so
-    // plainly rather than silently succeed and advance the pipeline.
-    log(db, job.id, `No handler registered for job type "${job.type}"`, "error");
-    throw new Error(`No handler registered for job type "${job.type}"`);
+    const handler = STAGE_HANDLERS[job.type];
+    if (!handler) {
+      // Not yet implemented is a failure, not a no-op: succeeding here would
+      // advance a project past a stage that never ran.
+      log(db, job.id, `No handler registered for job type "${job.type}"`, "error");
+      throw new Error(`No handler registered for job type "${job.type}"`);
+    }
+
+    const ctx: StageContext = {
+      db,
+      sdApi,
+      config,
+      job,
+      log: (message, level) => log(db, job.id, message, level),
+      progress: (fraction) => reportProgress(db, job.id, fraction),
+      shouldAbort: () => isAbortRequested(db, job.id),
+    };
+
+    await handler(ctx);
   }
 }
 

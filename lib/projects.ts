@@ -1,0 +1,141 @@
+import { desc, eq } from "drizzle-orm";
+import { z } from "zod";
+import type { Db } from "./db/client";
+import {
+  evaluations,
+  imageStyles,
+  narrativeStyles,
+  preferences,
+  projects,
+  voiceStyles,
+} from "./db/schema";
+import { enqueue, listJobs } from "./queue";
+
+export const createProjectSchema = z.object({
+  idea: z.string().trim().min(8, "Give the idea a little more to work with").max(2000),
+  narrativeStyleId: z.string().optional(),
+  voiceStyleId: z.string().optional(),
+  imageStyleId: z.string().optional(),
+  mode: z.enum(["auto", "manual"]).default("auto"),
+});
+
+export type CreateProjectInput = z.infer<typeof createProjectSchema>;
+
+function preferenceValue(db: Db, key: string): string | undefined {
+  const row = db.select().from(preferences).where(eq(preferences.key, key)).get();
+  return typeof row?.value === "string" ? row.value : undefined;
+}
+
+/**
+ * Resolve a style, falling back to the configured default and then to whatever
+ * exists.
+ *
+ * The last fallback matters: a fresh install with seeded styles but no
+ * preferences should still be able to start a project rather than erroring on
+ * a lookup the user never knew they had to make.
+ */
+function resolveStyle<T extends { id: string; name: string }>(
+  rows: T[],
+  explicitId: string | undefined,
+  defaultName: string | undefined,
+  label: string,
+): T {
+  if (explicitId) {
+    const found = rows.find((r) => r.id === explicitId);
+    if (!found) throw new Error(`No such ${label}: ${explicitId}`);
+    return found;
+  }
+  const byName = defaultName ? rows.find((r) => r.name === defaultName) : undefined;
+  const chosen = byName ?? rows[0];
+  if (!chosen) throw new Error(`No ${label} exists — has the seed run?`);
+  return chosen;
+}
+
+export function createProject(db: Db, input: CreateProjectInput) {
+  const narrative = resolveStyle(
+    db.select().from(narrativeStyles).all(),
+    input.narrativeStyleId,
+    preferenceValue(db, "defaultNarrativeStyle"),
+    "narrative style",
+  );
+  const voice = resolveStyle(
+    db.select().from(voiceStyles).all(),
+    input.voiceStyleId,
+    preferenceValue(db, "defaultVoiceStyle"),
+    "voice style",
+  );
+  const image = resolveStyle(
+    db.select().from(imageStyles).all(),
+    input.imageStyleId,
+    preferenceValue(db, "defaultImageStyle"),
+    "image style",
+  );
+
+  const [project] = db
+    .insert(projects)
+    .values({
+      idea: input.idea,
+      mode: input.mode,
+      narrativeStyleId: narrative.id,
+      voiceStyleId: voice.id,
+      imageStyleId: image.id,
+    })
+    .returning()
+    .all();
+
+  enqueue(db, { type: "synopsis", projectId: project!.id });
+  return project!;
+}
+
+export function listProjects(db: Db) {
+  return db.select().from(projects).orderBy(desc(projects.createdAt)).limit(50).all();
+}
+
+export function getProjectDetail(db: Db, projectId: string) {
+  const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+  if (!project) return undefined;
+
+  return {
+    project,
+    narrativeStyle: project.narrativeStyleId
+      ? db.select().from(narrativeStyles).where(eq(narrativeStyles.id, project.narrativeStyleId)).get()
+      : undefined,
+    voiceStyle: project.voiceStyleId
+      ? db.select().from(voiceStyles).where(eq(voiceStyles.id, project.voiceStyleId)).get()
+      : undefined,
+    evaluations: db
+      .select()
+      .from(evaluations)
+      .where(eq(evaluations.projectId, projectId))
+      .orderBy(desc(evaluations.iteration))
+      .all(),
+    jobs: listJobs(db, { projectId }),
+  };
+}
+
+export const regenerateSchema = z.object({
+  target: z.enum(["synopsis", "story"]),
+  direction: z.string().trim().max(2000).optional(),
+});
+
+/**
+ * Re-run one stage, optionally under a user's direction.
+ *
+ * Clears `awaitingReview` so the project is live again — otherwise a project
+ * parked for review would stay flagged while a job for it was already running.
+ */
+export function regenerate(db: Db, projectId: string, input: z.infer<typeof regenerateSchema>) {
+  const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+  if (!project) throw new Error(`No such project: ${projectId}`);
+
+  db.update(projects)
+    .set({ awaitingReview: false, failureReason: null })
+    .where(eq(projects.id, projectId))
+    .run();
+
+  return enqueue(db, {
+    type: input.target,
+    projectId,
+    payload: input.direction ? { direction: input.direction } : {},
+  });
+}

@@ -126,6 +126,50 @@ Run `npm run build` before `npm start`, or use `npm run dev`. If an sd-api
 route documented in its README 404s, check the build date before checking
 anything else.
 
+## F9 — `SD_ACCEL=cpu` applies to image generation only; LLM and audio get Metal
+
+The three backends are accelerated independently, and the single `SD_ACCEL`
+setting is misleading about it. Confirmed from sd-api's own startup log:
+
+| Backend | Binary chosen | Acceleration |
+| ------- | ------------- | ------------ |
+| stable-diffusion.cpp | `sd-…-Darwin-macOS-26.5.2-arm64.zip` with `accel: cpu` | **CPU** |
+| llama.cpp | system `llama-server`, default GPU layers | **Metal** |
+| audio.cpp | `audiocpp-server-macos-arm64-**metal**.zip` — selected while logging `accel: cpu` | **Metal** |
+
+Measured: `smolvlm2-2.2b-instruct` served **141 tokens/sec**, which is not a
+CPU number for this box.
+
+So image generation is the only CPU-bound stage, and it is the pipeline's
+bottleneck. This also softens the concern behind choosing a dense 12B writer:
+memory-bandwidth scaling puts Mistral Nemo Q4_K_M in the ~25–30 tok/s range on
+Metal, or roughly 15 s for a 320-word story, which is negligible next to eight
+CPU-generated frames.
+
+## F10 — llama-server runs at a 4096-token context regardless of the model
+
+sd-api spawns it as:
+
+```
+llama-server --models-dir … --host 127.0.0.1 --port 8090 -c 4096 --jinja
+```
+
+`-c 4096` is fixed, so Mistral Nemo's 128K context is unreachable through
+sd-api. Prompt **and** completion share those 4096 tokens.
+
+This is a real design constraint, not a nuisance:
+
+- A 320-word story is ~430 tokens, so story-level prompts are comfortable.
+- **Element extraction is not.** Sending the whole story and asking for eight
+  scenes — each with a description, storyboard, image prompt and voiceover
+  script — plus a character roster can plausibly exceed the remaining budget,
+  and llama.cpp truncates rather than refusing.
+- Plan extraction as **per-scene or batched calls**, not one whole-story call,
+  and check `usage.total_tokens` against the limit rather than assuming.
+
+Raising it means changing how sd-api spawns llama-server, which is an upstream
+change to that repo, not something viceroy can configure.
+
 ---
 
 ## Local environment

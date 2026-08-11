@@ -5,21 +5,19 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-11 — M1 PR1 shipped._
+_Last updated: 2026-08-11 — M1 PR2 shipped._
 
 ---
 
 ## Where things stand
 
-The foundation is in and verified: config, schema, migrations, job queue and
-the sd-api client. There is no pipeline yet — every job type fails with "no
-handler registered" by design, so an enqueued job says so rather than silently
-succeeding and advancing the stage.
+Idea → synopsis → story → evaluation runs end to end, in the browser, against
+a real model. Images, voiceover, captions and render are not built yet.
 
 | Milestone | Status |
 | --------- | ------ |
 | M0 — Environment gate | **In progress** — steps 1–2 done, 3–4 outstanding |
-| M1 — Thin end-to-end slice (idea → MP4) | **In progress** — PR1 of 5 shipped |
+| M1 — Thin end-to-end slice (idea → MP4) | **In progress** — PR2 of 5 shipped |
 | M2 — Manual mode and review surfaces | Not started |
 | M3 — Management screens | Not started |
 | M4 — Output control | Not started |
@@ -74,6 +72,39 @@ Decisions that changed during the work:
   poll every 2s against a job measured in minutes on CPU costs nothing and
   gives abort a natural checkpoint. An SSE reader would need unwinding
   separately to get the same property.
+
+## M1 PR2 — story generation (shipped)
+
+| Piece | Where |
+| ----- | ----- |
+| Prompt library + `{{var}}` rendering | `lib/prompts/` |
+| Seed: 3 narrative, 3 voice, 2 image styles, 4 providers | `lib/db/seed.ts` |
+| Stages 1–3 + revision loop | `lib/pipeline/story.ts` |
+| Project service | `lib/projects.ts` |
+| API: projects, project detail, job abort/retry/delete | `app/api/` |
+| UI: idea entry, project view with live polling | `app/page.tsx`, `app/projects/[id]/` |
+
+**Verified against a live model.** With the LLM provider temporarily pointed at
+`smolvlm2-2.2b-instruct`, a project created through the UI ran
+synopsis → story → evaluation on the real worker. The synopsis and story were
+written and stored; the evaluation failed three times and gave up, because a
+2.2B model cannot hold a five-key checklist vocabulary. That is the guard
+working, not a bug — and it is direct evidence for risk R1.
+
+Decisions and fixes from that run:
+
+- **The evaluator is held to its style's own checklist keys.** A response
+  naming none of them fails the stage rather than being recorded as a judgement
+  of something else.
+- **Scores beat the stated verdict.** Models say `"pass"` while scoring a
+  dimension at 2; the checklist is the contract, so any dimension at ≤2 forces
+  a revision.
+- **A job that exhausts its retries now parks its project for review** with the
+  reason. Before this the project kept its old stage and looked like it was
+  still working.
+- **No shadcn/ui yet.** PR2's surface is a form, a list and a detail view;
+  hand-rolled Tailwind covers it. It earns its place in M3, where the
+  management screens need real primitives.
 
 ## What to pick up next
 
