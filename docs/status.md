@@ -16,8 +16,8 @@ a real model. Images, voiceover, captions and render are not built yet.
 
 | Milestone | Status |
 | --------- | ------ |
-| M0 — Environment gate | **In progress** — steps 1–2 done, 3–4 outstanding |
-| M1 — Thin end-to-end slice (idea → MP4) | **In progress** — PR2 of 5 shipped |
+| M0 — Environment gate | **Complete** except the audio-path confirmation, which PR4 does as it builds on it |
+| M1 — Thin end-to-end slice (idea → MP4) | **In progress** — PR3 of 5 shipped |
 | M2 — Manual mode and review surfaces | Not started |
 | M3 — Management screens | Not started |
 | M4 — Output control | Not started |
@@ -106,19 +106,94 @@ Decisions and fixes from that run:
   hand-rolled Tailwind covers it. It earns its place in M3, where the
   management screens need real primitives.
 
+## M1 PR3 — scenes, cast and images (shipped)
+
+| Piece | Where |
+| ----- | ----- |
+| Sentence splitting + span repair | `lib/pipeline/segment.ts` |
+| Stage 4 — cast, scene split, per-scene visualisation | `lib/pipeline/elements.ts` |
+| Stages 5–6 — portraits, scene images | `lib/pipeline/images.ts` |
+| Asset storage | `lib/assets.ts` |
+| Asset serving, scene grid, cast panel | `app/api/assets/`, `app/projects/[id]/` |
+
+Three decisions worth not re-deriving:
+
+- **Scenes carry verbatim spans of the narration, not separately written
+  text.** The voiceover is generated once from the whole story, so
+  concatenating the scene scripts has to reproduce it exactly. Asking the model
+  to copy text out invites paraphrase, so it is asked for sentence *indices*
+  instead — which also costs a handful of tokens rather than a second copy of
+  the story, and that matters under F10's ceiling.
+- **The model's grouping is repaired, not trusted.** `normaliseSpans` forces a
+  covering partition: a gap silently drops narration out of the video and an
+  overlap plays the same words under two images. It fails only when there is
+  nothing usable to repair.
+- **Extraction runs in three passes and is resumable.** One whole-story call
+  asking for eight fully-specified scenes exceeds the 4096-token context and
+  truncates silently. Rows are written as they are known, so a failure at scene
+  six resumes instead of restarting — worth minutes on this hardware.
+
+**Character consistency is textual, not `ref_images`** — see finding F11. That
+was a plan assumption that turned out to be wrong: `ref_images` needs an edit
+model and none is installed.
+
+### The evaluator is probably lenient — do not read a pass as quality
+
+On the first Mistral Nemo run the story passed at a mean of 4.8/5 with no
+issues, and the per-dimension comments echoed the checklist descriptions almost
+word for word ("The prose never editorializes or reaches for shock" against a
+checklist reading "The prose never editorialises or reaches for shock").
+
+That is a model agreeing with a prompt, not a model judging a story. It means
+the QC loop currently almost never fires, so its threshold logic is largely
+untested against real disagreement, and a "pass" is weak evidence.
+
+This is exactly the calibration problem story-platform's Phase 4 was blocked
+on, and it is worth doing properly once there are stories a human has actually
+accepted and rejected: run the evaluator repeatedly over identical input to see
+whether its issue set is even stable, then check whether what it flags
+correlates with what gets rejected. `evaluations` records the model and the
+per-dimension scores specifically so that can be measured later.
+
+Cheap thing to try first: have the evaluator quote the phrase it is judging
+before scoring it, which makes echoing the checklist harder than engaging with
+the text.
+
+## M0 — environment gate (complete)
+
+Steps 3 and 4 both landed. Timings are in finding F12; the headline is
+**flux2-klein-4b at 51 s per 432×768 frame**, which beat `ssd-1b` on speed
+*and* quality, so it replaced it as the seeded default. `ernie-image-turbo`
+turned out to be a broken bundle.
+
+Mistral Nemo (Q4_K_M, 7.48 GB) finished downloading and sd-api serves it.
+Remaining from step 4 is the acoustic confirmation of the two audio paths,
+which PR4 does as its first act since it is building on them.
+
 ## What to pick up next
 
-**M0, steps 3 and 4** — both are measurement, and both need the download
-finished first:
+**M1 PR4** — the one-shot voiceover and subtitle alignment. This is the part
+the POC never got working, so read findings **F1, F2, F3, F5 and F6** before
+writing any of it. Specifically:
 
-3. Wall-clock one 432×768 frame on each installed image bundle
-   (`ernie-image-turbo`, `flux2-klein-4b`, `flux2-klein-9b`, `ssd-1b`) on CPU.
-   At ~8 frames per video a turbo model may be the only viable pick.
-4. Confirm `qwen3-tts-voicedesign` through the task runner (finding F2) and
-   `parakeet-tdt` with `words_out` (F3) — plus a first tokens/sec reading for
-   Mistral Nemo.
+- speech through `POST /v1/audio/tasks/run` only, never `/v1/audio/speech`
+- ASR offsets divided by `ASR_SAMPLE_RATE`, with the drift guard
+- align ASR words *against* the authored text and keep the authored wording —
+  F5 is the one the POC left unfixed, and it is a stage-8 requirement here
+- verify acoustically (median F0), never by file size
 
-Then M1 PR1: scaffold, schema, queue, sd-api client.
+**Numbers are the hard part of that alignment, and there is a real tension in
+it.** `story.write` asks for numbers written as spoken words, because that is
+what makes TTS pronounce them correctly. But ASR normalises spoken numbers
+*back* to digits, so the authored "nineteen eighty-seven" meets a transcript
+saying "1987" and a naive word-by-word match fails exactly there.
+
+Observed on the first Nemo run: the narration came back with `1987`, `$50,000`
+and `1992` as digits, so the instruction is only partly obeyed today. Both
+forms will occur in practice. The alignment therefore has to match words to
+digits rather than assume either form — do not "fix" this by dropping the
+spoken-words instruction, which would trade a solvable alignment problem for an
+unsolvable pronunciation one.
 
 ## Environment as found (2026-08-11)
 

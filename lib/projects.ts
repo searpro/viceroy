@@ -1,12 +1,14 @@
-import { desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "./db/client";
 import {
+  characters,
   evaluations,
   imageStyles,
   narrativeStyles,
   preferences,
   projects,
+  scenes,
   voiceStyles,
 } from "./db/schema";
 import { enqueue, listJobs } from "./queue";
@@ -19,7 +21,9 @@ export const createProjectSchema = z.object({
   mode: z.enum(["auto", "manual"]).default("auto"),
 });
 
-export type CreateProjectInput = z.infer<typeof createProjectSchema>;
+// `z.input` rather than `z.infer`, so callers may omit anything with a default
+// — the function parses what it is given rather than trusting it.
+export type CreateProjectInput = z.input<typeof createProjectSchema>;
 
 function preferenceValue(db: Db, key: string): string | undefined {
   const row = db.select().from(preferences).where(eq(preferences.key, key)).get();
@@ -51,7 +55,8 @@ function resolveStyle<T extends { id: string; name: string }>(
   return chosen;
 }
 
-export function createProject(db: Db, input: CreateProjectInput) {
+export function createProject(db: Db, raw: CreateProjectInput) {
+  const input = createProjectSchema.parse(raw);
   const narrative = resolveStyle(
     db.select().from(narrativeStyles).all(),
     input.narrativeStyleId,
@@ -109,12 +114,19 @@ export function getProjectDetail(db: Db, projectId: string) {
       .where(eq(evaluations.projectId, projectId))
       .orderBy(desc(evaluations.iteration))
       .all(),
+    scenes: db
+      .select()
+      .from(scenes)
+      .where(eq(scenes.projectId, projectId))
+      .orderBy(asc(scenes.index))
+      .all(),
+    characters: db.select().from(characters).where(eq(characters.projectId, projectId)).all(),
     jobs: listJobs(db, { projectId }),
   };
 }
 
 export const regenerateSchema = z.object({
-  target: z.enum(["synopsis", "story"]),
+  target: z.enum(["synopsis", "story", "elements", "scene_images", "character_images"]),
   direction: z.string().trim().max(2000).optional(),
 });
 

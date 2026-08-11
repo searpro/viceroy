@@ -144,7 +144,7 @@ describe("runStoryEval", () => {
     return project;
   }
 
-  it("records a passing evaluation and parks the project for review", async () => {
+  it("records a passing evaluation and moves on to element extraction", async () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "story_eval", projectId: project.id });
 
@@ -153,9 +153,19 @@ describe("runStoryEval", () => {
     const [evaluation] = db.select().from(evaluations).where(eq(evaluations.projectId, project.id)).all();
     expect(evaluation!.verdict).toBe("pass");
     expect(evaluation!.iteration).toBe(1);
+    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).toContain("elements");
+  });
+
+  it("parks a passing story for review in manual mode instead of continuing", async () => {
+    const project = projectWithStory("manual");
+    const job = enqueue(db, { type: "story_eval", projectId: project.id });
+
+    await runStoryEval(contextFor(job, [{ json: goodEvaluation() }]));
+
     expect(
       db.select().from(projects).where(eq(projects.id, project.id)).get()!.awaitingReview,
     ).toBe(true);
+    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).not.toContain("elements");
   });
 
   it("queues a revision when the story falls short", async () => {

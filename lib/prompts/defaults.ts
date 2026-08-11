@@ -9,6 +9,14 @@ export type PromptTemplateSeed = {
 
 const STORY_VARS = [
   { name: "idea", description: "The one-line idea the user typed" },
+  { name: "sentences", description: "The narration, one numbered sentence per line" },
+  { name: "sentenceCount", description: "How many numbered sentences there are" },
+  { name: "sceneText", description: "The narration span belonging to this scene" },
+  { name: "sceneDescription", description: "One-line summary of what this scene shows" },
+  { name: "characters", description: "The cast, as name + appearance lines" },
+  { name: "visualGuidance", description: "The narrative style's art direction" },
+  { name: "characterName", description: "The character being portrayed" },
+  { name: "characterDescription", description: "That character's written description" },
   { name: "synopsis", description: "The working synopsis" },
   { name: "story", description: "The full story text" },
   { name: "narrativeStyle", description: "Name of the selected narrative style" },
@@ -182,5 +190,114 @@ working — this is a revision, not a fresh draft. Hold to about
 and keep numbers and times written as words.
 
 Output only the revised narration.`,
+  },
+  {
+    key: "elements.characters",
+    section: "Elements",
+    label: "Extract characters",
+    description: "Finds the cast and fixes each one's canonical look.",
+    variables: pick("story", "visualGuidance"),
+    template: `Identify the people who appear in this narration.
+
+Narration:
+{{story}}
+
+Art direction for this story:
+{{visualGuidance}}
+
+For each person who is actually depicted — not merely mentioned in passing —
+give a name and a fixed visual description.
+
+The "appearance" field is the important one. It will be pasted into the image
+prompt for every scene this person appears in, so it must be short, concrete
+and purely visual: build, apparent age, hair, clothing. No personality, no
+backstory, no camera or lighting language. Nothing that could be drawn
+differently from one reading to the next.
+
+Respond with a single JSON object, no prose around it:
+
+{
+  "characters": [
+    {
+      "name": "<name or role, e.g. 'the plumber'>",
+      "description": "<who they are in the story, one or two sentences>",
+      "appearance": "<8-20 words, purely visual, always drawable the same way>"
+    }
+  ]
+}
+
+At most four characters. If nobody is depicted, return an empty array.`,
+  },
+  {
+    key: "elements.beats",
+    section: "Elements",
+    label: "Group narration into scenes",
+    description: "Assigns each numbered sentence to a scene. Returns indices only.",
+    variables: pick("sentences", "sentenceCount", "targetSceneCount"),
+    template: `Group this narration into about {{targetSceneCount}} scenes for a video.
+
+Each sentence is numbered. Sentences {{sentenceCount}} in total, numbered 0 upward.
+
+{{sentences}}
+
+Rules:
+- scenes must be contiguous runs of sentences, in order
+- every sentence must belong to exactly one scene — no gaps, no overlaps
+- the first scene starts at sentence 0; the last scene ends at the final sentence
+- break where the setting, subject or moment changes
+- a scene is normally two to four sentences
+
+Respond with a single JSON object, no prose around it:
+
+{
+  "scenes": [
+    { "startSentence": 0, "endSentence": 2, "description": "<what this scene shows, one line>" }
+  ]
+}`,
+  },
+  {
+    key: "elements.scene",
+    section: "Elements",
+    label: "Visualise a scene",
+    description: "Turns one scene's narration into a storyboard and an image prompt.",
+    variables: pick("sceneText", "sceneDescription", "characters", "visualGuidance"),
+    template: `Design a single still image for one scene of a narrated video.
+
+What the narrator says over this scene:
+{{sceneText}}
+
+What the scene shows:
+{{sceneDescription}}
+
+Cast (use these appearance descriptions verbatim if the character appears):
+{{characters}}
+
+Art direction:
+{{visualGuidance}}
+
+Respond with a single JSON object, no prose around it:
+
+{
+  "storyboard": "<what the viewer sees: subject, action, setting, camera framing>",
+  "imagePrompt": "<the generation prompt: comma-separated visual phrases>",
+  "characters": ["<names from the cast who appear, or empty>"]
+}
+
+Rules for "imagePrompt":
+- describe only what is visible in one frozen moment
+- no narrative, no cause and effect, no words like "after" or "then"
+- if a listed character appears, paste their appearance description in verbatim
+- vertical 9:16 composition, subject placed for a tall frame
+- no text, captions, logos or watermarks in the image`,
+  },
+  {
+    key: "character.portrait",
+    section: "Elements",
+    label: "Character portrait prompt",
+    description: "Builds the reference portrait prompt for one character.",
+    variables: pick("characterName", "characterDescription", "visualGuidance"),
+    template: `{{characterDescription}}, {{visualGuidance}}, centred head-and-shoulders portrait,
+neutral expression, facing camera, plain uncluttered background, evenly lit,
+full face clearly visible and unobstructed, no text or watermark`,
   },
 ];

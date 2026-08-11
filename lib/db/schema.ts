@@ -124,6 +124,12 @@ export const characters = sqliteTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description").notNull(),
+    // A short, purely visual descriptor ("wiry man in his fifties, close-cropped
+    // grey hair, navy work overalls") injected into every scene prompt this
+    // character appears in. With no edit-capable image model installed,
+    // `ref_images` cannot enforce consistency, so a repeated canonical
+    // description is what keeps a face recognisable between frames.
+    appearanceTag: text("appearance_tag"),
     imagePrompt: text("image_prompt"),
     // The reference portrait, generated before any scene so scene images can
     // pass it as ref_images and keep the character consistent between frames.
@@ -143,8 +149,14 @@ export const scenes = sqliteTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     index: integer("index").notNull(),
     description: text("description").notNull(),
-    storyboard: text("storyboard").notNull(),
-    imagePrompt: text("image_prompt").notNull(),
+    // Nullable because element extraction is resumable: scene rows are written
+    // as soon as their narration span is known, then filled in one at a time.
+    // A run that dies at scene 6 of 8 resumes rather than restarting.
+    storyboard: text("storyboard"),
+    imagePrompt: text("image_prompt"),
+    // A verbatim span of the approved narration, never separately written text
+    // — concatenating these must reproduce the story exactly, because the
+    // voiceover is generated from the whole thing in one shot.
     voiceoverScript: text("voiceover_script").notNull(),
     voiceCues: text("voice_cues"),
     characterIds: text("character_ids", { mode: "json" }).notNull().$type<string[]>().default([]),

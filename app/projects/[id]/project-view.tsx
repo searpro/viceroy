@@ -22,6 +22,24 @@ type Evaluation = {
   issues: { severity: string; note: string }[];
 };
 
+type Scene = {
+  id: string;
+  index: number;
+  description: string;
+  storyboard: string | null;
+  imagePrompt: string | null;
+  voiceoverScript: string;
+  imageAssetId: string | null;
+};
+
+type Character = {
+  id: string;
+  name: string;
+  description: string;
+  appearanceTag: string | null;
+  imageAssetId: string | null;
+};
+
 type Detail = {
   project: {
     id: string;
@@ -36,6 +54,8 @@ type Detail = {
   narrativeStyle?: { name: string };
   voiceStyle?: { name: string };
   evaluations: Evaluation[];
+  scenes: Scene[];
+  characters: Character[];
   jobs: Job[];
 };
 
@@ -59,7 +79,9 @@ export function ProjectView({ initial }: { initial: Detail }) {
     return () => clearInterval(timer);
   }, [active, detail.project.id]);
 
-  async function regenerate(target: "synopsis" | "story") {
+  async function regenerate(
+    target: "synopsis" | "story" | "elements" | "scene_images" | "character_images",
+  ) {
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
       method: "POST",
@@ -196,6 +218,86 @@ export function ProjectView({ initial }: { initial: Detail }) {
               ))}
             </ul>
           )}
+        </section>
+      )}
+
+      {detail.characters.length > 0 && (
+        <section className="mt-6 rounded-lg border border-white/10 bg-white/[0.02] p-4">
+          <h2 className="text-sm font-medium uppercase tracking-wide text-white/40">Cast</h2>
+          <ul className="mt-3 space-y-2 text-sm">
+            {detail.characters.map((character) => (
+              <li key={character.id} className="flex gap-3">
+                {character.imageAssetId && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`/api/assets/${character.imageAssetId}`}
+                    alt={character.name}
+                    className="h-14 w-14 shrink-0 rounded object-cover"
+                  />
+                )}
+                <div>
+                  <span className="block font-medium">{character.name}</span>
+                  <span className="block text-xs text-white/45">
+                    {character.appearanceTag ?? character.description}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {detail.scenes.length > 0 && (
+        <section className="mt-6">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-sm font-medium uppercase tracking-wide text-white/40">
+              Scenes ({detail.scenes.length})
+            </h2>
+            <button
+              onClick={() => regenerate("scene_images")}
+              disabled={busy || active}
+              className="text-xs text-white/40 transition hover:text-amber-300 disabled:opacity-40"
+            >
+              generate missing images
+            </button>
+          </div>
+
+          <ul className="mt-3 grid gap-3 sm:grid-cols-2">
+            {detail.scenes.map((scene) => (
+              <li
+                key={scene.id}
+                className="overflow-hidden rounded-lg border border-white/10 bg-white/[0.02]"
+              >
+                <div className="relative aspect-[9/16] bg-black/40">
+                  {scene.imageAssetId ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={`/api/assets/${scene.imageAssetId}`}
+                      alt={scene.description}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <span className="absolute inset-0 grid place-items-center text-xs text-white/25">
+                      no image yet
+                    </span>
+                  )}
+                  <span className="absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 font-mono text-[10px]">
+                    {scene.index + 1}
+                  </span>
+                </div>
+                <div className="space-y-1.5 p-3">
+                  <p className="text-xs font-medium">{scene.description}</p>
+                  <p className="text-xs leading-relaxed text-white/55">{scene.voiceoverScript}</p>
+                  {scene.imagePrompt && (
+                    <details className="text-[11px] text-white/35">
+                      <summary className="cursor-pointer">prompt</summary>
+                      <p className="mt-1 leading-relaxed">{scene.imagePrompt}</p>
+                    </details>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
         </section>
       )}
 

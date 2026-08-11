@@ -145,9 +145,12 @@ export async function runStoryEval(ctx: StageContext): Promise<void> {
   );
 
   if (parsed.verdict === "pass") {
-    // PR3 takes over here with element extraction.
-    awaitReview(ctx.db, projectId);
     ctx.log("Story passed evaluation");
+    if (project.mode === "manual") {
+      awaitReview(ctx.db, projectId);
+      return;
+    }
+    enqueue(ctx.db, { type: "elements", projectId });
     return;
   }
 

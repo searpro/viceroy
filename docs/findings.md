@@ -170,6 +170,62 @@ This is a real design constraint, not a nuisance:
 Raising it means changing how sd-api spawns llama-server, which is an upstream
 change to that repo, not something viceroy can configure.
 
+## F11 — `ref_images` only works on edit models, so character consistency is textual
+
+The plan had character portraits generated first and passed to every scene as
+`ref_images`, holding a face steady between frames. That does not work here.
+
+`ref_images` maps to sd-cli's `-r`, which is an **edit-model** feature —
+FLUX.1-Kontext, Qwen-Image-Edit, Mage-Flow Edit Turbo. sd-api's catalog flags
+those with `edit: true`. **None of the installed bundles is one:** `ssd-1b`,
+`ernie-image-turbo`, `flux2-klein-4b` and `flux2-klein-9b` are all plain
+text-to-image.
+
+Consistency is therefore carried **textually**: `elements.characters` fixes a
+short, purely visual `appearanceTag` per character ("wiry man in his fifties,
+close-cropped grey hair, navy work overalls"), and that exact string is pasted
+into every scene prompt the character appears in. Weaker than a reference
+image, and the only thing available without installing an edit model — which
+would be another multi-gigabyte download of a slower model on the one stage
+that is already CPU-bound.
+
+`character_images` still exists, and the client still supports `ref_images`,
+so installing an edit model later is a configuration change rather than a
+rewrite. It is deliberately **not** in the automatic chain: portraits nothing
+consumes would cost ~1 CPU-minute each.
+
+## F12 — image generation timings, measured (M0 step 3)
+
+One 432×768 frame, CPU, cold:
+
+| Bundle | Time | Notes |
+| ------ | ---- | ----- |
+| **flux2-klein-4b** | **51 s** | 4 steps at cfg 1 (its manifest defaults). The pick — faster *and* a generation newer than SSD-1B. |
+| ssd-1b | 55 s | Distilled SDXL, sd-api's default step count |
+| ernie-image-turbo | — | **Broken bundle:** `Model "ernie-image-turbo" has no checkpoint file in checkpoint/`. Its `model.json` names `ernie-image-turbo-Q8_0.gguf`, which is not there. |
+| flux2-klein-9b | not measured | 9B; slower than the 4B for no benefit at this frame size |
+
+At ~51 s a frame, an 8-scene video spends roughly **7 minutes** in image
+generation, which dominates everything else in the pipeline and is the number
+to optimise if M1 feels slow.
+
+FLUX.2 klein is distilled to 4 steps at cfg 1. Raising either costs time
+without improving the image.
+
+## F13 — the dev server keeps an open handle to a deleted database
+
+`getDb()` caches one better-sqlite3 connection per process. Deleting
+`data/viceroy.db` while `next dev` is running leaves that connection pointing
+at the unlinked inode: the server keeps answering, reads succeed against a file
+nothing else can see, and every project 404s because the *new* database it was
+reseeded into is a different file.
+
+Nothing errors. It looks like the seed failed or the routing broke.
+
+**Restart the dev server after any `rm -rf data`.** The worker is immune by
+accident — it is restarted per run — and this only bites the long-lived Next
+process.
+
 ---
 
 ## Local environment

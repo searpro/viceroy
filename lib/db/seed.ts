@@ -133,9 +133,14 @@ const VOICE_STYLES = [
   },
 ];
 
-// The model here is provisional: M0 step 3 measures per-frame wall-clock on
-// CPU for each installed bundle, and the fastest viable one wins. ssd-1b is a
-// distilled SDXL and the best guess until that measurement exists.
+// flux2-klein-4b measured at 51s per 432x768 frame on CPU (M0 step 3), against
+// 55s for ssd-1b — faster AND a generation ahead in quality, so it wins on
+// both counts. Its params are the bundle manifest's own: FLUX.2 klein is
+// distilled to 4 steps at cfg 1, and raising either costs time without
+// improving the image.
+const IMAGE_PARAMS = { steps: 4, cfg_scale: 1, sampler: "euler" };
+const IMAGE_MODEL = "flux2-klein-4b";
+
 const IMAGE_STYLES = [
   {
     name: "Documentary Realism",
@@ -143,8 +148,8 @@ const IMAGE_STYLES = [
     promptPrefix: "documentary photograph, available light, ",
     promptSuffix: ", desaturated colour, 35mm, natural skin texture, shallow depth of field",
     negativePrompt: "illustration, cartoon, painting, cgi, oversaturated, glossy, text, watermark",
-    model: "ssd-1b",
-    defaultParams: { steps: 8, cfg_scale: 2, sampler: "euler_a" },
+    model: IMAGE_MODEL,
+    defaultParams: IMAGE_PARAMS,
   },
   {
     name: "Cinematic Noir",
@@ -152,14 +157,14 @@ const IMAGE_STYLES = [
     promptPrefix: "cinematic film still, high contrast lighting, ",
     promptSuffix: ", deep shadows, cool colour grade, anamorphic, film grain",
     negativePrompt: "flat lighting, cartoon, cgi, text, watermark, low contrast",
-    model: "ssd-1b",
-    defaultParams: { steps: 8, cfg_scale: 2, sampler: "euler_a" },
+    model: IMAGE_MODEL,
+    defaultParams: IMAGE_PARAMS,
   },
 ];
 
 const PROVIDERS = [
   { kind: "llm" as const, name: "sd-api (local)", model: "mistral-nemo-12b" },
-  { kind: "image" as const, name: "sd-api (local)", model: "ssd-1b" },
+  { kind: "image" as const, name: "sd-api (local)", model: IMAGE_MODEL },
   { kind: "audio" as const, name: "sd-api (local)", model: "qwen3-tts-voicedesign" },
   { kind: "asr" as const, name: "sd-api (local)", model: "parakeet-tdt" },
 ];
