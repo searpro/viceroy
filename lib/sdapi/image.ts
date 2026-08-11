@@ -1,4 +1,4 @@
-import { SdApiHttp } from "./client";
+import { SdApiHttp, SdFormData } from "./client";
 
 export type ImageRequest = {
   prompt: string;
@@ -72,12 +72,12 @@ export class ImageClient {
    * same portrait per frame would copy it eight times for nothing.
    */
   async uploadInput(bytes: Buffer, filename = "reference.png"): Promise<string> {
-    const form = new FormData();
+    const form = new SdFormData();
     form.append("file", new Blob([new Uint8Array(bytes)], { type: "image/png" }), filename);
 
     const payload = await this.http.json<{ inputs?: { name?: string }[] }>("/v1/inputs", {
       method: "POST",
-      body: form,
+      body: form as never,
     });
 
     const name = payload.inputs?.[0]?.name;

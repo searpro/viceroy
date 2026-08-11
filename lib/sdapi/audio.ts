@@ -1,4 +1,4 @@
-import { SdApiHttp } from "./client";
+import { SdApiHttp, SdFormData } from "./client";
 
 /**
  * ASR word offsets come back in the MODEL's sample rate, not the audio file's.
@@ -99,12 +99,12 @@ export class AudioClient {
    * viceroy never has to share a filesystem with sd-api. See findings F3.
    */
   async uploadAudio(audio: Buffer, filename = "narration.wav"): Promise<string> {
-    const form = new FormData();
+    const form = new SdFormData();
     form.append("file", new Blob([new Uint8Array(audio)], { type: "audio/wav" }), filename);
 
     const payload = await this.http.json<{ voiceRefs?: { path?: string }[] }>(
       "/v1/audio-voice-refs",
-      { method: "POST", body: form },
+      { method: "POST", body: form as never },
     );
 
     const path = payload.voiceRefs?.[0]?.path;

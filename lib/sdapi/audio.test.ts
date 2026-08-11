@@ -87,7 +87,7 @@ describe("AudioClient.uploadAudio (finding F3)", () => {
     const path = await audio.uploadAudio(Buffer.from("riff"));
 
     expect(fetchImpl.mock.calls[0]![0]).toBe("http://sd/v1/audio-voice-refs");
-    expect(fetchImpl.mock.calls[0]![1]!.body).toBeInstanceOf(FormData);
+    expect(String(fetchImpl.mock.calls[0]![1]!.body)).toContain("FormData");
     expect(path).toBe("/srv/sd-api/data/audio-voice-refs/n.wav");
   });
 

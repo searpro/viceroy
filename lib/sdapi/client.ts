@@ -1,4 +1,14 @@
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch, FormData as UndiciFormData } from "undici";
+
+/**
+ * Multipart bodies must be built with the same undici that sends them.
+ *
+ * Node's global `FormData` belongs to its bundled undici; handing one to this
+ * package's `fetch` serialises to something sd-api rejects with a 400.
+ * Measured: global FormData → 400, undici FormData → 201, same endpoint and
+ * same bytes.
+ */
+export { UndiciFormData as SdFormData };
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -63,10 +73,11 @@ export class SdApiHttp {
       this.fetchImpl = options.fetch;
     } else {
       const dispatcher = createAgent(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-      // `dispatcher` is an undici extension that Node's fetch honours but does
-      // not declare on RequestInit.
+      // undici's own fetch, not the global one: Node's built-in fetch rejects
+      // an Agent from a separate undici install with UND_ERR_INVALID_ARG,
+      // since it validates the dispatcher against its own bundled copy.
       this.fetchImpl = (input, init) =>
-        fetch(input, { ...init, dispatcher } as RequestInit);
+        undiciFetch(input, { ...init, dispatcher } as never) as unknown as Promise<Response>;
     }
   }
 
