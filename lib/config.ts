@@ -27,6 +27,11 @@ const envSchema = z.object({
 
   QC_MAX_ITERATIONS: z.coerce.number().int().min(1).default(3),
   JOB_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(3),
+
+  // Must comfortably exceed the slowest single inference. A one-shot
+  // narration of a full story runs ~6 minutes (F18), and Node's own default
+  // of 5 minutes is below that — see F19.
+  SD_API_TIMEOUT_MS: z.coerce.number().int().min(60_000).default(30 * 60_000),
 });
 
 export type Config = {
@@ -39,6 +44,7 @@ export type Config = {
   video: { width: number; height: number };
   qcMaxIterations: number;
   jobMaxAttempts: number;
+  sdApiTimeoutMs: number;
 };
 
 export function resolveConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -69,5 +75,6 @@ export function resolveConfig(env: Record<string, string | undefined> = process.
     video: { width: parsed.VIDEO_WIDTH, height: parsed.VIDEO_HEIGHT },
     qcMaxIterations: parsed.QC_MAX_ITERATIONS,
     jobMaxAttempts: parsed.JOB_MAX_ATTEMPTS,
+    sdApiTimeoutMs: parsed.SD_API_TIMEOUT_MS,
   };
 }

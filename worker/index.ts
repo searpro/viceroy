@@ -29,7 +29,7 @@ async function main() {
   const db = createDb(sqlite);
   runMigrations(db);
 
-  const sdApi = createSdApi({ baseUrl: config.sdApiUrl });
+  const sdApi = createSdApi({ baseUrl: config.sdApiUrl, timeoutMs: config.sdApiTimeoutMs });
   if (!(await sdApi.health())) {
     console.warn(`sd-api is not reachable at ${config.sdApiUrl} — jobs will fail until it is`);
   }

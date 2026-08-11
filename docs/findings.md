@@ -334,6 +334,48 @@ not by length. The `assertPlausibleDuration` guard in `voiceover.ts` is
 deliberately banded 60–260 wpm so this variance does not trip it, while real
 truncation still does.
 
+## F19 — Node's `fetch` gives up after 300 s, and blames the server
+
+**This is the one that cost the most time, and it was entirely client-side.**
+
+Node's global `fetch` (undici) defaults `headersTimeout` and `bodyTimeout` to
+**300000 ms**. Any inference that takes longer than five minutes to produce
+response headers is abandoned by the client with a bare `fetch failed`.
+
+What makes it genuinely deceptive is the second-order effect. The client gives
+up; **sd-api keeps generating**. The retry then arrives while the first
+request is still running and is rejected with
+
+```
+model 'qwen3-tts-voicedesign' is busy ... the previous request has likely
+wedged and cannot be cancelled
+```
+
+so every symptom points at the server: a wedged model, a busy engine, an
+unreachable audio backend. Raising sd-api's own `busy_timeout_ms` (F18) was
+necessary and changed nothing on its own, because the client was still quitting
+first.
+
+**The tell was in the timings, not the errors.** Four separate attempts across
+two sd-api configurations failed at **301 s, 301 s, 301 s and 301 s**. Nothing
+under memory pressure fails on a stopwatch. A concurrent 5 GB LM Studio process
+and near-full swap made a plausible-looking culprit, and it was a coincidence —
+the constant was the giveaway.
+
+Fixed by giving `SdApiHttp` an undici `Agent` with `headersTimeout`,
+`bodyTimeout` and `keepAliveMaxTimeout` set from `SD_API_TIMEOUT_MS`
+(default 30 minutes). `keepAliveTimeout` matters too: a long generation is idle
+on the wire while the model works, and the connection is otherwise reaped as
+stale mid-inference.
+
+`SdApiHttp.request` now also unwraps `error.cause`, so a transport failure
+reports `UND_ERR_HEADERS_TIMEOUT` instead of `fetch failed`. That one line
+would have made this a five-minute diagnosis.
+
+**Rule of thumb:** any sd-api call that can exceed five minutes — one-shot
+narration, a large image batch, a video model — needs this dispatcher. It is
+set once on the client, so new call sites inherit it.
+
 ---
 
 ## Local environment
