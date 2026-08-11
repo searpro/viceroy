@@ -32,11 +32,17 @@ Recorded here so they are not re-litigated later.
 - **shadcn/ui** + Tailwind
 - **Remotion** (`@remotion/renderer`, `@remotion/captions`) for the video
 - **Vitest** for unit/integration, **Playwright** for one golden-path E2E
-- **pnpm**, Node 22 LTS pinned in `.nvmrc`
+- **pnpm**, Node 25 pinned in `.nvmrc`
 
-Node 25 is what is currently on PATH; pin 22 because `better-sqlite3` prebuilds
-lag new majors and story-platform already hit a Node 25 global-`localStorage`
-shim breaking jsdom tests.
+The intent was to pin Node 22 LTS, on the theory that `better-sqlite3`
+prebuilds lag new majors. Neither 22 nor 24 is actually installed — Homebrew's
+`node@24` is a symlink that has been relinked to 25.7.0 — and `better-sqlite3`
+13.0.3 compiles and runs clean on 25, verified before committing to it. So 25
+it is, and no system change was needed.
+
+The one known Node 25 hazard is the global `localStorage` shim that broke
+story-platform's jsdom tests. Viceroy's tests are node-environment; when
+component tests arrive, reach for happy-dom rather than jsdom.
 
 ## 3. Repo layout
 
