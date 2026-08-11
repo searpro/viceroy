@@ -275,6 +275,25 @@ is that multi-reference frames are **not** as reliable as single-reference
 ones, and that the text can override the second reference. Worth a controlled
 re-test once portraits are correct: same scene, references swapped.
 
+## F17 — `pkill -f "tsx worker/index.ts"` matches nothing
+
+The worker's actual command line is
+
+```
+node .../tsx/dist/cli.mjs worker/index.ts
+```
+
+so a pattern containing `tsx worker/index.ts` never matches, `pkill` exits
+quietly, and the "restart" **adds** a worker instead of replacing one. Five
+accumulated before it was noticed, and a stale one holding pre-PR4 code won the
+race for a job and failed it three times with "No handler registered".
+
+Kill on `worker/index.ts` alone.
+
+The queue itself came out of this well: with five workers contending, no job
+was ever claimed twice — the transactional claim does what it says. The bug was
+entirely stale code winning a race it should not have been in.
+
 ---
 
 ## Local environment
