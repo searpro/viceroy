@@ -170,29 +170,36 @@ This is a real design constraint, not a nuisance:
 Raising it means changing how sd-api spawns llama-server, which is an upstream
 change to that repo, not something viceroy can configure.
 
-## F11 — `ref_images` only works on edit models, so character consistency is textual
+## F11 — ~~`ref_images` only works on edit models~~ **WRONG — see ADR 0001**
 
-The plan had character portraits generated first and passed to every scene as
-`ref_images`, holding a face steady between frames. That does not work here.
+**This finding was incorrect and is retained only so the mistake is not
+repeated.** `ref_images` works fine on `flux2-klein-4b`, and character
+consistency now uses it. See
+[`docs/adr/0001-character-consistency.md`](adr/0001-character-consistency.md).
 
-`ref_images` maps to sd-cli's `-r`, which is an **edit-model** feature —
-FLUX.1-Kontext, Qwen-Image-Edit, Mage-Flow Edit Turbo. sd-api's catalog flags
-those with `edit: true`. **None of the installed bundles is one:** `ssd-1b`,
-`ernie-image-turbo`, `flux2-klein-4b` and `flux2-klein-9b` are all plain
-text-to-image.
+What it originally claimed: that `-r` is an edit-model feature, that sd-api's
+catalog flags edit models with `edit: true`, and that since every installed
+bundle reports `edit: false`, references were unavailable.
 
-Consistency is therefore carried **textually**: `elements.characters` fixes a
-short, purely visual `appearanceTag` per character ("wiry man in his fifties,
-close-cropped grey hair, navy work overalls"), and that exact string is pasted
-into every scene prompt the character appears in. Weaker than a reference
-image, and the only thing available without installing an edit model — which
-would be another multi-gigabyte download of a slower model on the one stage
-that is already CPU-bound.
+Why it was wrong, in two parts:
 
-`character_images` still exists, and the client still supports `ref_images`,
-so installing an edit model later is a configuration change rather than a
-rewrite. It is deliberately **not** in the automatic chain: portraits nothing
-consumes would cost ~1 CPU-minute each.
+1. **sd-api never enforces the `edit` flag.** `src/sd/args.ts` does
+   `for (const ref of images?.refs ?? []) args.push('-r', ref)` — unconditional,
+   on any model. `edit` is catalog metadata for the web UI.
+2. **FLUX.2 supports reference images.** stable-diffusion.cpp's
+   `docs/flux2.md` documents `-r` workflows for FLUX.2 dev and both klein
+   variants. The `sd-cli --help` line calling `-r` "reference image for Flux
+   Kontext or MiniMax-H3 Ref2VA" is out of date, and was the source of the
+   error.
+
+Measured after correcting it: a reference portrait plus a prompt for an
+entirely different setting returns the same recognisable person — and costs
+about **+11 s per frame** (76 s vs ~65 s).
+
+**The transferable lesson:** this was inferred from a metadata flag and a help
+string, and not one command was run to check. Both sources were stale. A
+capability question that can be settled by one generation should be settled by
+one generation.
 
 ## F12 — image generation timings, measured (M0 step 3)
 

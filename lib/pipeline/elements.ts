@@ -190,5 +190,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
     ctx.log("Stopping for review (manual mode)");
     return;
   }
-  enqueue(ctx.db, { type: "scene_images", projectId });
+  // Portraits before scenes: scene images reference them, so this order is
+  // load-bearing rather than incidental. See docs/adr/0001.
+  enqueue(ctx.db, { type: "character_images", projectId });
 }

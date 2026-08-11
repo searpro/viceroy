@@ -20,7 +20,6 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   story_eval: runStoryEval,
   story_revise: runStoryRevise,
   elements: runElements,
-  scene_images: runSceneImages,
-  // Not in the automatic chain — see runCharacterImages for why.
   character_images: runCharacterImages,
+  scene_images: runSceneImages,
 };

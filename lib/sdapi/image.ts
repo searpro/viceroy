@@ -12,6 +12,8 @@ export type ImageRequest = {
   sampler?: string;
   /** Reference portraits, so a character looks the same in every scene. */
   ref_images?: string[];
+  /** Give each reference its own slot — needed when two people share a frame. */
+  increase_ref_index?: boolean;
 };
 
 export type SdJob = {
@@ -58,6 +60,39 @@ export class ImageClient {
 
   async cancelJob(id: string): Promise<void> {
     await this.http.request(`/v1/jobs/${id}`, { method: "DELETE" }).catch(() => undefined);
+  }
+
+  /**
+   * Upload an image for later use as a reference, returning sd-api's name for
+   * it.
+   *
+   * `ref_images` takes names resolved against sd-api's own inputs directory,
+   * not paths on this machine, so a portrait has to be handed over once before
+   * any scene can point at it. The name is worth storing: re-uploading the
+   * same portrait per frame would copy it eight times for nothing.
+   */
+  async uploadInput(bytes: Buffer, filename = "reference.png"): Promise<string> {
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array(bytes)], { type: "image/png" }), filename);
+
+    const payload = await this.http.json<{ inputs?: { name?: string }[] }>("/v1/inputs", {
+      method: "POST",
+      body: form,
+    });
+
+    const name = payload.inputs?.[0]?.name;
+    if (!name) throw new Error("Input upload response missing inputs[0].name");
+    return name;
+  }
+
+  /** Whether sd-api still holds an uploaded input under this name. */
+  async hasInput(name: string): Promise<boolean> {
+    try {
+      await this.http.request(`/v1/inputs/${encodeURIComponent(name)}`, { method: "HEAD" });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Fetch a generated output by name, e.g. from `result.image_url`. */

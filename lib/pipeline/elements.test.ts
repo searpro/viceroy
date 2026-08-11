@@ -8,7 +8,7 @@ import { assets, characters, projects, scenes } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
 import { runElements } from "./elements";
-import { runSceneImages } from "./images";
+import { runCharacterImages, runSceneImages } from "./images";
 import { stubContext } from "./test-support";
 
 let db: Db;
@@ -104,13 +104,17 @@ describe("runElements", () => {
     expect(rows.map((s) => s.voiceoverScript).join(" ")).toBe(STORY);
   });
 
-  it("queues scene images in auto mode", async () => {
+  // Portraits must come first: scene images reference them (ADR 0001).
+  it("queues character portraits, not scene images, in auto mode", async () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "elements", projectId: project.id });
     await runElements(
       stubContext(db, job, { llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)] }),
     );
-    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).toContain("scene_images");
+
+    const queued = listJobs(db, { projectId: project.id }).map((j) => j.type);
+    expect(queued).toContain("character_images");
+    expect(queued).not.toContain("scene_images");
   });
 
   it("stops for review in manual mode", async () => {
@@ -123,7 +127,9 @@ describe("runElements", () => {
     expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.awaitingReview).toBe(
       true,
     );
-    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).not.toContain("scene_images");
+    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).not.toContain(
+      "character_images",
+    );
   });
 
   // On this hardware a restart costs minutes, so a retry must not redo work.
@@ -178,6 +184,78 @@ describe("runElements", () => {
   });
 });
 
+describe("runCharacterImages", () => {
+  async function elementsOnly(mode: "auto" | "manual" = "auto") {
+    const project = projectWithStory(mode);
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    await runElements(
+      stubContext(db, job, { llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)] }),
+    );
+    return project;
+  }
+
+  // The name is what scenes point at; without storing it every frame would
+  // have to re-upload the same portrait.
+  it("uploads each portrait to sd-api and stores the returned name", async () => {
+    const project = await elementsOnly();
+    const job = enqueue(db, { type: "character_images", projectId: project.id });
+
+    await runCharacterImages(stubContext(db, job));
+
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    expect(cast[0]!.imageAssetId).toBeTruthy();
+    expect(cast[0]!.refInputName).toBe(`uploaded-${cast[0]!.id}.png`);
+  });
+
+  it("continues to scene images in auto mode", async () => {
+    const project = await elementsOnly();
+    const job = enqueue(db, { type: "character_images", projectId: project.id });
+    await runCharacterImages(stubContext(db, job));
+    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).toContain("scene_images");
+  });
+
+  // A malformed portrait propagates into every frame it appears in, so manual
+  // mode gets a chance to catch it before eight minutes of generation.
+  it("stops for portrait review in manual mode", async () => {
+    const project = await elementsOnly("manual");
+    const job = enqueue(db, { type: "character_images", projectId: project.id });
+    await runCharacterImages(stubContext(db, job));
+
+    expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.awaitingReview).toBe(
+      true,
+    );
+    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).not.toContain("scene_images");
+  });
+
+  it("passes straight through when the story depicts nobody", async () => {
+    const project = projectWithStory();
+    const elements = enqueue(db, { type: "elements", projectId: project.id });
+    await runElements(
+      stubContext(db, elements, {
+        llm: [{ json: { characters: [] } }, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+      }),
+    );
+
+    const job = enqueue(db, { type: "character_images", projectId: project.id });
+    await runCharacterImages(stubContext(db, job));
+
+    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).toContain("scene_images");
+  });
+
+  it("skips a character that already has a portrait", async () => {
+    const project = await elementsOnly();
+
+    const first = enqueue(db, { type: "character_images", projectId: project.id });
+    await runCharacterImages(stubContext(db, first));
+
+    const second = enqueue(db, { type: "character_images", projectId: project.id });
+    const requests: Record<string, unknown>[] = [];
+    await runCharacterImages(stubContext(db, second, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests).toHaveLength(0);
+  });
+});
+
 describe("runSceneImages", () => {
   async function elementsDone(mode: "auto" | "manual" = "auto") {
     const project = projectWithStory(mode);
@@ -187,6 +265,76 @@ describe("runSceneImages", () => {
     );
     return project;
   }
+
+  /** Elements, then portraits — the state scene images actually run against. */
+  async function portraitsDone() {
+    const project = await elementsDone();
+    const job = enqueue(db, { type: "character_images", projectId: project.id });
+    await runCharacterImages(stubContext(db, job));
+    return project;
+  }
+
+  it("passes the portraits of characters appearing in the scene as references", async () => {
+    const project = await portraitsDone();
+    const job = enqueue(db, { type: "scene_images", projectId: project.id });
+
+    const requests: Record<string, unknown>[] = [];
+    await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    expect(requests[0]!.ref_images).toEqual([cast[0]!.refInputName]);
+  });
+
+  // Without a portrait there is nothing to reference, and sending an empty
+  // array would be a different request than sending none.
+  it("omits ref_images entirely when no character has a portrait", async () => {
+    const project = await elementsDone();
+    const job = enqueue(db, { type: "scene_images", projectId: project.id });
+
+    const requests: Record<string, unknown>[] = [];
+    await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests[0]).not.toHaveProperty("ref_images");
+  });
+
+  it("sets increase_ref_index only when a frame carries more than one face", async () => {
+    const project = await portraitsDone();
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+
+    const single = enqueue(db, { type: "scene_images", projectId: project.id });
+    const singleRequests: Record<string, unknown>[] = [];
+    await runSceneImages(stubContext(db, single, { onImageRequest: (r) => singleRequests.push(r) }));
+    expect(singleRequests[0]).not.toHaveProperty("increase_ref_index");
+
+    // Put two characters in one scene and regenerate it.
+    db.insert(characters)
+      .values({
+        projectId: project.id,
+        name: "second",
+        description: "another",
+        refInputName: "uploaded-second.png",
+      })
+      .run();
+    const second = db
+      .select()
+      .from(characters)
+      .where(eq(characters.projectId, project.id))
+      .all()
+      .find((c) => c.name === "second")!;
+
+    const target = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()[0]!;
+    db.update(scenes)
+      .set({ imageAssetId: null, characterIds: [cast[0]!.id, second.id] })
+      .where(eq(scenes.id, target.id))
+      .run();
+
+    const multi = enqueue(db, { type: "scene_images", projectId: project.id });
+    const multiRequests: Record<string, unknown>[] = [];
+    await runSceneImages(stubContext(db, multi, { onImageRequest: (r) => multiRequests.push(r) }));
+
+    expect(multiRequests[0]!.ref_images).toHaveLength(2);
+    expect(multiRequests[0]!.increase_ref_index).toBe(true);
+  });
 
   it("generates one image per scene and stores each as an asset", async () => {
     const project = await elementsDone();

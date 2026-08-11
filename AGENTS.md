@@ -21,6 +21,16 @@ All inference runs through [`sd-api`](https://github.com/searpro/sd-api) on
 3. [`docs/findings.md`](docs/findings.md) — measured behaviour of the local
    inference stack that contradicts its own documentation. Read this before
    touching audio, captions or image sizing. It will save you a day.
+4. [`docs/adr/`](docs/adr/) — decisions taken during the build whose reasoning
+   is worth more than a line.
+
+## Check the capability, don't infer it
+
+Finding F11 is a worked example of getting this wrong: a capability was ruled
+out from a metadata flag and a `--help` string, both stale, when a single
+generation would have shown it working. sd-api's docs, its catalog flags and
+its binary's help text all drift from what the code does. When the question is
+"can it do X", run X.
 
 ## At session start
 

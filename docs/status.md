@@ -133,9 +133,12 @@ Three decisions worth not re-deriving:
   truncates silently. Rows are written as they are known, so a failure at scene
   six resumes instead of restarting — worth minutes on this hardware.
 
-**Character consistency is textual, not `ref_images`** — see finding F11. That
-was a plan assumption that turned out to be wrong: `ref_images` needs an edit
-model and none is installed.
+**Character consistency uses reference images** —
+[ADR 0001](adr/0001-character-consistency.md). PR3 originally shipped a
+textual-only approach on the belief that `ref_images` needed an edit model;
+that belief was wrong, and finding F11 records the error. Portraits are now
+generated before scenes and passed as `ref_images`, which is what the plan
+called for all along. The `appearanceTag` remains as the fallback.
 
 ### Verified end to end on real models
 
@@ -158,11 +161,16 @@ Two things worth knowing that only a real run could show:
 - **The verbatim-span invariant holds in practice.** The seven scene scripts
   concatenated back to the narration exactly, which is what PR4's one-shot
   voiceover depends on.
-- **Textual character consistency works better than expected.** The same man is
-  recognisably the same across all seven frames — sandy hair parted the same
-  way, the same wire glasses, the same grey button-down — with no reference
-  image involved. Good enough that installing an edit model is an improvement
-  to want, not a gap to fill.
+- **Textual character consistency worked better than expected but not
+  exactly.** The same man was recognisably the same across all seven frames —
+  sandy hair parted the same way, the same wire glasses, the same grey
+  button-down — with no reference image involved. Recognisably similar people,
+  though, rather than the same person, which is what prompted ADR 0001 and the
+  switch to reference images.
+
+The chain is now `elements → character_images → scene_images`, and the timings
+above predate that: expect roughly **+3 minutes** for a 7-scene, 2-character
+video (one extra generation per character, ~+11 s per frame).
 
 ### The evaluator is probably lenient — do not read a pass as quality
 

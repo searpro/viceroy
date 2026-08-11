@@ -25,6 +25,13 @@ Recorded here so they are not re-litigated later.
 | D6 | **Voiceover is generated in one shot for the whole story** | Stated requirement, and the reason the scene scripts are concatenated before TTS rather than after: per-scene TTS produces audible voice drift between scenes. Subtitle alignment is what maps the single track back onto scenes. |
 | D7 | **Captions are rendered by Remotion, not burned in by libass** | Stated requirement, and it makes caption style a data-driven, previewable thing rather than an ASS-format string. Remotion's licence is free for individual use. |
 
+Decisions taken *during* the build, where the reasoning is longer than a table
+row, live as ADRs in [`docs/adr/`](adr/):
+
+- [0001 — Character consistency uses reference images](adr/0001-character-consistency.md)
+  — confirms stage 5's original design after PR3 briefly abandoned it on a
+  wrong premise.
+
 ## 2. Stack
 
 - **Next.js 15** (App Router) + TypeScript strict

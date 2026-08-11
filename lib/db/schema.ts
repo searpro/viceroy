@@ -131,6 +131,11 @@ export const characters = sqliteTable(
     // description is what keeps a face recognisable between frames.
     appearanceTag: text("appearance_tag"),
     imagePrompt: text("image_prompt"),
+    // sd-api's name for this character's uploaded reference portrait, passed
+    // as `ref_images` on every scene they appear in. Points at state in
+    // another service, so a dangling name must degrade to a text-only
+    // generation rather than fail the stage. See docs/adr/0001.
+    refInputName: text("ref_input_name"),
     // The reference portrait, generated before any scene so scene images can
     // pass it as ref_images and keep the character consistent between frames.
     imageAssetId: text("image_asset_id").references(() => assets.id),

@@ -15,6 +15,13 @@
       "when": 1786454617718,
       "tag": "0001_hot_vargas",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786456351964,
+      "tag": "0002_quiet_the_professor",
+      "breakpoints": true
     }
   ]
 }

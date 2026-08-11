@@ -69,6 +69,8 @@ export function stubContext(db: Db, job: Job, options: StubOptions = {}): StageC
           imageIndex++;
           return bytes ?? Buffer.from("png");
         },
+        uploadInput: async (_bytes: Buffer, filename: string) => `uploaded-${filename}`,
+        hasInput: async () => true,
       },
       audio: {},
       http: {},

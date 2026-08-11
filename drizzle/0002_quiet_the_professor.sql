@@ -1,0 +1,1 @@
+ALTER TABLE `characters` ADD `ref_input_name` text;
