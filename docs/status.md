@@ -137,6 +137,33 @@ Three decisions worth not re-deriving:
 was a plan assumption that turned out to be wrong: `ref_images` needs an edit
 model and none is installed.
 
+### Verified end to end on real models
+
+One idea — "a man stole one hundred million dollars from a community" — run in
+full auto with Mistral Nemo writing and flux2-klein-4b illustrating. Every job
+succeeded on its **first attempt**, no retries:
+
+| Stage | Result |
+| ----- | ------ |
+| synopsis → story | 1987 savings-and-loan embezzlement, named characters, dated beats |
+| story_eval | pass, 4.8/5, all five checklist keys returned — but see the leniency note below |
+| elements | 2 characters with appearance tags, 7 scenes |
+| scene_images | 7/7 frames, ~65 s each, ~8 min total |
+
+**Wall clock: about 12 minutes** from idea to seven finished frames, and image
+generation is ~65% of it.
+
+Two things worth knowing that only a real run could show:
+
+- **The verbatim-span invariant holds in practice.** The seven scene scripts
+  concatenated back to the narration exactly, which is what PR4's one-shot
+  voiceover depends on.
+- **Textual character consistency works better than expected.** The same man is
+  recognisably the same across all seven frames — sandy hair parted the same
+  way, the same wire glasses, the same grey button-down — with no reference
+  image involved. Good enough that installing an edit model is an improvement
+  to want, not a gap to fill.
+
 ### The evaluator is probably lenient — do not read a pass as quality
 
 On the first Mistral Nemo run the story passed at a mean of 4.8/5 with no
