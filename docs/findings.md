@@ -294,6 +294,46 @@ The queue itself came out of this well: with five workers contending, no job
 was ever claimed twice — the transactional claim does what it says. The bug was
 entirely stale code winning a race it should not have been in.
 
+## F18 — TTS runs at ~1.1s per word, and sd-api's 300s guard wedges the model
+
+`qwen3-tts-voicedesign` on this machine, measured through the task runner:
+
+| Words | Generation | Audio out | Implied delivery |
+| ----- | ---------- | --------- | ---------------- |
+| 15 | 20 s | 7.8 s | 116 wpm |
+| 40 | 50 s | 24.8 s | 97 wpm |
+| 60 | 76 s | 34.7 s | 104 wpm |
+| 80 | 57–83 s | 27.0–37.4 s | 128–178 wpm |
+| 120 | 131 s | 62.0 s | 116 wpm |
+
+**Generation costs roughly 1.0–1.3 s per word** — about twice real time — and
+scales linearly. A 328-word story therefore needs ~350–430 s.
+
+sd-api caps audio inference at `busy_timeout_ms`, default **300000**. Past
+that it returns
+
+```
+model 'qwen3-tts-voicedesign' is busy: current inference has run 349392 ms
+(busy_timeout_ms=300000); the previous request has likely wedged and cannot
+be cancelled
+```
+
+and it means it: the model stayed blocked, rejecting every subsequent request
+with 503, until sd-api was restarted. The narration was never going to arrive.
+
+**Fix:** `SD_AUDIO_REQUEST_TIMEOUT_MS=900000` in sd-api's `.env` (a value of 0
+disables the guard entirely, which is worse — a genuinely stuck inference
+would then block forever). This preserves the one-shot narration the
+requirements call for. Budget ~6 minutes of narration on top of ~9 minutes of
+images for a 330-word video.
+
+**Also note the variance.** The same 80-word input produced 27.0 s of audio on
+one run and 37.4 s on another — 178 wpm against 128 wpm. Duration is a noisy
+signal at this scale, which is finding F6 restated: judge audio acoustically,
+not by length. The `assertPlausibleDuration` guard in `voiceover.ts` is
+deliberately banded 60–260 wpm so this variance does not trip it, while real
+truncation still does.
+
 ---
 
 ## Local environment

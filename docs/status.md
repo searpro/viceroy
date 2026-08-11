@@ -205,6 +205,14 @@ Mistral Nemo (Q4_K_M, 7.48 GB) finished downloading and sd-api serves it.
 Remaining from step 4 is the acoustic confirmation of the two audio paths,
 which PR4 does as its first act since it is building on them.
 
+## Operational requirements
+
+**sd-api needs `SD_AUDIO_REQUEST_TIMEOUT_MS=900000` in its `.env`.** The
+default 300 s cap is shorter than a one-shot narration of a full story, and
+exceeding it does not fail cleanly — it wedges the TTS model uncancellably
+until sd-api is restarted. See finding F18 for the measurements behind the
+number. This is a requirement of running viceroy, not a preference.
+
 ## Known gaps
 
 - **Editing a built-in prompt template has no upgrade path.** `seed()` uses
