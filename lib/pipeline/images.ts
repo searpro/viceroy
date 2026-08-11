@@ -1,6 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import { storeAsset } from "../assets";
-import { characters, scenes } from "../db/schema";
+import { characters, projects, scenes } from "../db/schema";
 import { renderPrompt } from "../prompts";
 import { enqueue } from "../queue";
 import {
@@ -102,10 +102,15 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
   }
 
   setStage(ctx.db, projectId, "scene_images");
-
-  // PR4 replaces this with the voiceover stage.
-  awaitReview(ctx.db, projectId);
   ctx.log(`All ${all.length} scene image(s) ready`);
+
+  const project = ctx.db.select().from(projects).where(eq(projects.id, projectId)).get()!;
+  if (project.mode === "manual") {
+    awaitReview(ctx.db, projectId);
+    ctx.log("Stopping for image review (manual mode)");
+    return;
+  }
+  enqueue(ctx.db, { type: "voiceover", projectId });
 }
 
 /**

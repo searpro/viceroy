@@ -9,6 +9,8 @@ import {
   preferences,
   projects,
   scenes,
+  subtitleCues,
+  voiceovers,
   voiceStyles,
 } from "./db/schema";
 import { enqueue, listJobs } from "./queue";
@@ -121,13 +123,30 @@ export function getProjectDetail(db: Db, projectId: string) {
       .orderBy(asc(scenes.index))
       .all(),
     characters: db.select().from(characters).where(eq(characters.projectId, projectId)).all(),
+    voiceover: db.select().from(voiceovers).where(eq(voiceovers.projectId, projectId)).get(),
+    cues: db
+      .select()
+      .from(subtitleCues)
+      .where(eq(subtitleCues.projectId, projectId))
+      .orderBy(asc(subtitleCues.index))
+      .all(),
     jobs: listJobs(db, { projectId }),
   };
 }
 
 export const regenerateSchema = z.object({
-  target: z.enum(["synopsis", "story", "elements", "scene_images", "character_images"]),
+  target: z.enum([
+    "synopsis",
+    "story",
+    "elements",
+    "character_images",
+    "scene_images",
+    "voiceover",
+    "subtitle_align",
+  ]),
   direction: z.string().trim().max(2000).optional(),
+  /** Voice-design cues, when re-narrating with a different delivery. */
+  ttsInstruct: z.string().trim().max(1000).optional(),
 });
 
 /**
@@ -148,6 +167,9 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
   return enqueue(db, {
     type: input.target,
     projectId,
-    payload: input.direction ? { direction: input.direction } : {},
+    payload: {
+      ...(input.direction ? { direction: input.direction } : {}),
+      ...(input.ttsInstruct ? { ttsInstruct: input.ttsInstruct } : {}),
+    },
   });
 }

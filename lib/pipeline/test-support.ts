@@ -28,7 +28,32 @@ export type StubOptions = {
   shouldAbort?: () => boolean;
   /** Override the throwaway data directory, e.g. to assert on written files. */
   dataDir?: string;
+  /** Canned speech result; `audio` defaults to a minimal valid WAV. */
+  speech?: { audio?: Buffer; durationMs: number };
+  onSpeechRequest?: (request: Record<string, unknown>) => void;
+  /** Canned transcript words, already in milliseconds. */
+  transcript?: { word: string; startMs: number; endMs: number }[];
+  onTranscribeRequest?: (request: Record<string, unknown>) => void;
 };
+
+/** A 16-bit mono WAV header with no samples — enough to parse a sample rate. */
+export function silentWav(sampleRate = 24_000): Buffer {
+  const buffer = Buffer.alloc(44);
+  buffer.write("RIFF", 0, "ascii");
+  buffer.writeUInt32LE(36, 4);
+  buffer.write("WAVE", 8, "ascii");
+  buffer.write("fmt ", 12, "ascii");
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write("data", 36, "ascii");
+  buffer.writeUInt32LE(0, 40);
+  return buffer;
+}
 
 /**
  * A stage context whose providers are canned.
@@ -72,7 +97,20 @@ export function stubContext(db: Db, job: Job, options: StubOptions = {}): StageC
         uploadInput: async (_bytes: Buffer, filename: string) => `uploaded-${filename}`,
         hasInput: async () => true,
       },
-      audio: {},
+      audio: {
+        speech: async (request: Record<string, unknown>) => {
+          options.onSpeechRequest?.(request);
+          return {
+            audio: options.speech?.audio ?? silentWav(),
+            durationMs: options.speech?.durationMs ?? 10_000,
+          };
+        },
+        uploadAudio: async () => "/sd-api/inputs/narration.wav",
+        transcribeWords: async (request: Record<string, unknown>) => {
+          options.onTranscribeRequest?.(request);
+          return { words: options.transcript ?? [], text: "" };
+        },
+      },
       http: {},
       health: async () => true,
     } as unknown as StageContext["sdApi"],
