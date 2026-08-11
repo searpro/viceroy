@@ -205,6 +205,16 @@ Mistral Nemo (Q4_K_M, 7.48 GB) finished downloading and sd-api serves it.
 Remaining from step 4 is the acoustic confirmation of the two audio paths,
 which PR4 does as its first act since it is building on them.
 
+## Known gaps
+
+- **Editing a built-in prompt template has no upgrade path.** `seed()` uses
+  `onConflictDoNothing`, deliberately, so a re-seed never clobbers a template
+  someone has tuned. The cost is that improving a *built-in* template does not
+  reach an existing database — during development the fix is to wipe `data/`
+  and re-seed, which is not a fix for a real install. M3's prompt-template
+  editor needs a "reset this template to the built-in" action, and probably a
+  record of whether a row has been edited at all.
+
 ## What to pick up next
 
 **M1 PR4** — the one-shot voiceover and subtitle alignment. This is the part

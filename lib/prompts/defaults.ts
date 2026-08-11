@@ -208,11 +208,19 @@ Art direction for this story:
 For each person who is actually depicted — not merely mentioned in passing —
 give a name and a fixed visual description.
 
-The "appearance" field is the important one. It will be pasted into the image
-prompt for every scene this person appears in, so it must be short, concrete
-and purely visual: build, apparent age, hair, clothing. No personality, no
-backstory, no camera or lighting language. Nothing that could be drawn
-differently from one reading to the next.
+The "appearance" field is the important one. It generates this person's
+reference portrait, and that portrait is then used to keep their face the same
+in every scene they appear in. Anything it leaves unsaid gets invented, and
+whatever is invented is what the audience sees for the rest of the video.
+
+It must be short, concrete and purely visual. No personality, no backstory, no
+camera or lighting language — nothing that could be drawn differently from one
+reading to the next.
+
+**Start it with the person's apparent gender and age**, then build, hair, and
+clothing. Write "a woman in her late fifties, slim, short curly grey hair,
+conservative navy suit" — never "Late 50s, slim build, short curly grey hair,
+business suit", which does not say who is being drawn and will be guessed.
 
 Respond with a single JSON object, no prose around it:
 
@@ -221,7 +229,7 @@ Respond with a single JSON object, no prose around it:
     {
       "name": "<name or role, e.g. 'the plumber'>",
       "description": "<who they are in the story, one or two sentences>",
-      "appearance": "<8-20 words, purely visual, always drawable the same way>"
+      "appearance": "<8-20 words, starting with apparent gender and age, purely visual>"
     }
   ]
 }
