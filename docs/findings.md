@@ -233,6 +233,48 @@ Nothing errors. It looks like the seed failed or the routing broke.
 accident — it is restarted per run — and this only bites the long-lived Next
 process.
 
+## F14 — a name in an image prompt gets painted into the picture
+
+FLUX.2 renders text well, which is a problem when the text was never meant to
+be text. A scene prompt reading `Hal Griffin packing bag` produced a frame with
+a holdall stencilled **"HAL GRIFFIN"** across it. The image style's negative
+prompt already said `text, watermark`; the name in the positive prompt won.
+
+Scene prompts must describe people by appearance and never by name. The names
+belong in the extraction's `characters` array, which is what resolves them to
+reference portraits.
+
+## F15 — a diffusion prompt has no "not"
+
+Narrative-style visual guidance for the crime type ended with *"No stylisation,
+no fantasy elements."* The scene-visualisation model copied it into a generated
+prompt as `no stylisation, fantasy elements` — which, in a positive prompt,
+asks for fantasy elements.
+
+Anything destined for a positive prompt states only what **is** in frame.
+Exclusions go in the image style's `negativePrompt`, which is passed
+separately and does support them. `lib/db/seed.test.ts` guards the built-in
+styles against negations, since this leaked from seed data rather than from
+model behaviour.
+
+## F16 — the second reference image is weaker than the first
+
+With two characters in one frame and `increase_ref_index: true`, FLUX.2 klein
+**does keep them as two separate people** — no blending, which was the open
+question in ADR 0001. But the two references are not equally strong.
+
+Across two frames sharing the same reference pair, the first reference (Hal)
+transferred faithfully every time — build, hair, uniform all matching his
+portrait. The second (Martha) did not: she appeared as a man in one frame,
+matching her portrait, and as a woman in the other, matching the *name* in the
+prompt text rather than the portrait.
+
+That confound — a wrong-gender portrait fighting a gendered first name — makes
+this one run weak evidence about ordering specifically. What it does establish
+is that multi-reference frames are **not** as reliable as single-reference
+ones, and that the text can override the second reference. Worth a controlled
+re-test once portraits are correct: same scene, references swapped.
+
 ---
 
 ## Local environment

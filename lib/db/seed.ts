@@ -33,9 +33,12 @@ const NARRATIVE_STYLES = [
       "Flat, precise, unhurried. Short declarative sentences. Let the facts carry the weight and never " +
       "editorialise — no 'shockingly', no 'unbelievably'. Specifics over adjectives: not 'a huge sum' " +
       "but 'a hundred and four million dollars'. Present tense for immediacy in the central beats.",
+    // Phrased entirely as what IS in frame. Negations belong in the image
+    // style's negativePrompt: a diffusion prompt has no "not", so "no fantasy
+    // elements" pasted into a positive prompt asks for fantasy elements.
     visualGuidance:
       "Desaturated, documentary realism. Available light, hard shadows, handheld framing. Institutional " +
-      "interiors, paperwork, surveillance angles. No stylisation, no fantasy elements.",
+      "interiors, paperwork, surveillance angles, plain functional surfaces.",
     evaluationChecklist: [
       { key: "specificity", description: "Every claim is anchored to a concrete detail, not a generality." },
       { key: "restraint", description: "The prose never editorialises or reaches for shock." },
@@ -59,7 +62,7 @@ const NARRATIVE_STYLES = [
       "Show competence through specific action, not through being told the character is clever. Earn the " +
       "ending — no sudden reversals the story has not paid for.",
     visualGuidance:
-      "Warm natural light, saturated but not garish. Working environments and civic spaces — workshops, " +
+      "Warm natural light, richly saturated colour. Working environments and civic spaces — workshops, " +
       "municipal halls, streets at golden hour. Faces and hands doing real work.",
     evaluationChecklist: [
       { key: "earned_win", description: "The victory follows from choices the story showed, not luck." },

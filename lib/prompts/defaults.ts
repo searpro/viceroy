@@ -294,9 +294,16 @@ Respond with a single JSON object, no prose around it:
 Rules for "imagePrompt":
 - describe only what is visible in one frozen moment
 - no narrative, no cause and effect, no words like "after" or "then"
-- if a listed character appears, paste their appearance description in verbatim
+- **never write a person's name.** Describe them by their appearance
+  description instead, pasted in verbatim. The image generator renders names
+  as literal text painted into the picture — a bag labelled "HAL GRIFFIN"
+- **state only what IS in the frame.** Never write "no X", "without X" or
+  "not X": there is no negation here, so "no fantasy elements" asks for
+  fantasy elements
 - vertical 9:16 composition, subject placed for a tall frame
-- no text, captions, logos or watermarks in the image`,
+
+Put the names of the characters who appear in the "characters" array. That is
+what the array is for — the prompt itself describes them without naming them.`,
   },
   {
     key: "character.portrait",
