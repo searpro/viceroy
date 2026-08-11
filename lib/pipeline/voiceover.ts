@@ -61,6 +61,8 @@ export async function runVoiceover(ctx: StageContext): Promise<void> {
     instruct: ttsInstruct,
   });
 
+  assertPlausibleDuration(script, durationMs);
+
   const asset = storeAsset(ctx.db, ctx.config, {
     kind: "audio",
     bytes: audio,
@@ -212,6 +214,41 @@ export async function runSubtitleAlign(ctx: StageContext): Promise<void> {
   // PR5 replaces this with the render stage.
   awaitReview(ctx.db, projectId);
   void project;
+}
+
+/** Slowest and fastest plausible narration, in words per minute. */
+const SLOWEST_WPM = 60;
+const FASTEST_WPM = 260;
+
+/**
+ * Refuse narration that is too short or too long for the script it came from.
+ *
+ * The whole story goes to TTS in one call, and a model that truncates a long
+ * input returns a perfectly valid shorter clip with no error. Nothing
+ * downstream would notice: the transcript would match the audio, alignment
+ * would anchor the opening and interpolate the rest, and the video would
+ * simply stop narrating halfway through with captions sliding on regardless.
+ *
+ * The bounds are deliberately wide. This catches truncation and runaway
+ * repetition, not an unusual delivery.
+ */
+export function assertPlausibleDuration(script: string, durationMs: number): void {
+  const words = splitWords(script).length;
+  if (words === 0) return;
+
+  const wpm = words / (durationMs / 60_000);
+  if (wpm > FASTEST_WPM) {
+    throw new Error(
+      `Narration is ${(durationMs / 1000).toFixed(1)}s for ${words} words (${Math.round(wpm)} wpm) — ` +
+        `too fast to be the whole script, so the model probably truncated it`,
+    );
+  }
+  if (wpm < SLOWEST_WPM) {
+    throw new Error(
+      `Narration is ${(durationMs / 1000).toFixed(1)}s for ${words} words (${Math.round(wpm)} wpm) — ` +
+        `too slow to be speech, so the model probably looped or stalled`,
+    );
+  }
 }
 
 /**

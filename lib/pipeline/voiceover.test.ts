@@ -6,7 +6,12 @@ import type { Db } from "../db/client";
 import { characters, projects, scenes, subtitleCues, voiceovers } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
-import { runSubtitleAlign, runVoiceover, readWavSampleRate } from "./voiceover";
+import {
+  assertPlausibleDuration,
+  readWavSampleRate,
+  runSubtitleAlign,
+  runVoiceover,
+} from "./voiceover";
 import { silentWav, stubContext } from "./test-support";
 
 let db: Db;
@@ -138,6 +143,36 @@ describe("runVoiceover", () => {
     const project = createProject(db, { idea: "an idea long enough to pass" });
     const job = enqueue(db, { type: "voiceover", projectId: project.id });
     await expect(runVoiceover(stubContext(db, job))).rejects.toThrow(/no scenes/);
+  });
+
+  // A model that truncates a long input returns a valid shorter clip and no
+  // error. Nothing downstream notices: the transcript matches the audio, and
+  // the video just stops narrating halfway through.
+  it("refuses narration too short to be the whole script", async () => {
+    const project = projectWithScenes();
+    const job = enqueue(db, { type: "voiceover", projectId: project.id });
+
+    await expect(
+      runVoiceover(stubContext(db, job, { speech: { durationMs: 1_000 } })),
+    ).rejects.toThrow(/truncated/);
+    expect(db.select().from(voiceovers).where(eq(voiceovers.projectId, project.id)).get()).toBeUndefined();
+  });
+
+  it("refuses narration too long to be speech", async () => {
+    const project = projectWithScenes();
+    const job = enqueue(db, { type: "voiceover", projectId: project.id });
+
+    await expect(
+      runVoiceover(stubContext(db, job, { speech: { durationMs: 600_000 } })),
+    ).rejects.toThrow(/looped or stalled/);
+  });
+
+  it("accepts an unusual but plausible delivery", () => {
+    const script = new Array(100).fill("word").join(" ");
+    // 100 words in 30s is 200wpm — brisk, and not truncation.
+    expect(() => assertPlausibleDuration(script, 30_000)).not.toThrow();
+    // 100 words in 90s is 67wpm — slow and grave, still speech.
+    expect(() => assertPlausibleDuration(script, 90_000)).not.toThrow();
   });
 });
 
