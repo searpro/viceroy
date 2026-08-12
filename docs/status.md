@@ -5,20 +5,24 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — M1 PR4 shipped and verified end to end._
+_Last updated: 2026-08-12 — **M1 complete.** Idea to finished MP4, verified._
 
 ---
 
 ## Where things stand
 
-Idea → synopsis → story → evaluation → scenes → cast → images → one-shot
-narration → word-timed captions runs end to end against real models. **Only the
-video render is left** before M1 is done.
+**M1 is done.** A one-line idea becomes a finished 1080×1920 MP4 — synopsis,
+story, evaluation, scenes, cast, reference-consistent images, one-shot
+narration, word-timed captions, render — driven from the browser against local
+models only.
+
+Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
+179.03 s against a 178.96 s narration (inside one frame), 91.9 MB.
 
 | Milestone | Status |
 | --------- | ------ |
 | M0 — Environment gate | **Complete** — both audio paths confirmed on real audio by PR4 |
-| M1 — Thin end-to-end slice (idea → MP4) | **In progress** — PR4 of 5 shipped; only the render remains |
+| M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
 | M2 — Manual mode and review surfaces | Not started |
 | M3 — Management screens | Not started |
 | M4 — Output control | Not started |

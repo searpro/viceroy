@@ -5,6 +5,7 @@ import { asc, eq } from "drizzle-orm";
 import { bundle } from "@remotion/bundler";
 import { ensureBrowser, renderMedia, selectComposition } from "@remotion/renderer";
 import { storeAsset } from "../assets";
+import { captionStyleSchema, DEFAULT_CAPTION_STYLE } from "../../remotion/schema";
 import { assets, renders, scenes, subtitleCues, voiceovers } from "../db/schema";
 import {
   awaitReview,
@@ -97,7 +98,7 @@ export async function runRender(ctx: StageContext): Promise<void> {
       width: ctx.config.video.width,
       height: ctx.config.video.height,
       fps: FPS,
-      captionStyle: {},
+      captionStyle: DEFAULT_CAPTION_STYLE,
       status: "rendering",
     })
     .returning()
@@ -120,7 +121,12 @@ export async function runRender(ctx: StageContext): Promise<void> {
       scenes: stagedScenes,
       cues: cues.map((cue) => ({ text: cue.text, startMs: cue.startMs, endMs: cue.endMs })),
       durationMs: voiceover.durationMs,
-      captionStyle: (render.captionStyle as Record<string, unknown>) ?? {},
+      // Parsed, not passed through: a composition's zod schema documents
+      // its props but does NOT fill defaults into inputProps at render time.
+      // An unparsed {} reaches the component as undefined everywhere, and the
+      // result is a 16px serif caption welded to the bottom edge rather than
+      // an error. See docs/findings.md F22.
+      captionStyle: captionStyleSchema.parse(render.captionStyle ?? {}),
     };
 
     const composition = await selectComposition({

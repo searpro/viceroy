@@ -6,6 +6,7 @@ import type { Db } from "../db/client";
 import { assets, projects, scenes, voiceovers } from "../db/schema";
 import { claim, enqueue } from "../queue";
 import { createProject } from "../projects";
+import { captionStyleSchema } from "../../remotion/schema";
 import { runRender } from "./render";
 import { stubContext } from "./test-support";
 
@@ -66,6 +67,41 @@ function project(options: { timed?: boolean; images?: boolean; narrated?: boolea
 
   return created;
 }
+
+/**
+ * A composition's zod schema documents its props; it does **not** fill
+ * defaults into `inputProps` at render time. Passing `{}` therefore reaches
+ * the component as `undefined` everywhere and renders — silently — as a 16px
+ * serif caption pinned to the bottom edge by a `NaN` padding. Nothing throws.
+ *
+ * So the style has to be materialised before it is handed over, and any field
+ * added to the schema later needs a default or this fails. See F22.
+ */
+describe("caption style defaults", () => {
+  it("fills every field when given an empty object", () => {
+    const parsed = captionStyleSchema.parse({});
+    for (const [key, value] of Object.entries(parsed)) {
+      expect(value, `captionStyle.${key} would reach the renderer undefined`).toBeDefined();
+    }
+  });
+
+  it("produces a caption that is actually legible over a photograph", () => {
+    const style = captionStyleSchema.parse({});
+    expect(style.fontSize).toBeGreaterThan(40);
+    expect(style.fontWeight).toBeGreaterThanOrEqual(700);
+    // Without a stroke, white text vanishes against a bright frame.
+    expect(style.outlineWidth).toBeGreaterThan(0);
+    // Clear of the platform UI that overlays the bottom of a short-form video.
+    expect(style.bottomOffset).toBeGreaterThan(0.1);
+  });
+
+  it("keeps an explicit override", () => {
+    expect(captionStyleSchema.parse({ fontSize: 120, uppercase: true })).toMatchObject({
+      fontSize: 120,
+      uppercase: true,
+    });
+  });
+});
 
 describe("runRender refusals", () => {
   it("refuses a project with no narration", async () => {

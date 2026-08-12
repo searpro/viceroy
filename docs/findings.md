@@ -441,6 +441,32 @@ Worth knowing generally: this is the second time a default that arrived
 first). When a toolchain package spans the ecosystem, pin it rather than
 taking whatever `add` resolves to.
 
+## F22 — a Remotion composition's zod schema does not fill defaults into `inputProps`
+
+The `schema` passed to `<Composition>` documents and validates props for the
+Studio, and it is easy to assume `renderMedia` parses `inputProps` through it
+too. It does not.
+
+Handing over `captionStyle: {}` therefore reached the component as `undefined`
+for every field, and **nothing threw**. The video rendered perfectly, with a
+16 px serif caption welded to the bottom edge — `fontSize` undefined fell back
+to the browser default, `WebkitTextStroke` became the string
+`"undefinedpx undefined"` and was discarded, and
+`paddingBottom: height * undefined` was `NaN` and ignored, so the text sat
+flush against the frame edge instead of 17% up.
+
+Cost: a full 8-minute render to discover, because the failure is only visible
+in the output.
+
+**Materialise defaults before handing props over** —
+`captionStyleSchema.parse(value)` in the render stage — and keep a test that
+every field is defined after parsing `{}`, so a field added to the schema
+later without a default fails loudly instead of silently rendering wrong.
+
+The general shape of this: a prop that is `undefined` in CSS is not an error,
+it is a default. Anything driving layout or typography from data needs its
+defaults resolved on the way in, not hoped for.
+
 ---
 
 ## Local environment
