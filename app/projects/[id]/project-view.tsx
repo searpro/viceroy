@@ -54,8 +54,11 @@ type Detail = {
   narrativeStyle?: { name: string };
   voiceStyle?: { name: string };
   evaluations: Evaluation[];
+  nextStep: { kind: "run" | "complete"; type?: string; reason: string };
+  stalled: boolean;
   scenes: Scene[];
   characters: Character[];
+  render?: { id: string; assetId: string | null; status: string } | null;
   voiceover?: {
     id: string;
     ttsInstruct: string;
@@ -118,6 +121,18 @@ export function ProjectView({ initial }: { initial: Detail }) {
     setBusy(false);
   }
 
+  async function continueProject() {
+    setBusy(true);
+    await fetch(`/api/projects/${detail.project.id}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "continue" }),
+    });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
   async function jobAction(jobId: string, action: "abort" | "retry") {
     await fetch(`/api/jobs/${jobId}`, {
       method: "POST",
@@ -155,6 +170,41 @@ export function ProjectView({ initial }: { initial: Detail }) {
         <p className="mt-6 rounded-md bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
           {project.failureReason}
         </p>
+      )}
+
+      {/* Nothing is queued and nothing is asking for a decision, so without
+          this the project would sit here looking busy forever. */}
+      {!active && detail.nextStep.kind === "run" && (
+        <div
+          className={`mt-6 flex items-center justify-between gap-4 rounded-md px-4 py-3 text-sm ${
+            detail.stalled ? "bg-red-500/10 text-red-200" : "bg-white/5 text-white/70"
+          }`}
+        >
+          <span>
+            {detail.stalled ? "Stalled — " : project.awaitingReview ? "Waiting for you — " : ""}
+            next: <span className="font-mono">{detail.nextStep.type}</span>, because{" "}
+            {detail.nextStep.reason}.
+          </span>
+          <button
+            onClick={continueProject}
+            disabled={busy}
+            className="shrink-0 rounded-md bg-amber-400 px-3 py-1.5 text-xs font-medium text-black transition hover:bg-amber-300 disabled:opacity-40"
+          >
+            {project.awaitingReview ? "Approve & continue" : "Continue"}
+          </button>
+        </div>
+      )}
+
+      {!active && detail.nextStep.kind === "complete" && detail.render?.assetId && (
+        <section className="mt-6 rounded-lg border border-white/10 bg-white/[0.02] p-4">
+          <h2 className="text-sm font-medium uppercase tracking-wide text-white/40">Video</h2>
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          <video
+            controls
+            src={`/api/assets/${detail.render.assetId}`}
+            className="mt-3 max-h-[70vh] w-full rounded-md bg-black"
+          />
+        </section>
       )}
 
       <Panel title="Synopsis" empty={!project.synopsis} emptyText="Not written yet.">

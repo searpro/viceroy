@@ -15,6 +15,7 @@ import {
   voiceStyles,
 } from "./db/schema";
 import { enqueue, listJobs } from "./queue";
+import { advance, isStalled, nextStep } from "./pipeline/chain";
 
 export const createProjectSchema = z.object({
   idea: z.string().trim().min(8, "Give the idea a little more to work with").max(2000),
@@ -138,7 +139,14 @@ export function getProjectDetail(db: Db, projectId: string) {
       .orderBy(asc(subtitleCues.index))
       .all(),
     jobs: listJobs(db, { projectId }),
+    nextStep: nextStep(db, projectId),
+    stalled: isStalled(db, projectId),
   };
+}
+
+/** Approve what is there and queue whatever is outstanding. */
+export function continueProject(db: Db, projectId: string) {
+  return advance(db, projectId);
 }
 
 export const regenerateSchema = z.object({

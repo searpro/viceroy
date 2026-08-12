@@ -5,7 +5,7 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M1 complete.** Idea to finished MP4, verified._
+_Last updated: 2026-08-12 — **M2 PR1 shipped.** Stalled projects self-diagnose and can be resumed from the UI._
 
 ---
 
@@ -23,7 +23,7 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | --------- | ------ |
 | M0 — Environment gate | **Complete** — both audio paths confirmed on real audio by PR4 |
 | M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
-| M2 — Manual mode and review surfaces | Not started |
+| M2 — Manual mode and review surfaces | PR1 shipped — outstanding work: PR2 (regenerate/direct UI) |
 | M3 — Management screens | Not started |
 | M4 — Output control | Not started |
 | M5 — Packaging | Not started |
@@ -256,6 +256,43 @@ one:
 The first of those is the POC's exact failure — it shipped `Right at317,` over
 an authored "Right at three seventeen." Here the timing comes from the
 transcript and the wording from the writer, which is the whole point.
+
+## M2 PR1 — recovering stranded projects (shipped)
+
+Both of the user's own real projects turned out to be stuck: every job had
+succeeded, nothing was queued, and `awaitingReview` was `false` — so no worker
+would touch them and no screen asked for anything. `844509f6` finished
+`scene_images` before the `scene_images → voiceover` chain existed; `13229d77`
+had an `elements` job abort, which at the time did not park the project.
+
+| Piece | Where |
+| ----- | ----- |
+| `nextStep` / `isStalled` / `advance` | `lib/pipeline/chain.ts`, `lib/pipeline/chain.test.ts` |
+| Worker parks on abort, not just on failure | `worker/index.ts` |
+| `getProjectDetail` returns `nextStep`/`stalled`; `continueProject()` | `lib/projects.ts` |
+| `POST /api/projects/[id]` `{action: "continue"}` | `app/api/projects/[id]/route.ts` |
+| Stalled banner + Continue button, video player | `app/projects/[id]/project-view.tsx` |
+
+**The fix derives the next step from artifacts, not from `projects.stage`.** A
+stage label records where a project *got to*; it cannot say whether the work
+is still there. `nextStep` walks the pipeline in order — synopsis, story,
+story_eval, elements (re-running it if any scene lacks an `imagePrompt`),
+character_images, scene_images, voiceover, subtitle_align, render — and asks
+each time whether the artifact actually exists. Verified against the two real
+stranded projects:
+
+```
+844509f6 | stage scene_images   | stalled true  | next: voiceover — the narration has not been generated
+13229d77 | stage story_eval     | stalled true  | next: elements — no scenes have been extracted
+```
+
+230 tests pass (20 new for `chain.ts`), `tsc --noEmit` clean, `next build`
+succeeds.
+
+**Not yet done:** actually running Continue on the two stranded projects —
+that starts a real generation run (~3 min for the waitress project, ~15 min
+for the remaining Koodathai pipeline), left for the user to trigger
+deliberately rather than as a side effect of this PR.
 
 ## Known gaps
 

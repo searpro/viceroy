@@ -65,8 +65,15 @@ async function main() {
       const { willRetry } = fail(db, job.id, message);
       // A project whose job has given up is not "in progress" — without this
       // it keeps its old stage in the list and looks like it is still working.
+      // Aborting counts: an operator stopping a stage leaves exactly the same
+      // dead end as a failure does.
       if (!willRetry && job.projectId) {
-        awaitReview(db, job.projectId, `${job.type} failed: ${message}`);
+        const aborted = isAbortRequested(db, job.id);
+        awaitReview(
+          db,
+          job.projectId,
+          aborted ? `${job.type} was aborted` : `${job.type} failed: ${message}`,
+        );
       }
       console.error(`[${job.type}] ${job.id} failed${willRetry ? " (will retry)" : ""}: ${message}`);
     }
