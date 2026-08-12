@@ -12,8 +12,13 @@ export const narrativeStyleSchema = z.object({
   evaluationChecklist: z
     .array(z.object({ key: z.string().trim().min(1), description: z.string().trim().min(1) }))
     .min(1, "At least one checklist item is required — it is what the evaluator is held to"),
-  targetSceneCount: z.number().int().positive().default(8),
-  targetWordCount: z.number().int().positive().default(320),
+  // No zod .default() on these: .partial() (used for PATCH) still applies a
+  // field's default to a key that is simply absent from the patch, which
+  // would silently overwrite it. Omitted fields fall through to the
+  // column's own default in lib/db/schema.ts instead, which only fires on
+  // insert.
+  targetSceneCount: z.number().int().positive().optional(),
+  targetWordCount: z.number().int().positive().optional(),
 });
 export type NarrativeStyleInput = z.infer<typeof narrativeStyleSchema>;
 
@@ -22,18 +27,18 @@ export const voiceStyleSchema = z.object({
   description: z.string().trim().min(1),
   ttsInstruct: z.string().trim().min(1),
   deliveryCues: z.string().trim().min(1),
-  model: z.string().trim().min(1).default("qwen3-tts-voicedesign"),
+  model: z.string().trim().min(1).optional(),
 });
 export type VoiceStyleInput = z.infer<typeof voiceStyleSchema>;
 
 export const imageStyleSchema = z.object({
   name: z.string().trim().min(1).max(100),
   description: z.string().trim().min(1),
-  promptPrefix: z.string().trim().default(""),
-  promptSuffix: z.string().trim().default(""),
-  negativePrompt: z.string().trim().default(""),
+  promptPrefix: z.string().trim().optional(),
+  promptSuffix: z.string().trim().optional(),
+  negativePrompt: z.string().trim().optional(),
   model: z.string().trim().min(1),
-  defaultParams: z.record(z.string(), z.union([z.number(), z.string()])).default({}),
+  defaultParams: z.record(z.string(), z.union([z.number(), z.string()])).optional(),
 });
 export type ImageStyleInput = z.infer<typeof imageStyleSchema>;
 

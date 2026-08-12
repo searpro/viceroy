@@ -30,6 +30,9 @@ export default async function Home() {
           <Link href="/styles" className="transition hover:text-white/70">
             styles
           </Link>
+          <Link href="/providers" className="transition hover:text-white/70">
+            providers
+          </Link>
           <span>
             sd-api{" "}
             <span className={healthy ? "text-emerald-400" : "text-red-400"}>

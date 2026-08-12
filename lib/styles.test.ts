@@ -11,12 +11,15 @@ import {
   deleteImageStyle,
   deleteNarrativeStyle,
   deleteVoiceStyle,
+  imageStyleSchema,
   listImageStyles,
   listNarrativeStyles,
   listVoiceStyles,
+  narrativeStyleSchema,
   updateImageStyle,
   updateNarrativeStyle,
   updateVoiceStyle,
+  voiceStyleSchema,
 } from "./styles";
 
 let db: Db;
@@ -83,6 +86,22 @@ describe("narrative styles", () => {
     createProject(db, { idea: "a plumber became mayor by wits", narrativeStyleId: created.id });
     expect(() => deleteNarrativeStyle(db, created.id)).toThrow(/used by an existing project/);
   });
+
+  // Regression: z.object(...).partial() still applies a field's own
+  // .default() to a key that is simply absent from the patch. A route
+  // handler parsing a PATCH body through narrativeStyleSchema.partial()
+  // must not silently reset targetSceneCount/targetWordCount on an edit
+  // that never touched them.
+  it("does not have the .partial() schema inject defaults for an omitted patch field", () => {
+    const patch = narrativeStyleSchema.partial().parse({ description: "changed only" });
+    expect(patch).not.toHaveProperty("targetSceneCount");
+    expect(patch).not.toHaveProperty("targetWordCount");
+
+    const created = createNarrativeStyle(db, NARRATIVE_INPUT);
+    const updated = updateNarrativeStyle(db, created.id, patch);
+    expect(updated.targetSceneCount).toBe(NARRATIVE_INPUT.targetSceneCount);
+    expect(updated.targetWordCount).toBe(NARRATIVE_INPUT.targetWordCount);
+  });
 });
 
 describe("voice styles", () => {
@@ -104,6 +123,15 @@ describe("voice styles", () => {
     createProject(db, { idea: "a plumber became mayor by wits", voiceStyleId: created.id });
     expect(() => deleteVoiceStyle(db, created.id)).toThrow(/used by an existing project/);
   });
+
+  it("does not have the .partial() schema inject a default model on an omitted patch field", () => {
+    const patch = voiceStyleSchema.partial().parse({ description: "changed only" });
+    expect(patch).not.toHaveProperty("model");
+
+    const created = createVoiceStyle(db, VOICE_INPUT);
+    const updated = updateVoiceStyle(db, created.id, patch);
+    expect(updated.model).toBe(VOICE_INPUT.model);
+  });
 });
 
 describe("image styles", () => {
@@ -124,5 +152,16 @@ describe("image styles", () => {
     const created = createImageStyle(db, IMAGE_INPUT);
     createProject(db, { idea: "a plumber became mayor by wits", imageStyleId: created.id });
     expect(() => deleteImageStyle(db, created.id)).toThrow(/used by an existing project/);
+  });
+
+  it("does not have the .partial() schema inject empty defaultParams on an omitted patch field", () => {
+    const patch = imageStyleSchema.partial().parse({ description: "changed only" });
+    expect(patch).not.toHaveProperty("defaultParams");
+    expect(patch).not.toHaveProperty("promptPrefix");
+
+    const created = createImageStyle(db, IMAGE_INPUT);
+    const updated = updateImageStyle(db, created.id, patch);
+    expect(updated.defaultParams).toEqual(IMAGE_INPUT.defaultParams);
+    expect(updated.promptPrefix).toBe(IMAGE_INPUT.promptPrefix);
   });
 });

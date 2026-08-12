@@ -5,7 +5,7 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M3 PR1 shipped.** Narrative/voice/image style CRUD._
+_Last updated: 2026-08-12 — **M3 PR2 shipped.** Provider registry CRUD._
 
 ---
 
@@ -24,7 +24,7 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | M0 — Environment gate | **Complete** — both audio paths confirmed on real audio by PR4 |
 | M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
 | M2 — Manual mode and review surfaces | PR1 + PR2 + PR3 shipped |
-| M3 — Management screens | PR1 shipped |
+| M3 — Management screens | PR1 + PR2 shipped |
 | M4 — Output control | Not started |
 | M5 — Packaging | Not started |
 
@@ -403,6 +403,57 @@ reports "must be valid JSON" before the request goes out).
 real seeded styles, and a full create → verify → delete round-trip was run
 against a throwaway narrative style with no data left behind afterward.
 
+## M3 PR2 — provider registry CRUD (shipped)
+
+`providers` already existed as a table and `resolveProvider()` already read
+from it, but nothing let a user see or change one short of editing the
+database directly — changing which model a stage used meant `sqlite3
+data/viceroy.db`.
+
+| Piece | Where |
+| ----- | ----- |
+| Zod schema + CRUD functions, one default per kind enforced in a transaction | `lib/providers.ts` |
+| `GET`/`POST`, `PATCH`/`DELETE` | `app/api/providers/`, `app/api/providers/[id]/` |
+| Tabbed management screen, one tab per provider kind | `app/providers/page.tsx`, `app/providers/providers-view.tsx` |
+| Nav link from the home page | `app/page.tsx` |
+
+**API keys are never sent back over the wire.** `listProviders`/the create and
+update functions all pass rows through a `redact()` step that drops `apiKey`
+and replaces it with `hasApiKey: boolean`; the real value stays in the
+database and only a client's own explicit "replace it" input reaches the
+server again. The UI's edit form leaves the key field blank and only sends a
+patched `apiKey` if something was typed into it.
+
+**Exactly one default per kind, enforced where the write happens.** Marking a
+provider default clears `isDefault` on its siblings of the same kind inside
+the same `db.transaction()` as the write — `resolveProvider()` picks whichever
+row has `isDefault` and falls back to any provider of that kind, so two
+defaults would make that pick order-dependent instead of deliberate.
+
+**The only provider of a kind cannot be deleted.** Every stage calls
+`resolveProvider()` for its kind unconditionally; deleting the last one would
+turn "no provider configured" into a job failure discovered mid-pipeline
+instead of a screen that just refused the click.
+
+**Caught and fixed before shipping: `z.object(...).partial()` still applies
+a field's `.default()` to a key the caller never sent.** `providerSchema` and
+all three `lib/styles.ts` schemas originally had `.default()` on fields like
+`isDefault`, `targetSceneCount` and `defaultParams`; a PATCH that only meant
+to change `model` would have silently reset those to their defaults, because
+`.partial()` makes the *key* optional but does not remove the default that
+fires when the key is absent. Fixed by dropping every `.default()` from
+fields used in a `.partial()` schema and letting an omitted field fall
+through to the database column's own default instead, which only fires on
+insert. Both `lib/providers.test.ts` and `lib/styles.test.ts` now assert
+`schema.partial().parse(partialInput)` does not produce the un-sent keys.
+
+17 new tests (`lib/providers.test.ts`, plus the partial-schema regression
+tests added to `lib/styles.test.ts`) — 260 tests pass, `tsc --noEmit` clean,
+`next build` succeeds. Verified in the browser against the real seeded
+providers: created a throwaway default LLM provider (confirmed it correctly
+demoted `sd-api (local)`'s default badge), deleted it, and restored
+`sd-api (local)` to default afterward so the real data was left as found.
+
 ## Known gaps
 
 - **Editing a built-in prompt template has no upgrade path.** `seed()` uses
@@ -415,18 +466,18 @@ against a throwaway narrative style with no data left behind afterward.
 
 ## What to pick up next
 
-**M3 PR2 — provider registry.** `providers` already exists as a table
-(`kind`, `baseUrl`, `apiKey`, `model`, `defaultParams`, `isDefault`) and
-`resolveProvider()` already reads it; there is no screen to see or edit a
-provider today, so changing which model a stage uses means editing the
-database directly. Shape mirrors PR1: zod schema, CRUD functions, routes, a
-tab or a separate screen.
+**M3 PR3 — preferences and/or the prompt-template editor.** The two pieces of
+M3's plan item still with no screen. `preferences` already exists and is read
+by `createProject` (`defaultNarrativeStyle`/`defaultVoiceStyle`/
+`defaultImageStyle`/`defaultMode`) but nothing lets a user change them outside
+the database. The prompt-template editor needs the "reset to built-in"
+mechanism the Known gaps section below already flags before it ships, since
+without it an editor is a trap for anyone who edits a built-in template and
+later wants it back — that mechanism is worth building alongside the editor
+itself rather than bolting on after.
 
-Also open from PR1: **LLM-authoring for styles** (generate a style from a
-text brief), and **M3's prompt-template editor** — which needs the "reset to
-built-in" mechanism the Known gaps section below already flags, since without
-it an editor is a trap for anyone who edits a built-in template and later
-wants it back.
+Also open: **LLM-authoring for styles** (generate a style from a text brief,
+flagged as out of scope in PR1).
 
 ## Environment as found (2026-08-11)
 
