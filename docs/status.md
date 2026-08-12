@@ -5,19 +5,20 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-11 — M1 PR2 shipped._
+_Last updated: 2026-08-12 — M1 PR4 shipped and verified end to end._
 
 ---
 
 ## Where things stand
 
-Idea → synopsis → story → evaluation runs end to end, in the browser, against
-a real model. Images, voiceover, captions and render are not built yet.
+Idea → synopsis → story → evaluation → scenes → cast → images → one-shot
+narration → word-timed captions runs end to end against real models. **Only the
+video render is left** before M1 is done.
 
 | Milestone | Status |
 | --------- | ------ |
-| M0 — Environment gate | **Complete** except the audio-path confirmation, which PR4 does as it builds on it |
-| M1 — Thin end-to-end slice (idea → MP4) | **In progress** — PR3 of 5 shipped |
+| M0 — Environment gate | **Complete** — both audio paths confirmed on real audio by PR4 |
+| M1 — Thin end-to-end slice (idea → MP4) | **In progress** — PR4 of 5 shipped; only the render remains |
 | M2 — Manual mode and review surfaces | Not started |
 | M3 — Management screens | Not started |
 | M4 — Output control | Not started |
@@ -213,6 +214,45 @@ exceeding it does not fail cleanly — it wedges the TTS model uncancellably
 until sd-api is restarted. See finding F18 for the measurements behind the
 number. This is a requirement of running viceroy, not a preference.
 
+## M1 PR4 — narration and captions (shipped)
+
+| Piece | Where |
+| ----- | ----- |
+| Number expansion for matching | `lib/pipeline/numbers.ts` |
+| ASR-to-authored alignment | `lib/pipeline/align.ts` |
+| Stages 7–8 | `lib/pipeline/voiceover.ts` |
+| Narration player, cue list, voice redirection | `app/projects/[id]/` |
+
+### Verified on real audio
+
+328-word narration, `qwen3-tts-voicedesign` through the task runner, aligned
+against `parakeet-tdt`. Both stages succeeded on their first attempt:
+
+| Measure | Result |
+| ------- | ------ |
+| Audio | 178.96 s, 24 kHz mono, 8.2 MB (ffprobe-confirmed) |
+| Delivery | 110 wpm — inside the plausibility guard |
+| Cues | 90, spanning 0.16 s → 178.88 s |
+| Anchored to real ASR words | 89 / 90 |
+| Caption text vs authored narration | **identical, all 328 words** |
+| Scene timeline | 8 scenes tiling 0.2 s → 178.9 s with no gaps or overlaps |
+
+**F5 is fixed, and the transcript shows exactly why it mattered.** 8 of 90 cues
+differ from what ASR heard, and in every case the authored text is the correct
+one:
+
+| Caption shows | ASR heard |
+| ------------- | --------- |
+| `holding one hundred and four` | `holding104` |
+| `2015,` | `October12,2015,` |
+| `at 9:01 AM,` | `at9.01` |
+| `largest heist in U.S.` | `largest in U.S.` (dropped a word) |
+| `Henry freeze-frames, his` | `Henry frames, his` |
+
+The first of those is the POC's exact failure — it shipped `Right at317,` over
+an authored "Right at three seventeen." Here the timing comes from the
+transcript and the wording from the writer, which is the whole point.
+
 ## Known gaps
 
 - **Editing a built-in prompt template has no upgrade path.** `seed()` uses
@@ -225,28 +265,21 @@ number. This is a requirement of running viceroy, not a preference.
 
 ## What to pick up next
 
-**M1 PR4** — the one-shot voiceover and subtitle alignment. This is the part
-the POC never got working, so read findings **F1, F2, F3, F5 and F6** before
-writing any of it. Specifically:
+**M1 PR5 — the Remotion render.** Images + narration + cues → a 1080×1920 MP4.
+That is the last piece of M1, and M1's definition of done is an actual file,
+not a passing test.
 
-- speech through `POST /v1/audio/tasks/run` only, never `/v1/audio/speech`
-- ASR offsets divided by `ASR_SAMPLE_RATE`, with the drift guard
-- align ASR words *against* the authored text and keep the authored wording —
-  F5 is the one the POC left unfixed, and it is a stage-8 requirement here
-- verify acoustically (median F0), never by file size
+What it can rely on, all now measured rather than assumed:
 
-**Numbers are the hard part of that alignment, and there is a real tension in
-it.** `story.write` asks for numbers written as spoken words, because that is
-what makes TTS pronounce them correctly. But ASR normalises spoken numbers
-*back* to digits, so the authored "nineteen eighty-seven" meets a transcript
-saying "1987" and a naive word-by-word match fails exactly there.
+- `voiceovers.durationMs` and a 24 kHz mono WAV on disk
+- `subtitle_cues` with authored text and start/end in ms, one row per caption
+- `scenes.startMs` / `scenes.endMs` tiling the timeline with no gaps
+- source frames at 432×768, to be upscaled to 1080×1920 (F4)
+- assertions must use `ffprobe`, never file hashes (F7)
 
-Observed on the first Nemo run: the narration came back with `1987`, `$50,000`
-and `1992` as digits, so the instruction is only partly obeyed today. Both
-forms will occur in practice. The alignment therefore has to match words to
-digits rather than assume either form — do not "fix" this by dropping the
-spoken-words instruction, which would trade a solvable alignment problem for an
-unsolvable pronunciation one.
+Budget for a full run on this hardware, from the two real end-to-end runs:
+**~9 min images + ~3 min narration + ~4 min story and extraction ≈ 16 minutes**
+for a 330-word, 8-scene video.
 
 ## Environment as found (2026-08-11)
 

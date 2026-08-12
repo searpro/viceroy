@@ -376,6 +376,42 @@ would have made this a five-minute diagnosis.
 narration, a large image batch, a video model — needs this dispatcher. It is
 set once on the client, so new call sites inherit it.
 
+## F20 — sd-api's own proxy had the same 300 s cap, making F18's fix unreachable
+
+F19 fixed viceroy's client. It changed nothing, because sd-api's proxy to its
+engines used bare global `fetch` too — same undici default, same 300 s, one
+layer further in.
+
+The consequence is worth stating plainly: **`audio_request_timeout_ms` was
+settable to any value but could never take effect above 300000.** The engine
+kept generating and the proxy had already given up, so raising it to 900000
+(F18) was correct and inert. The symptom was a 502
+`AUDIO_SERVER_UNAVAILABLE` — "could not reach audiocpp_server" — while
+audiocpp_server was alive and working.
+
+Four call sites were affected: three in `src/routes/audio.ts` and one in
+`src/routes/llm.ts`. The LLM one had never fired only because no completion
+had yet run past five minutes.
+
+**Patched in sd-api** (`~/projects/sd-api`), with the user's agreement:
+
+- `src/util/upstream-fetch.ts` — undici `fetch` with an `Agent` cached per
+  timeout, so pooling survives.
+- Each proxy now bounded by its engine's own guard: `audioRequestTimeoutMs`,
+  and a new `llmRequestTimeoutMs` following the existing config convention
+  (zod schema, `config/default.json`, `SD_LLM_REQUEST_TIMEOUT_MS`).
+- `undici` added as a dependency; `test/upstream-fetch.test.ts` pins the
+  behaviour at millisecond scale.
+
+All 210 existing sd-api tests still pass.
+
+**The general lesson.** This default sits at *every* Node hop, and it fails in
+the most misleading way available: the caller reports the callee unreachable
+while the callee is working normally. When a long inference fails, check each
+hop between the model and the caller — and check the elapsed time first. Four
+consecutive failures at 301 s were the entire diagnosis; the error messages
+pointed at memory, at the engine, and at the model, and were wrong every time.
+
 ---
 
 ## Local environment
