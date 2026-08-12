@@ -5,7 +5,7 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M3 PR2 shipped.** Provider registry CRUD._
+_Last updated: 2026-08-12 — **M3 PR3 shipped.** Prompt-template editor with reset-to-built-in._
 
 ---
 
@@ -24,7 +24,7 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | M0 — Environment gate | **Complete** — both audio paths confirmed on real audio by PR4 |
 | M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
 | M2 — Manual mode and review surfaces | PR1 + PR2 + PR3 shipped |
-| M3 — Management screens | PR1 + PR2 shipped |
+| M3 — Management screens | PR1 + PR2 + PR3 shipped |
 | M4 — Output control | Not started |
 | M5 — Packaging | Not started |
 
@@ -454,30 +454,70 @@ providers: created a throwaway default LLM provider (confirmed it correctly
 demoted `sd-api (local)`'s default badge), deleted it, and restored
 `sd-api (local)` to default afterward so the real data was left as found.
 
+## M3 PR3 — prompt-template editor with reset-to-built-in (shipped)
+
+Closes the gap the previous two PRs' status notes both pointed at: `seed()`'s
+`onConflictDoNothing` means an improved built-in template never reaches an
+existing database on its own, and there was no screen to see or fix that.
+
+| Piece | Where |
+| ----- | ----- |
+| List with a computed `isEdited` flag, edit, reset-to-built-in | `lib/promptTemplates.ts` |
+| `GET` list, `POST` edit or `{action: "reset"}` | `app/api/prompt-templates/`, `app/api/prompt-templates/[key]/` |
+| One card per template, grouped by section, with variable hints | `app/prompt-templates/page.tsx`, `app/prompt-templates/prompt-templates-view.tsx` |
+| Nav link from the home page | `app/page.tsx` |
+
+**No `isEdited` column — it's a comparison against this file, not stored
+state.** `DEFAULT_PROMPT_TEMPLATES` (`lib/prompts/defaults.ts`) is always
+available at runtime, so whether a row still reads exactly as seeded is a
+string comparison against it rather than a flag that could itself drift out
+of sync. The same comparison is what "reset to built-in" writes back.
+
+**Reset restores every built-in field together, not just `template`.** The
+first version of this only reset `template` and validated the new text
+against the row's own (possibly also stale) `variables` column — which is
+exactly the bug this PR exists to fix, just moved one column over. Caught
+before shipping via a real example: `elements.scene`'s row in the actual dev
+database predated M2 PR2's addition of `{{direction}}` to that template, so
+resetting it failed with "references `{{direction}}`, which is not a
+documented variable" — the row's `variables` list was stale too. Fixed by
+having reset overwrite `section`/`label`/`description`/`variables`/`template`
+together, straight from `defaults.ts`, with a regression test that stales the
+`variables` column on purpose and asserts reset still succeeds.
+
+**Editing is still validated against declared variables.** A plain edit (not
+a reset) may only reference `{{name}}`s already in that row's `variables`
+list — the stage that renders it supplies exactly that set, so anything else
+would reach the model as a literal, unfilled placeholder instead of failing
+loudly.
+
+**This PR's own verification run found and fixed real drift in the actual
+database**, not just test fixtures: every one of the 10 seeded templates in
+`data/viceroy.db` was checked via the live API, and `elements.scene` came
+back `isEdited: true` — a genuine consequence of the gap this PR closes,
+predating any of this session's work. Reset via the same endpoint the UI
+uses brought it (and confirmed all 9 others were already) in sync; a repeat
+listing afterward showed `isEdited: false` across the board.
+
+6 new tests (`lib/promptTemplates.test.ts`) — 266 tests pass, `tsc --noEmit`
+clean, `next build` succeeds.
+
 ## Known gaps
 
-- **Editing a built-in prompt template has no upgrade path.** `seed()` uses
-  `onConflictDoNothing`, deliberately, so a re-seed never clobbers a template
-  someone has tuned. The cost is that improving a *built-in* template does not
-  reach an existing database — during development the fix is to wipe `data/`
-  and re-seed, which is not a fix for a real install. M3's prompt-template
-  editor needs a "reset this template to the built-in" action, and probably a
-  record of whether a row has been edited at all.
+None open at the moment.
 
 ## What to pick up next
 
-**M3 PR3 — preferences and/or the prompt-template editor.** The two pieces of
-M3's plan item still with no screen. `preferences` already exists and is read
-by `createProject` (`defaultNarrativeStyle`/`defaultVoiceStyle`/
-`defaultImageStyle`/`defaultMode`) but nothing lets a user change them outside
-the database. The prompt-template editor needs the "reset to built-in"
-mechanism the Known gaps section below already flags before it ships, since
-without it an editor is a trap for anyone who edits a built-in template and
-later wants it back — that mechanism is worth building alongside the editor
-itself rather than bolting on after.
+**M3 PR4 — preferences.** The last M3 plan item with no screen. `preferences`
+already exists and is read by `createProject`
+(`defaultNarrativeStyle`/`defaultVoiceStyle`/`defaultImageStyle`/
+`defaultMode`) but nothing lets a user change them outside the database. This
+is the smallest of the four M3 PRs — four known keys, no dynamic schema per
+kind the way styles/providers/templates each needed.
 
-Also open: **LLM-authoring for styles** (generate a style from a text brief,
-flagged as out of scope in PR1).
+After that, M3 is fully shipped. Also open, not part of the original M3 plan
+item but flagged along the way: **LLM-authoring for styles** (generate a
+style from a text brief, out of scope in PR1).
 
 ## Environment as found (2026-08-11)
 

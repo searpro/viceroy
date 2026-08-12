@@ -33,6 +33,9 @@ export default async function Home() {
           <Link href="/providers" className="transition hover:text-white/70">
             providers
           </Link>
+          <Link href="/prompt-templates" className="transition hover:text-white/70">
+            prompts
+          </Link>
           <span>
             sd-api{" "}
             <span className={healthy ? "text-emerald-400" : "text-red-400"}>
