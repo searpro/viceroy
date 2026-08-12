@@ -20,11 +20,15 @@
     "check": "pnpm typecheck && pnpm test"
   },
   "dependencies": {
+    "@remotion/bundler": "^4.0.508",
+    "@remotion/media-utils": "^4.0.508",
+    "@remotion/renderer": "^4.0.508",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
     "next": "^16.3.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "remotion": "^4.0.508",
     "undici": "^8.10.0",
     "zod": "^4.4.3"
   },
@@ -44,7 +48,7 @@
     "drizzle-kit": "^0.31.10",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.12",
-    "typescript": "^7.0.2",
+    "typescript": "^5.9.3",
     "vitest": "^4.1.10"
   }
 }

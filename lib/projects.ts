@@ -8,6 +8,7 @@ import {
   narrativeStyles,
   preferences,
   projects,
+  renders,
   scenes,
   subtitleCues,
   voiceovers,
@@ -124,6 +125,12 @@ export function getProjectDetail(db: Db, projectId: string) {
       .all(),
     characters: db.select().from(characters).where(eq(characters.projectId, projectId)).all(),
     voiceover: db.select().from(voiceovers).where(eq(voiceovers.projectId, projectId)).get(),
+    render: db
+      .select()
+      .from(renders)
+      .where(eq(renders.projectId, projectId))
+      .orderBy(desc(renders.createdAt))
+      .get(),
     cues: db
       .select()
       .from(subtitleCues)
@@ -143,6 +150,7 @@ export const regenerateSchema = z.object({
     "scene_images",
     "voiceover",
     "subtitle_align",
+    "render",
   ]),
   direction: z.string().trim().max(2000).optional(),
   /** Voice-design cues, when re-narrating with a different delivery. */

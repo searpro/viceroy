@@ -211,9 +211,12 @@ export async function runSubtitleAlign(ctx: StageContext): Promise<void> {
   ctx.progress(1);
   ctx.log(`${cueIndex} caption cue(s) across ${sceneRows.length} scene(s)`);
 
-  // PR5 replaces this with the render stage.
-  awaitReview(ctx.db, projectId);
-  void project;
+  if (project.mode === "manual") {
+    awaitReview(ctx.db, projectId);
+    ctx.log("Stopping for caption review (manual mode)");
+    return;
+  }
+  enqueue(ctx.db, { type: "render", projectId });
 }
 
 /** Slowest and fastest plausible narration, in words per minute. */

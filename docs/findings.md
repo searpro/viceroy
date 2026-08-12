@@ -412,6 +412,35 @@ hop between the model and the caller — and check the elapsed time first. Four
 consecutive failures at 301 s were the entire diagnosis; the error messages
 pointed at memory, at the engine, and at the model, and were wrong every time.
 
+## F21 — TypeScript 7 breaks Remotion's bundler
+
+`@remotion/bundler` 4.0.508 reads the project's tsconfig through the
+TypeScript 5 API:
+
+```js
+const tsConfig = typescript.readConfigFile(tsConfigPath, typescript.sys.readFile);
+```
+
+TypeScript **7.0.2** — the native port, which `pnpm add -D typescript`
+installs by default now — exports neither:
+
+```
+typescript version: 7.0.2   has sys: undefined   has readConfigFile: undefined
+```
+
+so bundling dies with `TypeError: Cannot read properties of undefined
+(reading 'readFile')` after the 93 MB Chrome download, several minutes into
+the stage.
+
+**Viceroy pins `typescript@^5.9`.** Nothing here needs TypeScript 7, and the
+whole project typechecks unchanged on 5.9.3. Revisit only when Remotion
+supports the new API.
+
+Worth knowing generally: this is the second time a default that arrived
+*silently* with a fresh install has cost time (Node's 300 s fetch was the
+first). When a toolchain package spans the ecosystem, pin it rather than
+taking whatever `add` resolves to.
+
 ---
 
 ## Local environment
