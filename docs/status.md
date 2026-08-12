@@ -5,7 +5,7 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M2 PR2 shipped.** Per-scene and per-character LLM-directed regeneration._
+_Last updated: 2026-08-12 — **M2 PR3 shipped.** Story redo honours the direction field._
 
 ---
 
@@ -23,7 +23,7 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | --------- | ------ |
 | M0 — Environment gate | **Complete** — both audio paths confirmed on real audio by PR4 |
 | M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
-| M2 — Manual mode and review surfaces | PR1 + PR2 shipped |
+| M2 — Manual mode and review surfaces | PR1 + PR2 + PR3 shipped |
 | M3 — Management screens | Not started |
 | M4 — Output control | Not started |
 | M5 — Packaging | Not started |
@@ -335,11 +335,30 @@ for `regenerate()`'s clear-the-right-row behaviour) — 239 tests pass, `tsc
 real "waitress" project: per-scene and per-character direction fields render
 and capture input correctly.
 
-**Not done:** redirecting `story` itself — `runStory` currently always
-writes from scratch and ignores `payload.direction` even though the field
-exists on the wire. That's an M1-era gap, not new to this PR, and it means
-"Redo story" with text typed into the direction field silently does nothing
-with it today.
+**Not done (at the time):** redirecting `story` itself — `runStory` always
+wrote from scratch and ignored `payload.direction` even though the field
+existed on the wire. Fixed in PR3, below.
+
+## M2 PR3 — story redo honours direction (shipped)
+
+`runStory` ignored `payload.direction` entirely — "Redo story" with text typed
+into the direction field silently did nothing with it, while the identical
+control on the synopsis panel worked, because `runSynopsis` already branched
+between a `.generate` and a `.refine` template and `runStory` never got the
+same treatment.
+
+| Piece | Where |
+| ----- | ----- |
+| `story.refine` template, mirrors `synopsis.refine` | `lib/prompts/defaults.ts` |
+| `runStory` picks `story.write` vs `story.refine` on `story && direction` | `lib/pipeline/story.ts` |
+
+No UI change — the direction field and "Redo story" button already existed;
+they simply reached a stage that ignored their input. `pnpm db:seed` was run
+against the real dev database to add the one new template row (additive only,
+`onConflictDoNothing` — confirmed nothing else was inserted).
+
+1 new test (`lib/pipeline/story.test.ts`) — 240 tests pass, `tsc --noEmit`
+clean, `next build` succeeds.
 
 ## Known gaps
 

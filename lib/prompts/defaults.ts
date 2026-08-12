@@ -126,6 +126,41 @@ Write the complete narration. Requirements:
 Output only the narration text.`,
   },
   {
+    key: "story.refine",
+    section: "Story",
+    label: "Refine story",
+    description: "Rewrites the current narration under a user's direction.",
+    variables: pick(
+      "story",
+      "direction",
+      "narrativeStyle",
+      "writingGuidance",
+      "deliveryCues",
+      "targetWordCount",
+    ),
+    template: `You are revising the narration for a short video in the
+"{{narrativeStyle}}" style.
+
+Style guidance:
+{{writingGuidance}}
+
+It will be read aloud by a single narrator. Delivery:
+{{deliveryCues}}
+
+Current narration:
+{{story}}
+
+The writer has asked for this change:
+{{direction}}
+
+Apply that change. Keep everything the direction does not touch — this is a
+revision, not a fresh draft. Hold to about {{targetWordCount}} words, keep it
+continuous spoken text with one narrator, write numbers/dates/times as words,
+and use no headings, scene labels, stage directions or bullet points.
+
+Output only the revised narration.`,
+  },
+  {
     key: "story.evaluate",
     section: "Story",
     label: "Evaluate story",

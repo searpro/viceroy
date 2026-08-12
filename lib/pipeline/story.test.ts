@@ -120,6 +120,29 @@ describe("runStory", () => {
     await expect(runStory(contextFor(job, [{ content: "x" }]))).rejects.toThrow(/no synopsis/);
   });
 
+  it("uses the refine template once a story exists and a direction is given", async () => {
+    const { project } = startProject();
+    claim(db);
+    db.update(projects)
+      .set({ synopsis: "A synopsis.", story: "Existing story." })
+      .where(eq(projects.id, project.id))
+      .run();
+
+    const job = enqueue(db, {
+      type: "story",
+      projectId: project.id,
+      payload: { direction: "make it colder" },
+    });
+    // Refine's template references {{direction}}; rendering would throw if the
+    // stage picked the write template while a direction was supplied.
+    await expect(
+      runStory(contextFor(job, [{ content: "Colder story." }])),
+    ).resolves.toBeUndefined();
+    expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.story).toBe(
+      "Colder story.",
+    );
+  });
+
   // Evaluation is not gated on auto mode: a manual reviewer should see the
   // evaluator's read alongside the draft.
   it("queues evaluation even in manual mode", async () => {

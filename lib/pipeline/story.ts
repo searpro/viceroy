@@ -56,8 +56,13 @@ export async function runStory(ctx: StageContext): Promise<void> {
 
   if (!project.synopsis) throw new Error(`Project ${projectId} has no synopsis to elaborate`);
 
-  const prompt = renderPrompt(ctx.db, "story.write", {
+  const direction = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction : "";
+  const key = project.story && direction ? "story.refine" : "story.write";
+
+  const prompt = renderPrompt(ctx.db, key, {
     synopsis: project.synopsis,
+    story: project.story ?? "",
+    direction,
     narrativeStyle: narrativeStyle.name,
     writingGuidance: narrativeStyle.writingGuidance,
     deliveryCues: voiceStyle.deliveryCues,
@@ -65,7 +70,7 @@ export async function runStory(ctx: StageContext): Promise<void> {
     targetWordCount: String(narrativeStyle.targetWordCount),
   });
 
-  ctx.log(`Writing story with ${provider.model}`);
+  ctx.log(`Writing story with ${provider.model} (${key})`);
   ctx.progress(0.1);
   checkAbort(ctx);
 
