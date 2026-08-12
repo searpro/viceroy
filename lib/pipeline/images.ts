@@ -49,6 +49,11 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
     ctx.log("Every scene already has an image");
   }
 
+  // A per-scene redo clears just that scene's image before enqueueing, so
+  // extra direction is scoped to it rather than leaking into a bulk run.
+  const jobDirection = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction.trim() : "";
+  const jobSceneId = typeof ctx.job.payload.sceneId === "string" ? ctx.job.payload.sceneId : undefined;
+
   for (const [position, scene] of pending.entries()) {
     checkAbort(ctx);
     if (!scene.imagePrompt) throw new Error(`Scene ${scene.index} has no image prompt`);
@@ -60,6 +65,8 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
       .map((id) => refByCharacter.get(id))
       .filter((name): name is string => Boolean(name));
 
+    const direction = jobDirection && (!jobSceneId || jobSceneId === scene.id) ? `, ${jobDirection}` : "";
+
     ctx.log(
       `Generating image for scene ${scene.index + 1}/${all.length}` +
         (refs.length > 0 ? ` with ${refs.length} character reference(s)` : ""),
@@ -67,7 +74,7 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
 
     const bytes = await ctx.sdApi.image.generate(
       {
-        prompt: `${imageStyle.promptPrefix}${scene.imagePrompt}${imageStyle.promptSuffix}`,
+        prompt: `${imageStyle.promptPrefix}${scene.imagePrompt}${direction}${imageStyle.promptSuffix}`,
         negative_prompt: imageStyle.negativePrompt || undefined,
         model: imageStyle.model,
         width: ctx.config.sourceImage.width,
@@ -131,14 +138,24 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
   const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
   const pending = cast.filter((character) => !character.imageAssetId);
 
+  // A per-character redo clears just that character's portrait before
+  // enqueueing, so extra direction is scoped to it rather than the whole cast.
+  const jobDirection = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction.trim() : "";
+  const jobCharacterId =
+    typeof ctx.job.payload.characterId === "string" ? ctx.job.payload.characterId : undefined;
+
   for (const [position, character] of pending.entries()) {
     checkAbort(ctx);
 
-    const prompt = renderPrompt(ctx.db, "character.portrait", {
-      characterName: character.name,
-      characterDescription: character.appearanceTag ?? character.description,
-      visualGuidance: narrativeStyle.visualGuidance,
-    });
+    const direction =
+      jobDirection && (!jobCharacterId || jobCharacterId === character.id) ? `, ${jobDirection}` : "";
+
+    const prompt =
+      renderPrompt(ctx.db, "character.portrait", {
+        characterName: character.name,
+        characterDescription: character.appearanceTag ?? character.description,
+        visualGuidance: narrativeStyle.visualGuidance,
+      }) + direction;
 
     ctx.log(`Generating portrait for ${character.name}`);
     const bytes = await ctx.sdApi.image.generate(

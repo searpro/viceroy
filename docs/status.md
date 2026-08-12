@@ -5,7 +5,7 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M2 PR1 shipped.** Stalled projects self-diagnose and can be resumed from the UI._
+_Last updated: 2026-08-12 — **M2 PR2 shipped.** Per-scene and per-character LLM-directed regeneration._
 
 ---
 
@@ -23,7 +23,7 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | --------- | ------ |
 | M0 — Environment gate | **Complete** — both audio paths confirmed on real audio by PR4 |
 | M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
-| M2 — Manual mode and review surfaces | PR1 shipped — outstanding work: PR2 (regenerate/direct UI) |
+| M2 — Manual mode and review surfaces | PR1 + PR2 shipped |
 | M3 — Management screens | Not started |
 | M4 — Output control | Not started |
 | M5 — Packaging | Not started |
@@ -293,6 +293,53 @@ succeeds.
 that starts a real generation run (~3 min for the waitress project, ~15 min
 for the remaining Koodathai pipeline), left for the user to trigger
 deliberately rather than as a side effect of this PR.
+
+## M2 PR2 — per-scene and per-character redo (shipped)
+
+Whole-stage regenerate already existed for synopsis, story and voiceover. What
+was missing was any way to redo one scene's visual prompt, one scene's image,
+or one character's portrait individually — the only lever was "regenerate the
+whole stage," and `elements`/`character_images`/`scene_images` all skip rows
+that already have an artifact, so a whole-stage regenerate against a fully
+populated project does nothing at all.
+
+| Piece | Where |
+| ----- | ----- |
+| `regenerateSchema` gains `sceneId`/`characterId` | `lib/projects.ts` |
+| `regenerate()` clears the one targeted artifact before enqueueing | `lib/projects.ts` |
+| Direction threaded into the LLM prompt for a redone scene | `lib/pipeline/elements.ts`, `lib/prompts/defaults.ts` (`elements.scene`) |
+| Direction appended to the diffusion prompt for a redone scene/character image | `lib/pipeline/images.ts` |
+| Per-scene "Redo prompt" / "Redo image", per-character "Redo portrait", each with its own direction field | `app/projects/[id]/project-view.tsx` |
+
+**The mechanism is deliberately the same one PR1 already relies on:**
+`regenerate()` clears just the targeted row's artifact (`imagePrompt`, or
+`imageAssetId`, or a character's portrait fields) before enqueueing the stage.
+The stage itself needs no knowledge of "scoped" redos — its existing
+`pending = rows.filter(row => !row.artifact)` loop picks up the one row that
+was cleared, whether that happened because nothing existed yet or because a
+user asked for a specific redo. `sceneId`/`characterId` in the job payload
+then scope any extra `direction` text to that one row, so a redo of scene 3
+cannot leak its direction into scene 4 if both happened to be pending at once.
+
+**Image-generation direction is not an LLM call.** For `scene_images` and
+`character_images`, `direction` is appended directly to the diffusion prompt
+(`imagePrompt + ", " + direction`) rather than routed through an LLM rewrite —
+one fewer inference round trip, and it matches how the rest of the image
+prompt already reads: comma-separated visual phrases. For `elements` (the
+storyboard/imagePrompt-writing stage), `direction` **is** an LLM instruction,
+threaded into the `elements.scene` prompt template as free text.
+
+9 new tests (elements/images direction-scoping, plus a new `lib/projects.test.ts`
+for `regenerate()`'s clear-the-right-row behaviour) — 239 tests pass, `tsc
+--noEmit` clean, `next build` succeeds. Verified in the browser against the
+real "waitress" project: per-scene and per-character direction fields render
+and capture input correctly.
+
+**Not done:** redirecting `story` itself — `runStory` currently always
+writes from scratch and ignores `payload.direction` even though the field
+exists on the wire. That's an M1-era gap, not new to this PR, and it means
+"Redo story" with text typed into the direction field silently does nothing
+with it today.
 
 ## Known gaps
 

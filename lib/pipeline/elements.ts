@@ -137,6 +137,10 @@ export async function runElements(ctx: StageContext): Promise<void> {
   const castBlock =
     cast.map((c) => `- ${c.name}: ${c.appearanceTag ?? c.description}`).join("\n") || "(nobody)";
 
+  // A per-scene redo clears just that scene's prompt before enqueueing, so it
+  // is the only one "pending" here — the direction applies to it alone.
+  const direction = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction : "";
+
   const pending = sceneRows.filter((scene) => !scene.imagePrompt);
   for (const [position, scene] of pending.entries()) {
     checkAbort(ctx);
@@ -151,6 +155,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
             sceneDescription: scene.description,
             characters: castBlock,
             visualGuidance: narrativeStyle.visualGuidance,
+            direction,
           }),
         },
       ],

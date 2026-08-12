@@ -170,6 +170,40 @@ describe("runElements", () => {
     await expect(runElements(stubContext(db, job, { llm: [CAST] }))).rejects.toThrow(/no story/);
   });
 
+  // A per-scene redo clears only that scene's prompt before enqueueing; the
+  // direction supplied with the job must reach the one scene being redone.
+  it("threads a direction into the visualisation prompt for a redone scene", async () => {
+    const project = await (async () => {
+      const p = projectWithStory();
+      const first = enqueue(db, { type: "elements", projectId: p.id });
+      await runElements(
+        stubContext(db, first, { llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)] }),
+      );
+      return p;
+    })();
+
+    const target = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()[0]!;
+    db.update(scenes)
+      .set({ imagePrompt: null, storyboard: null })
+      .where(eq(scenes.id, target.id))
+      .run();
+
+    const job = enqueue(db, {
+      type: "elements",
+      projectId: project.id,
+      payload: { sceneId: target.id, direction: "make it rain" },
+    });
+
+    const prompts: Record<string, unknown>[] = [];
+    await runElements(
+      stubContext(db, job, { llm: [sceneDetail(9)], onChatJsonRequest: (r) => prompts.push(r) }),
+    );
+
+    expect(prompts).toHaveLength(1);
+    const messages = prompts[0]!.messages as { content: string }[];
+    expect(messages[0]!.content).toContain("make it rain");
+  });
+
   it("carries on when the story has no characters in it", async () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "elements", projectId: project.id });
@@ -253,6 +287,32 @@ describe("runCharacterImages", () => {
     await runCharacterImages(stubContext(db, second, { onImageRequest: (r) => requests.push(r) }));
 
     expect(requests).toHaveLength(0);
+  });
+
+  // A per-character redo clears just that portrait; the direction supplied
+  // with the job must land on that character's prompt.
+  it("appends a direction to the redone character's prompt only", async () => {
+    const project = await elementsOnly();
+    const first = enqueue(db, { type: "character_images", projectId: project.id });
+    await runCharacterImages(stubContext(db, first));
+
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    db.update(characters)
+      .set({ imageAssetId: null, refInputName: null })
+      .where(eq(characters.id, cast[0]!.id))
+      .run();
+
+    const job = enqueue(db, {
+      type: "character_images",
+      projectId: project.id,
+      payload: { characterId: cast[0]!.id, direction: "wearing a red scarf" },
+    });
+
+    const requests: Record<string, unknown>[] = [];
+    await runCharacterImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.prompt).toMatch(/wearing a red scarf$/);
   });
 });
 
@@ -396,6 +456,34 @@ describe("runSceneImages", () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "scene_images", projectId: project.id });
     await expect(runSceneImages(stubContext(db, job))).rejects.toThrow(/no scenes/);
+  });
+
+  // A per-scene redo clears just that scene's image; the direction supplied
+  // with the job must land in that scene's prompt, between the base prompt
+  // and the image style's suffix.
+  it("inserts a direction before the image style's suffix for a redone scene", async () => {
+    const project = await elementsDone();
+    const first = enqueue(db, { type: "scene_images", projectId: project.id });
+    await runSceneImages(stubContext(db, first));
+
+    const target = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()[0]!;
+    db.update(scenes).set({ imageAssetId: null }).where(eq(scenes.id, target.id)).run();
+
+    const job = enqueue(db, {
+      type: "scene_images",
+      projectId: project.id,
+      payload: { sceneId: target.id, direction: "storm clouds overhead" },
+    });
+
+    const requests: Record<string, unknown>[] = [];
+    await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests).toHaveLength(1);
+    const prompt = requests[0]!.prompt as string;
+    expect(prompt).toContain(", storm clouds overhead");
+    expect(prompt.indexOf("storm clouds overhead")).toBeLessThan(
+      prompt.indexOf("shallow depth of field"),
+    );
   });
 
   // The render reads bytes off disk, not out of the database, so the asset row

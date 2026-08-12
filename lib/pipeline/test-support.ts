@@ -25,6 +25,7 @@ export type StubOptions = {
   /** Bytes returned by each image generation, in order. */
   images?: Buffer[];
   onImageRequest?: (request: Record<string, unknown>) => void;
+  onChatJsonRequest?: (request: Record<string, unknown>) => void;
   shouldAbort?: () => boolean;
   /** Override the throwaway data directory, e.g. to assert on written files. */
   dataDir?: string;
@@ -85,7 +86,10 @@ export function stubContext(db: Db, job: Job, options: StubOptions = {}): StageC
     sdApi: {
       llm: {
         chat: async () => ({ content: nextLlm().content ?? "", completionTokens: 10 }),
-        chatJson: async () => nextLlm().json,
+        chatJson: async (request: Record<string, unknown>) => {
+          options.onChatJsonRequest?.(request);
+          return nextLlm().json;
+        },
       },
       image: {
         generate: async (request: Record<string, unknown>) => {

@@ -163,6 +163,10 @@ export const regenerateSchema = z.object({
   direction: z.string().trim().max(2000).optional(),
   /** Voice-design cues, when re-narrating with a different delivery. */
   ttsInstruct: z.string().trim().max(1000).optional(),
+  /** Scopes an "elements" or "scene_images" redo to one scene. */
+  sceneId: z.string().optional(),
+  /** Scopes a "character_images" redo to one character. */
+  characterId: z.string().optional(),
 });
 
 /**
@@ -170,10 +174,30 @@ export const regenerateSchema = z.object({
  *
  * Clears `awaitingReview` so the project is live again — otherwise a project
  * parked for review would stay flagged while a job for it was already running.
+ *
+ * A `sceneId`/`characterId` scopes the redo to one row rather than the whole
+ * stage: its existing artifact is cleared first, which is what makes it the
+ * only thing the stage's own "skip what's already there" logic picks up.
  */
 export function regenerate(db: Db, projectId: string, input: z.infer<typeof regenerateSchema>) {
   const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
   if (!project) throw new Error(`No such project: ${projectId}`);
+
+  if (input.target === "elements" && input.sceneId) {
+    db.update(scenes)
+      .set({ imagePrompt: null, storyboard: null })
+      .where(eq(scenes.id, input.sceneId))
+      .run();
+  }
+  if (input.target === "scene_images" && input.sceneId) {
+    db.update(scenes).set({ imageAssetId: null }).where(eq(scenes.id, input.sceneId)).run();
+  }
+  if (input.target === "character_images" && input.characterId) {
+    db.update(characters)
+      .set({ imageAssetId: null, imagePrompt: null, refInputName: null })
+      .where(eq(characters.id, input.characterId))
+      .run();
+  }
 
   db.update(projects)
     .set({ awaitingReview: false, failureReason: null })
@@ -186,6 +210,8 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
     payload: {
       ...(input.direction ? { direction: input.direction } : {}),
       ...(input.ttsInstruct ? { ttsInstruct: input.ttsInstruct } : {}),
+      ...(input.sceneId ? { sceneId: input.sceneId } : {}),
+      ...(input.characterId ? { characterId: input.characterId } : {}),
     },
   });
 }

@@ -268,7 +268,7 @@ Respond with a single JSON object, no prose around it:
     section: "Elements",
     label: "Visualise a scene",
     description: "Turns one scene's narration into a storyboard and an image prompt.",
-    variables: pick("sceneText", "sceneDescription", "characters", "visualGuidance"),
+    variables: pick("sceneText", "sceneDescription", "characters", "visualGuidance", "direction"),
     template: `Design a single still image for one scene of a narrated video.
 
 What the narrator says over this scene:
@@ -282,6 +282,9 @@ Cast (use these appearance descriptions verbatim if the character appears):
 
 Art direction:
 {{visualGuidance}}
+
+Additional direction from the writer for this redo, if any:
+{{direction}}
 
 Respond with a single JSON object, no prose around it:
 

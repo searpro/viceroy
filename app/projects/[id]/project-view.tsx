@@ -121,6 +121,38 @@ export function ProjectView({ initial }: { initial: Detail }) {
     setBusy(false);
   }
 
+  async function regenerateScene(
+    sceneId: string,
+    target: "elements" | "scene_images",
+    sceneDirection: string,
+  ) {
+    setBusy(true);
+    await fetch(`/api/projects/${detail.project.id}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target, sceneId, direction: sceneDirection.trim() || undefined }),
+    });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
+  async function regenerateCharacter(characterId: string, characterDirection: string) {
+    setBusy(true);
+    await fetch(`/api/projects/${detail.project.id}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        target: "character_images",
+        characterId,
+        direction: characterDirection.trim() || undefined,
+      }),
+    });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
   async function continueProject() {
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
@@ -298,24 +330,14 @@ export function ProjectView({ initial }: { initial: Detail }) {
       {detail.characters.length > 0 && (
         <section className="mt-6 rounded-lg border border-white/10 bg-white/[0.02] p-4">
           <h2 className="text-sm font-medium uppercase tracking-wide text-white/40">Cast</h2>
-          <ul className="mt-3 space-y-2 text-sm">
+          <ul className="mt-3 space-y-3 text-sm">
             {detail.characters.map((character) => (
-              <li key={character.id} className="flex gap-3">
-                {character.imageAssetId && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={`/api/assets/${character.imageAssetId}`}
-                    alt={character.name}
-                    className="h-14 w-14 shrink-0 rounded object-cover"
-                  />
-                )}
-                <div>
-                  <span className="block font-medium">{character.name}</span>
-                  <span className="block text-xs text-white/45">
-                    {character.appearanceTag ?? character.description}
-                  </span>
-                </div>
-              </li>
+              <CharacterRow
+                key={character.id}
+                character={character}
+                busy={busy || active}
+                onRedoPortrait={(direction) => regenerateCharacter(character.id, direction)}
+              />
             ))}
           </ul>
         </section>
@@ -338,38 +360,13 @@ export function ProjectView({ initial }: { initial: Detail }) {
 
           <ul className="mt-3 grid gap-3 sm:grid-cols-2">
             {detail.scenes.map((scene) => (
-              <li
+              <SceneCard
                 key={scene.id}
-                className="overflow-hidden rounded-lg border border-white/10 bg-white/[0.02]"
-              >
-                <div className="relative aspect-[9/16] bg-black/40">
-                  {scene.imageAssetId ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={`/api/assets/${scene.imageAssetId}`}
-                      alt={scene.description}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <span className="absolute inset-0 grid place-items-center text-xs text-white/25">
-                      no image yet
-                    </span>
-                  )}
-                  <span className="absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 font-mono text-[10px]">
-                    {scene.index + 1}
-                  </span>
-                </div>
-                <div className="space-y-1.5 p-3">
-                  <p className="text-xs font-medium">{scene.description}</p>
-                  <p className="text-xs leading-relaxed text-white/55">{scene.voiceoverScript}</p>
-                  {scene.imagePrompt && (
-                    <details className="text-[11px] text-white/35">
-                      <summary className="cursor-pointer">prompt</summary>
-                      <p className="mt-1 leading-relaxed">{scene.imagePrompt}</p>
-                    </details>
-                  )}
-                </div>
-              </li>
+                scene={scene}
+                busy={busy || active}
+                onRedoPrompt={(direction) => regenerateScene(scene.id, "elements", direction)}
+                onRedoImage={(direction) => regenerateScene(scene.id, "scene_images", direction)}
+              />
             ))}
           </ul>
         </section>
@@ -527,6 +524,129 @@ function NarrationPanel({
         </details>
       )}
     </section>
+  );
+}
+
+/**
+ * One scene, with its own direction field.
+ *
+ * The direction is local to the card rather than the page's single shared
+ * input — redoing one scene's prompt should never accidentally also steer
+ * the synopsis rewrite sitting above it.
+ */
+function SceneCard({
+  scene,
+  busy,
+  onRedoPrompt,
+  onRedoImage,
+}: {
+  scene: Scene;
+  busy: boolean;
+  onRedoPrompt: (direction: string) => void;
+  onRedoImage: (direction: string) => void;
+}) {
+  const [direction, setDirection] = useState("");
+
+  return (
+    <li className="overflow-hidden rounded-lg border border-white/10 bg-white/[0.02]">
+      <div className="relative aspect-[9/16] bg-black/40">
+        {scene.imageAssetId ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={`/api/assets/${scene.imageAssetId}`}
+            alt={scene.description}
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <span className="absolute inset-0 grid place-items-center text-xs text-white/25">
+            no image yet
+          </span>
+        )}
+        <span className="absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 font-mono text-[10px]">
+          {scene.index + 1}
+        </span>
+      </div>
+      <div className="space-y-1.5 p-3">
+        <p className="text-xs font-medium">{scene.description}</p>
+        <p className="text-xs leading-relaxed text-white/55">{scene.voiceoverScript}</p>
+        {scene.imagePrompt && (
+          <details className="text-[11px] text-white/35">
+            <summary className="cursor-pointer">prompt</summary>
+            <p className="mt-1 leading-relaxed">{scene.imagePrompt}</p>
+          </details>
+        )}
+
+        <input
+          value={direction}
+          onChange={(event) => setDirection(event.target.value)}
+          placeholder="direct this scene's visuals"
+          className="mt-1 w-full rounded border border-white/10 bg-black/20 px-2 py-1 text-[11px] outline-none placeholder:text-white/25 focus:border-white/25"
+        />
+        <div className="flex gap-2 pt-0.5">
+          <button
+            onClick={() => onRedoPrompt(direction)}
+            disabled={busy}
+            className="rounded border border-white/15 px-2 py-1 text-[11px] transition hover:border-white/35 disabled:opacity-40"
+          >
+            Redo prompt
+          </button>
+          <button
+            onClick={() => onRedoImage(direction)}
+            disabled={busy || !scene.imagePrompt}
+            className="rounded border border-white/15 px-2 py-1 text-[11px] transition hover:border-white/35 disabled:opacity-40"
+          >
+            Redo image
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+/** One cast member, with its own direction field for redoing just their portrait. */
+function CharacterRow({
+  character,
+  busy,
+  onRedoPortrait,
+}: {
+  character: Character;
+  busy: boolean;
+  onRedoPortrait: (direction: string) => void;
+}) {
+  const [direction, setDirection] = useState("");
+
+  return (
+    <li className="flex gap-3">
+      {character.imageAssetId && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={`/api/assets/${character.imageAssetId}`}
+          alt={character.name}
+          className="h-14 w-14 shrink-0 rounded object-cover"
+        />
+      )}
+      <div className="flex-1">
+        <span className="block font-medium">{character.name}</span>
+        <span className="block text-xs text-white/45">
+          {character.appearanceTag ?? character.description}
+        </span>
+        <div className="mt-1.5 flex gap-2">
+          <input
+            value={direction}
+            onChange={(event) => setDirection(event.target.value)}
+            placeholder="direct this portrait"
+            className="flex-1 rounded border border-white/10 bg-black/20 px-2 py-1 text-[11px] outline-none placeholder:text-white/25 focus:border-white/25"
+          />
+          <button
+            onClick={() => onRedoPortrait(direction)}
+            disabled={busy}
+            className="shrink-0 rounded border border-white/15 px-2 py-1 text-[11px] transition hover:border-white/35 disabled:opacity-40"
+          >
+            Redo portrait
+          </button>
+        </div>
+      </div>
+    </li>
   );
 }
 
