@@ -26,10 +26,15 @@ export default async function Home() {
     <main className="mx-auto max-w-3xl px-6 py-14">
       <header className="flex items-baseline justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Viceroy</h1>
-        <span className="text-xs text-white/40">
-          sd-api{" "}
-          <span className={healthy ? "text-emerald-400" : "text-red-400"}>
-            {healthy ? "reachable" : "unreachable"}
+        <span className="flex items-center gap-3 text-xs text-white/40">
+          <Link href="/styles" className="transition hover:text-white/70">
+            styles
+          </Link>
+          <span>
+            sd-api{" "}
+            <span className={healthy ? "text-emerald-400" : "text-red-400"}>
+              {healthy ? "reachable" : "unreachable"}
+            </span>
           </span>
         </span>
       </header>

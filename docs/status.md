@@ -5,7 +5,7 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M2 PR3 shipped.** Story redo honours the direction field._
+_Last updated: 2026-08-12 — **M3 PR1 shipped.** Narrative/voice/image style CRUD._
 
 ---
 
@@ -24,7 +24,7 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | M0 — Environment gate | **Complete** — both audio paths confirmed on real audio by PR4 |
 | M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
 | M2 — Manual mode and review surfaces | PR1 + PR2 + PR3 shipped |
-| M3 — Management screens | Not started |
+| M3 — Management screens | PR1 shipped |
 | M4 — Output control | Not started |
 | M5 — Packaging | Not started |
 
@@ -360,6 +360,49 @@ against the real dev database to add the one new template row (additive only,
 1 new test (`lib/pipeline/story.test.ts`) — 240 tests pass, `tsc --noEmit`
 clean, `next build` succeeds.
 
+## M3 PR1 — narrative/voice/image style CRUD (shipped)
+
+M3's plan item is "Narrative / voice / image style CRUD with LLM authoring."
+This PR ships the CRUD half — list, create, edit, delete — and leaves
+LLM-assisted authoring (generating a new style from a text brief, the way
+`elements`/`story` are LLM-authored) for a follow-up PR, since it is a
+materially separate piece of work (a new prompt template per style kind, plus
+the request/response plumbing) rather than a UI nicety.
+
+| Piece | Where |
+| ----- | ----- |
+| Zod schemas + CRUD functions, one set per style kind | `lib/styles.ts` |
+| `GET`/`POST` per kind, `PATCH`/`DELETE` per row | `app/api/styles/{narrative,voice,image}/` |
+| Tabbed management screen | `app/styles/page.tsx`, `app/styles/styles-view.tsx` |
+| Nav link from the home page | `app/page.tsx` |
+
+**Three static route trees, not one dynamic `[kind]` route.** The three style
+tables share no common shape beyond `id`/`name`/`isBuiltin` — narrative styles
+carry an evaluation checklist, voice styles a TTS instruction, image styles a
+JSON params blob — so a single generically-dispatched handler would need a
+runtime switch on every field anyway. Three concrete route trees calling three
+concrete `lib/styles.ts` functions read directly instead, at the cost of a
+few more files.
+
+**Built-in styles can be edited but not deleted.** Deleting one would either
+orphan any project already built with it or silently degrade to whatever
+`resolveStyle`'s fallback picks — neither is a good default, so deletion of a
+built-in style is refused outright, and deleting a *custom* style still in use
+by a project surfaces better-sqlite3's `SQLITE_CONSTRAINT_FOREIGNKEY` as "used
+by an existing project" rather than the raw driver error.
+
+**The evaluation checklist and image-style default params use a small text
+encoding, not a nested editor.** The checklist is a textarea of `key:
+description` lines; default params is a raw JSON textarea. A structured
+key/value list editor is more UI than a first CRUD pass needs, and both
+encodings are trivial to parse and to get wrong loudly (a bad JSON blob
+reports "must be valid JSON" before the request goes out).
+
+10 new tests (`lib/styles.test.ts`) — 250 tests pass, `tsc --noEmit` clean,
+`next build` succeeds. Verified in the browser: all three tabs render the
+real seeded styles, and a full create → verify → delete round-trip was run
+against a throwaway narrative style with no data left behind afterward.
+
 ## Known gaps
 
 - **Editing a built-in prompt template has no upgrade path.** `seed()` uses
@@ -372,21 +415,18 @@ clean, `next build` succeeds.
 
 ## What to pick up next
 
-**M1 PR5 — the Remotion render.** Images + narration + cues → a 1080×1920 MP4.
-That is the last piece of M1, and M1's definition of done is an actual file,
-not a passing test.
+**M3 PR2 — provider registry.** `providers` already exists as a table
+(`kind`, `baseUrl`, `apiKey`, `model`, `defaultParams`, `isDefault`) and
+`resolveProvider()` already reads it; there is no screen to see or edit a
+provider today, so changing which model a stage uses means editing the
+database directly. Shape mirrors PR1: zod schema, CRUD functions, routes, a
+tab or a separate screen.
 
-What it can rely on, all now measured rather than assumed:
-
-- `voiceovers.durationMs` and a 24 kHz mono WAV on disk
-- `subtitle_cues` with authored text and start/end in ms, one row per caption
-- `scenes.startMs` / `scenes.endMs` tiling the timeline with no gaps
-- source frames at 432×768, to be upscaled to 1080×1920 (F4)
-- assertions must use `ffprobe`, never file hashes (F7)
-
-Budget for a full run on this hardware, from the two real end-to-end runs:
-**~9 min images + ~3 min narration + ~4 min story and extraction ≈ 16 minutes**
-for a 330-word, 8-scene video.
+Also open from PR1: **LLM-authoring for styles** (generate a style from a
+text brief), and **M3's prompt-template editor** — which needs the "reset to
+built-in" mechanism the Known gaps section below already flags, since without
+it an editor is a trap for anyone who edits a built-in template and later
+wants it back.
 
 ## Environment as found (2026-08-11)
 
