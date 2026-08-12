@@ -9,10 +9,12 @@ export function NewProjectForm({
   narrativeStyles,
   voiceStyles,
   imageStyles,
+  defaultMode,
 }: {
   narrativeStyles: Style[];
   voiceStyles: Style[];
   imageStyles: Style[];
+  defaultMode: "auto" | "manual";
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -82,7 +84,7 @@ export function NewProjectForm({
               type="radio"
               name="mode"
               value={option.value}
-              defaultChecked={option.value === "auto"}
+              defaultChecked={option.value === defaultMode}
               className="mt-1 accent-amber-400"
             />
             <span>

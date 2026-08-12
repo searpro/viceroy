@@ -2,6 +2,7 @@ import Link from "next/link";
 import { resolveConfig } from "@/lib/config";
 import { getDb } from "@/lib/db/client";
 import { imageStyles, narrativeStyles, voiceStyles } from "@/lib/db/schema";
+import { listPreferences } from "@/lib/preferences";
 import { listProjects } from "@/lib/projects";
 import { createSdApi } from "@/lib/sdapi";
 import { NewProjectForm } from "./new-project-form";
@@ -19,6 +20,7 @@ export default async function Home() {
     voiceStyles: db.select().from(voiceStyles).all(),
     imageStyles: db.select().from(imageStyles).all(),
   };
+  const defaultMode = listPreferences(db).defaultMode === "manual" ? "manual" : "auto";
 
   const seeded = styles.narrativeStyles.length > 0;
 
@@ -36,6 +38,9 @@ export default async function Home() {
           <Link href="/prompt-templates" className="transition hover:text-white/70">
             prompts
           </Link>
+          <Link href="/preferences" className="transition hover:text-white/70">
+            preferences
+          </Link>
           <span>
             sd-api{" "}
             <span className={healthy ? "text-emerald-400" : "text-red-400"}>
@@ -52,7 +57,7 @@ export default async function Home() {
         </p>
       ) : (
         <section className="mt-10 rounded-lg border border-white/10 bg-white/[0.02] p-6">
-          <NewProjectForm {...styles} />
+          <NewProjectForm {...styles} defaultMode={defaultMode} />
         </section>
       )}
 

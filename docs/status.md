@@ -5,7 +5,7 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M3 PR3 shipped.** Prompt-template editor with reset-to-built-in._
+_Last updated: 2026-08-12 — **M3 PR4 shipped.** Preferences screen; M3 complete._
 
 ---
 
@@ -24,7 +24,7 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | M0 — Environment gate | **Complete** — both audio paths confirmed on real audio by PR4 |
 | M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
 | M2 — Manual mode and review surfaces | PR1 + PR2 + PR3 shipped |
-| M3 — Management screens | PR1 + PR2 + PR3 shipped |
+| M3 — Management screens | **Complete** — PR1 + PR2 + PR3 + PR4 |
 | M4 — Output control | Not started |
 | M5 — Packaging | Not started |
 
@@ -502,22 +502,66 @@ listing afterward showed `isEdited: false` across the board.
 6 new tests (`lib/promptTemplates.test.ts`) — 266 tests pass, `tsc --noEmit`
 clean, `next build` succeeds.
 
+## M3 PR4 — preferences screen (shipped, M3 complete)
+
+The last M3 plan item. `preferences` already existed and `defaultNarrativeStyle`/
+`defaultVoiceStyle`/`defaultImageStyle` were already read by `createProject`,
+but `defaultMode` was seeded and never read anywhere — the new-project
+form's mode radio hardcoded `defaultChecked={option.value === "auto"}`
+regardless of the preference, so setting it would have looked like it worked
+and done nothing. Same failure shape as `runStory` ignoring `direction`
+(M1-era gap, fixed in M2 PR3): a setting that exists in the schema and the
+seed data but that no code path actually consults.
+
+| Piece | Where |
+| ----- | ----- |
+| Known keys, get/set, `defaultMode` value validation | `lib/preferences.ts` |
+| `GET`/`POST` | `app/api/preferences/route.ts` |
+| One dropdown per style kind (backed by the real current styles) + a mode radio | `app/preferences/page.tsx`, `app/preferences/preferences-view.tsx` |
+| Home page now reads `defaultMode` and passes it to the new-project form instead of hardcoding `"auto"` | `app/page.tsx`, `app/new-project-form.tsx` |
+
+**Fixed the dead `defaultMode` preference as part of this PR**, not filed as
+a follow-up gap: it is exactly what a preferences screen exists to make
+meaningful, so shipping the screen without wiring its own fourth field would
+repeat the mistake M2 PR3 already fixed once. `createProjectSchema`'s own
+`z.enum(...).default("auto")` is untouched — the new-project form always
+submits an explicit `mode` now, since its radio's initial selection is
+computed from the preference rather than hardcoded, so the schema default
+never actually fires in practice.
+
+**Style preferences store the style's name, not its id,** matching what
+`resolveStyle()` in `lib/projects.ts` already expected — this PR only added
+the screen, not a new storage shape. A deleted style's name simply falls
+through to `resolveStyle`'s existing "any style of that kind" fallback.
+
+4 new tests (`lib/preferences.test.ts`) — 270 tests pass, `tsc --noEmit`
+clean, `next build` succeeds. Verified in the browser: the real preferences
+(including a custom "Fast Conversational Commentary" narrative/voice style
+pair already in the database) render correctly selected in each dropdown,
+and the home page's mode radio was confirmed reflecting a live preference
+change — the dev server run throughout this session is the user's real app,
+and `defaultMode` had already been changed to `"manual"` by the time this
+was checked, which the form correctly picked up.
+
+**M3 is now fully shipped**: style CRUD, provider registry, prompt-template
+editor with reset-to-built-in, and preferences — all four pieces
+[`docs/PLAN.md`](PLAN.md) named for the milestone.
+
 ## Known gaps
 
 None open at the moment.
 
 ## What to pick up next
 
-**M3 PR4 — preferences.** The last M3 plan item with no screen. `preferences`
-already exists and is read by `createProject`
-(`defaultNarrativeStyle`/`defaultVoiceStyle`/`defaultImageStyle`/
-`defaultMode`) but nothing lets a user change them outside the database. This
-is the smallest of the four M3 PRs — four known keys, no dynamic schema per
-kind the way styles/providers/templates each needed.
+**M3 is complete.** M4 — output control — is next per the plan: caption
+style customisation with a live Remotion preview, resolution selection, and a
+job queue screen (status, logs, abort, retry, delete — `lib/queue/index.ts`
+already has abort/retry/delete; project detail already lists jobs inline,
+but there is no queue-wide view).
 
-After that, M3 is fully shipped. Also open, not part of the original M3 plan
-item but flagged along the way: **LLM-authoring for styles** (generate a
-style from a text brief, out of scope in PR1).
+Also open, not part of M4 but flagged along the way and still unscheduled:
+**LLM-authoring for styles** (generate a style from a text brief, out of
+scope in M3 PR1).
 
 ## Environment as found (2026-08-11)
 
