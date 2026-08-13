@@ -111,6 +111,7 @@ export function JobsView({ initial }: { initial: Job[] }) {
               <Link
                 href={`/projects/${job.project.id}`}
                 className="min-w-0 flex-1 truncate text-white/60 transition hover:text-amber-300"
+                title={job.project.title ?? job.project.idea}
               >
                 {job.project.title ?? job.project.idea}
               </Link>

@@ -87,7 +87,9 @@ export default async function Home() {
                   href={`/projects/${project.id}`}
                   className="flex items-center justify-between gap-4 py-3 transition hover:text-amber-300"
                 >
-                  <span className="truncate text-sm">{project.title ?? project.idea}</span>
+                  <span className="min-w-0 truncate text-sm" title={project.title ?? project.idea}>
+                    {project.title ?? project.idea}
+                  </span>
                   <span className="shrink-0 font-mono text-xs text-white/35">
                     {project.awaitingReview ? "needs review" : project.stage}
                   </span>

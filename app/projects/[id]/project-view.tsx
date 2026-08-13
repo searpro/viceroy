@@ -185,7 +185,9 @@ export function ProjectView({ initial }: { initial: Detail }) {
       </Link>
 
       <header className="mt-4">
-        <h1 className="text-xl font-semibold leading-snug">{project.idea}</h1>
+        <h1 className="line-clamp-2 text-xl font-semibold leading-snug" title={project.idea}>
+          {project.idea}
+        </h1>
         <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-white/40">
           <span>{detail.narrativeStyle?.name}</span>
           <span>·</span>
