@@ -128,6 +128,26 @@ describe("regenerate — per-row scoping", () => {
   });
 });
 
+// A story redo rewrites the narration those scene captions were grouped
+// from — leaving the old rows in place would show stale captions forever,
+// since `runElements` only groups sentences into scenes when none exist.
+describe("regenerate — story redo clears stale scenes", () => {
+  it("removes existing scenes so elements re-groups them from the new story", () => {
+    const { project, scene } = projectWithSceneAndCharacter();
+    regenerate(db, project.id, { target: "story", direction: "make it colder" });
+
+    expect(db.select().from(scenes).where(eq(scenes.id, scene.id)).get()).toBeUndefined();
+  });
+
+  it("still enqueues the story job with the direction", () => {
+    const { project } = projectWithSceneAndCharacter();
+    regenerate(db, project.id, { target: "story", direction: "make it colder" });
+
+    const job = listJobs(db, { projectId: project.id }).find((j) => j.type === "story");
+    expect(job?.payload).toMatchObject({ direction: "make it colder" });
+  });
+});
+
 describe("listAllJobs", () => {
   it("carries the owning project's idea/title alongside each job", () => {
     const project = createProject(db, { idea: "a plumber became mayor by wits" });

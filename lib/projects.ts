@@ -229,6 +229,14 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
   const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
   if (!project) throw new Error(`No such project: ${projectId}`);
 
+  // A story redo rewrites the narration, so the scenes grouped from the old
+  // story are stale — `runElements` only groups sentences into scenes when
+  // none exist yet (resumability for retries), which otherwise left last
+  // run's captions on screen after a "redo story" that changed the text.
+  if (input.target === "story") {
+    db.delete(scenes).where(eq(scenes.projectId, projectId)).run();
+  }
+
   if (input.target === "elements" && input.sceneId) {
     db.update(scenes)
       .set({ imagePrompt: null, storyboard: null })
