@@ -1,4 +1,4 @@
-import { asc, desc, eq } from "drizzle-orm";
+import { asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "./db/client";
 import {
@@ -107,6 +107,37 @@ export function createProject(db: Db, raw: CreateProjectInput) {
 
 export function listProjects(db: Db) {
   return db.select().from(projects).orderBy(desc(projects.createdAt)).limit(50).all();
+}
+
+/**
+ * Every job across every project, newest first, each carrying enough of its
+ * project to be identifiable without a second round trip per row.
+ *
+ * A plain join would return the same handful of project rows once per job;
+ * fetching the distinct set separately and merging in JS is simpler than
+ * writing that join and costs nothing extra since the project count is
+ * always far smaller than the job count.
+ */
+export function listAllJobs(db: Db, opts: { limit?: number } = {}) {
+  const jobRows = listJobs(db, { limit: opts.limit ?? 200 }).sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+  );
+
+  const projectIds = [...new Set(jobRows.map((j) => j.projectId).filter((id): id is string => !!id))];
+  const projectRows =
+    projectIds.length > 0
+      ? db
+          .select({ id: projects.id, idea: projects.idea, title: projects.title })
+          .from(projects)
+          .where(inArray(projects.id, projectIds))
+          .all()
+      : [];
+  const projectById = new Map(projectRows.map((p) => [p.id, p]));
+
+  return jobRows.map((job) => ({
+    ...job,
+    project: job.projectId ? (projectById.get(job.projectId) ?? null) : null,
+  }));
 }
 
 export function getProjectDetail(db: Db, projectId: string) {

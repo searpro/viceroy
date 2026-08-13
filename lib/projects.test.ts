@@ -5,7 +5,7 @@ import { seed } from "./db/seed";
 import type { Db } from "./db/client";
 import { assets, characters, scenes } from "./db/schema";
 import { listJobs } from "./queue";
-import { createProject, regenerate } from "./projects";
+import { createProject, listAllJobs, regenerate } from "./projects";
 
 let db: Db;
 let close: () => void;
@@ -125,5 +125,25 @@ describe("regenerate — per-row scoping", () => {
     expect(db.select().from(scenes).where(eq(scenes.id, scene.id)).get()!.imagePrompt).toBe(
       "a prompt",
     );
+  });
+});
+
+describe("listAllJobs", () => {
+  it("carries the owning project's idea/title alongside each job", () => {
+    const project = createProject(db, { idea: "a plumber became mayor by wits" });
+
+    const jobs = listAllJobs(db);
+    const synopsisJob = jobs.find((j) => j.projectId === project.id && j.type === "synopsis");
+    expect(synopsisJob?.project).toMatchObject({ id: project.id, idea: project.idea });
+  });
+
+  it("orders newest first across projects", () => {
+    createProject(db, { idea: "the first of two ideas" });
+    createProject(db, { idea: "the second of two ideas" });
+
+    const jobs = listAllJobs(db);
+    for (let i = 1; i < jobs.length; i++) {
+      expect(jobs[i - 1]!.createdAt.getTime()).toBeGreaterThanOrEqual(jobs[i]!.createdAt.getTime());
+    }
   });
 });

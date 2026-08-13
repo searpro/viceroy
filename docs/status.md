@@ -5,7 +5,7 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M4 PR1 shipped.** Caption style CRUD with a live Remotion preview._
+_Last updated: 2026-08-12 — **M4 PR2 shipped.** Queue-wide jobs screen._
 
 ---
 
@@ -25,7 +25,7 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
 | M2 — Manual mode and review surfaces | PR1 + PR2 + PR3 shipped |
 | M3 — Management screens | **Complete** — PR1 + PR2 + PR3 + PR4 |
-| M4 — Output control | PR1 shipped |
+| M4 — Output control | PR1 + PR2 shipped |
 | M5 — Packaging | Not started |
 
 ## M0 progress
@@ -608,20 +608,56 @@ full create → live-preview-updates → verify → delete round-trip was run
 against a throwaway style, and the new 4th selector renders correctly on
 both the new-project form and the preferences screen.
 
+## M4 PR2 — queue-wide jobs screen (shipped)
+
+`lib/queue/index.ts` already had everything a queue screen needs —
+abort/retry/delete, `listJobs` — and project detail already listed a
+project's own jobs inline. What was missing was any cross-project view: the
+only way to see "what failed across everything" was to open each project in
+turn.
+
+| Piece | Where |
+| ----- | ----- |
+| `listAllJobs` — every job, newest first, each carrying its project's id/idea/title | `lib/projects.ts` |
+| `GET /api/jobs` | `app/api/jobs/route.ts` |
+| Queue screen with All/Active/Failed filters, links back to each job's project | `app/jobs/page.tsx`, `app/jobs/jobs-view.tsx` |
+| Nav link from the home page | `app/page.tsx` |
+
+**`listAllJobs` fetches projects separately and merges in JS rather than
+joining.** A join would return the same handful of project rows once per job
+belonging to it; the distinct project set is always far smaller than the job
+count, so two queries plus a `Map` lookup is simpler than the join and costs
+nothing extra.
+
+**Reuses the existing per-job routes rather than adding new ones.**
+`POST /api/jobs/[id]` (abort/retry) and `DELETE /api/jobs/[id]` already
+existed for the per-project job list in `project-view.tsx`; the queue screen
+is a second caller of the same endpoints, not a parallel set.
+
+2 new tests (`lib/projects.test.ts`) — 280 tests pass, `tsc --noEmit` clean,
+`next build` succeeds. Verified in the browser against the real database:
+all 71 real jobs across every real project rendered correctly, including a
+genuine failed render job (a real Remotion timeout, 3/3 attempts, working
+retry button) that the **Failed** filter correctly isolated, the **Active**
+filter correctly showed "Nothing here" with nothing running, and a project
+link navigated to the right project page. No job was mutated during
+verification — retry/delete were confirmed present and correctly gated by
+status, not clicked, since retrying that real failed render would trigger an
+actual multi-minute render against the user's real data.
+
 ## Known gaps
 
 None open at the moment.
 
 ## What to pick up next
 
-**M4 PR2 — resolution selection, or the job queue screen.** Two pieces of
-M4's plan item remain. Resolution selection touches `lib/config.ts` (which
-already enforces F4 — dimensions must be multiples of 16 — at startup) and
-`lib/pipeline/render.ts`'s `ctx.config.video.width`/`height`, and would need
-per-project storage the way caption style just got. The job queue screen is
-more purely additive: `lib/queue/index.ts` already has abort/retry/delete and
-project detail already lists jobs inline, but there is no queue-wide view
-across projects.
+**M4 PR3 — resolution selection**, the last M4 plan item. Touches
+`lib/config.ts` (which already enforces F4 — dimensions must be multiples of
+16 — at startup) and `lib/pipeline/render.ts`'s
+`ctx.config.video.width`/`ctx.config.video.height`, and needs per-project storage the way
+caption style got in PR1 — likely a `projects.resolution` or width/height
+pair, since the config-level default is global and a resolution choice is
+naturally per-project the same way a caption style is.
 
 Also open, not part of M4 but flagged along the way and still unscheduled:
 **LLM-authoring for styles** (generate a style from a text brief, out of
