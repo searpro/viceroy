@@ -48,8 +48,29 @@ On fix, move the entry to Fixed and append:
 
 ## Open
 
-_None yet._
+### BUG-002 — Redo Story with direction prompt not updating scene captions
+
+**Reported:** 2026-08-13
+**Status:** Open
+
+**Flow:** Go to any story → enter a direction prompt to alter the story → click on redo story → wait for the redo to complete → check the scene caption
+
+**Expected:** The scene caption should be updated with the new story's corresponding scene caption. The system should compare the previous and current scene captions and suggest whether a new image generation is required.
+
+**Actual:** The scene caption is the same as before, even though the story is getting updated according to the direction prompt
 
 ## Fixed
 
-_None yet._
+### BUG-001 — Saved preferences not applied to new idea screen
+
+**Reported:** 2026-08-13
+**Status:** Fixed
+
+**Flow:** Go to Preferences → select Voice/Caption/Style settings and mark as default → Save → go to home screen and create a new idea → check dropdowns
+
+**Expected:** The default voice, caption, and style settings should be populated in the new idea dropdowns
+
+**Actual:** The default settings are not reflected in the new idea dropdowns
+
+**Fixed:** 2026-08-13 — commit `d022581`
+**Cause:** `listPreferences()` result in `page.tsx` was only partially consumed — the four style preference fields were never extracted or forwarded to `NewProjectForm`, so its `<select>` elements had no `defaultValue`
