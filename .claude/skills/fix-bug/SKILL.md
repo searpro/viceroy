@@ -70,6 +70,14 @@ Then remind the user of the next steps *they* own:
 - After commit, update the row in the Bug Tracker: set `Status` to `Fixed`,
   `Fixed Date` to today, `Commit` to the short hash, and append a `**Cause:**
   <one-line root cause>` line to the page body.
+- Also flip the matching **Progress Tracker** row (`Type: Bugfix`, `Item`
+  starting with the same Bug ID, e.g. "BUG-002 — ...") to `Status: Done`,
+  with `Commit`, `Date`, and a one-sentence `Description` of the fix. This
+  row is created by `bug-report` when the bug is filed — it does not get a
+  fresh row here, only an update to the existing one. If no such row exists
+  yet, create one (`Type: Bugfix`, `Milestone: M5`) rather than skipping it.
+  The Bug Tracker and Progress Tracker are two different views of the same
+  bug and both need to agree once it's fixed.
 
 Do not do these steps yourself unless the user explicitly asks — the
 tracker's workflow puts them deliberately after human review.

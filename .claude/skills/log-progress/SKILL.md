@@ -1,6 +1,6 @@
 ---
 name: log-progress
-description: Log a delivered unit of work — a shipped PR, a completed milestone, or a settled decision — as a row in the Notion Progress Tracker database (linked from docs/notion.md), so the user has one place to see delivery history. Use this at the end of any PLAN → EXECUTE → VALIDATE cycle per AGENTS.md once Current State / Phases & Milestones / Build Plan in Notion has been updated, when draining docs/.notion-pending.log at session start, or when the user says things like "log this to Notion", "update the tracker", "mark it done", or "that's shipped". Bugs are tracked separately by the bug-report and fix-bug skills against the Bug Tracker database — don't duplicate their entries here, though a bug closing out as part of a larger PR can still get its own Progress Tracker row for that PR.
+description: Log a delivered unit of work — a shipped PR, a completed milestone, a fixed bug, or a settled decision — as a row in the Notion Progress Tracker database (linked from docs/notion.md), so the user has one place to see delivery history. Use this at the end of any PLAN → EXECUTE → VALIDATE cycle per AGENTS.md once Current State / Phases & Milestones / Build Plan in Notion has been updated, when draining docs/.notion-pending.log at session start, when a bug fix lands via fix-bug, or when the user says things like "log this to Notion", "update the tracker", "mark it done", or "that's shipped". The Bug Tracker database (owned by bug-report/fix-bug) stays the detailed record of a bug; this skill keeps the matching Type:Bugfix row here in sync with it rather than duplicating its content.
 ---
 
 # Log progress to Notion
@@ -43,10 +43,20 @@ logged at all, unless it's the kind of multi-session effort where an `In
 Progress` row genuinely helps the user see what's being worked on right now
 (e.g. M5 itself).
 
-Bug fixes belong in the **Bug Tracker** database, owned by `bug-report`/
-`fix-bug` — don't create a second record of a bug fix here. The exception is
-a PR that closes a bug as part of larger scope: that PR still gets its own
-Progress Tracker row, same as any other PR.
+Bug fixes get a `Type: Bugfix` row here too, alongside their entry in the
+**Bug Tracker** — the two databases are different views (detailed
+flow/expected/actual vs. the terse cross-cutting index) and both need to
+stay current. `bug-report` creates the Bugfix row (`Status: Open`) when it
+files the bug; `fix-bug` is responsible for flipping it to `Status: Done`
+with `Commit`/`Date`/`Description` once the fix lands — don't create a
+second row for the same Bug ID, update the existing one by matching `Item`
+against the Bug ID. If you're draining the pending-commit queue and find a
+bugfix commit whose Bug Tracker row is already `Fixed` but whose Progress
+Tracker `Bugfix` row is still `Open`, that's a dropped update — close the
+loop by updating it here rather than skipping it. The exception to creating
+a *new* row is a PR that closes a bug as part of larger scope: that PR still
+gets its own `Type: PR` row, same as any other PR, rather than a `Bugfix`
+row.
 
 For each row you need:
 
@@ -103,7 +113,8 @@ re-explain the tracker; they already know it's there.
 - It does not edit Current State, Phases & Milestones, Build Plan, Findings,
   or Architecture Decisions — those are updated directly, in the same turn as
   the work that changes them, per `AGENTS.md`.
-- It does not touch the Bug Tracker — `bug-report` and `fix-bug` own that
-  database directly.
+- It does not touch the Bug Tracker itself — `bug-report` and `fix-bug` own
+  that database directly. It does own the matching `Bugfix` row in the
+  Progress Tracker, per above.
 - It does not log every commit. Granularity is PR/milestone/decision, matching
   what would earn its own heading on a Notion status page.
