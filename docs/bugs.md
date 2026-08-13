@@ -22,6 +22,30 @@ Numbering is sequential and never reused, even if a report turns out to be
 invalid — BUG-003 being absent means it was reported and dropped, not that
 numbering is broken.
 
+**Entry format**, under Open:
+
+```
+### BUG-<id> — <short title>
+
+**Reported:** <date>
+**Status:** Open
+
+**Flow:** <the screen, action, and sequence that triggers it>
+
+**Expected:** <what should have happened>
+
+**Actual:** <what happened instead>
+
+**Error text:** <verbatim error message shown, if any — omit this line if none>
+```
+
+On fix, move the entry to Fixed and append:
+
+```
+**Fixed:** <date> — commit `<short hash>`
+**Cause:** <one-line root cause>
+```
+
 ## Open
 
 _None yet._
