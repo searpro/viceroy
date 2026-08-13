@@ -6,6 +6,7 @@ import { bundle } from "@remotion/bundler";
 import { ensureBrowser, renderMedia, selectComposition } from "@remotion/renderer";
 import { storeAsset } from "../assets";
 import { captionStyleSchema, DEFAULT_CAPTION_STYLE, type CaptionStyle } from "../../remotion/schema";
+import type { Config } from "../config";
 import { assets, captionStyles, renders, scenes, subtitleCues, voiceovers } from "../db/schema";
 import {
   awaitReview,
@@ -32,6 +33,21 @@ export function resolveRenderCaptionStyle(
   captionStyle: typeof captionStyles.$inferSelect | undefined,
 ): CaptionStyle {
   return captionStyle ? captionStyleSchema.parse(captionStyle) : DEFAULT_CAPTION_STYLE;
+}
+
+/**
+ * A project created before `width`/`height` existed has neither set —
+ * falling back to `config.video` keeps it renderable at the machine's
+ * configured default instead of failing a stage over columns that predate it.
+ */
+export function resolveRenderDimensions(
+  project: { width: number | null; height: number | null },
+  config: Config,
+): { width: number; height: number } {
+  return {
+    width: project.width ?? config.video.width,
+    height: project.height ?? config.video.height,
+  };
 }
 
 const remotionEntry = path.resolve(
@@ -106,12 +122,14 @@ export async function runRender(ctx: StageContext): Promise<void> {
     return { src: name, startMs: scene.startMs!, endMs: scene.endMs! };
   });
 
+  const dimensions = resolveRenderDimensions(project, ctx.config);
+
   const render = ctx.db
     .insert(renders)
     .values({
       projectId,
-      width: ctx.config.video.width,
-      height: ctx.config.video.height,
+      width: dimensions.width,
+      height: dimensions.height,
       fps: FPS,
       captionStyle: resolveRenderCaptionStyle(captionStyle),
       status: "rendering",
@@ -142,6 +160,8 @@ export async function runRender(ctx: StageContext): Promise<void> {
       // result is a 16px serif caption welded to the bottom edge rather than
       // an error. See docs/findings.md F22.
       captionStyle: captionStyleSchema.parse(render.captionStyle ?? {}),
+      width: render.width,
+      height: render.height,
     };
 
     const composition = await selectComposition({
@@ -203,6 +223,4 @@ export async function runRender(ctx: StageContext): Promise<void> {
     const failed = ctx.db.select().from(renders).where(eq(renders.id, render.id)).get()?.status;
     if (failed === "ready") fs.rmSync(staging, { recursive: true, force: true });
   }
-
-  void project;
 }

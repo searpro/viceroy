@@ -5,7 +5,7 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M4 PR2 shipped.** Queue-wide jobs screen._
+_Last updated: 2026-08-12 — **M4 PR3 shipped.** Resolution selection; M4 complete._
 
 ---
 
@@ -25,7 +25,7 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
 | M2 — Manual mode and review surfaces | PR1 + PR2 + PR3 shipped |
 | M3 — Management screens | **Complete** — PR1 + PR2 + PR3 + PR4 |
-| M4 — Output control | PR1 + PR2 shipped |
+| M4 — Output control | **Complete** — PR1 + PR2 + PR3 |
 | M5 — Packaging | Not started |
 
 ## M0 progress
@@ -645,21 +645,74 @@ verification — retry/delete were confirmed present and correctly gated by
 status, not clicked, since retrying that real failed render would trigger an
 actual multi-minute render against the user's real data.
 
+## M4 PR3 — resolution selection (shipped, M4 complete)
+
+**F4's multiple-of-16 constraint turned out not to apply here at all.**
+Rereading `lib/config.ts` while scoping this: `multipleOf16` only wraps
+`SOURCE_IMAGE_WIDTH`/`SOURCE_IMAGE_HEIGHT` — the frames sd-api actually
+generates, where stable-diffusion.cpp's silent round-up bites. `VIDEO_WIDTH`/
+`VIDEO_HEIGHT` (the final render's output canvas) carry no such constraint;
+source frames are only ever upscaled into it, never regenerated at a
+different size. So resolution selection only ever needed to preserve the
+*aspect ratio* `resolveConfig` already enforces between the two at startup —
+not multiples of 16.
+
+| Piece | Where |
+| ----- | ----- |
+| Three presets (Standard/HD/High) as scale factors of the configured base resolution | `lib/resolution.ts` |
+| `projects.width`/`projects.height`, migration `0004` | `lib/db/schema.ts`, `drizzle/0004_shocking_patch.sql` |
+| `createProject` resolves a `resolutionKey` into concrete dimensions, same shape as the four styles | `lib/projects.ts` |
+| Resolution selector on the new-project form | `app/new-project-form.tsx`, `app/page.tsx` |
+| Render pipeline resolves and uses the project's dimensions | `lib/pipeline/render.ts` (`resolveRenderDimensions`) |
+| Composition dimensions now vary per render | `remotion/schema.ts`, `remotion/Root.tsx` |
+
+**Presets are scale factors, not fixed pixel lists.** `resolutionPresets(config)`
+multiplies the configured base width/height by 2/3, 1 and 4/3, rounding each
+dimension to the nearest even number (what an h264 encoder wants) — so
+"HD" always equals whatever `VIDEO_WIDTH`/`VIDEO_HEIGHT` actually are on this
+machine, and every preset stays at the exact same ratio `resolveConfig`
+already guarantees, without re-deriving that ratio here. At this app's real
+1080×1920 default the three presets land exactly on 720×1280 / 1080×1920 /
+1440×2560.
+
+**A static `<Composition width height>` can't vary per render on its own —
+`calculateMetadata` now overrides it from props.** The same mechanism already
+used for `durationInFrames` (deriving it from `durationMs`) now also returns
+`width`/`height` from the new `width`/`height` fields on `storyVideoSchema`,
+which `render.ts` populates from `resolveRenderDimensions`. Before this PR,
+`VIDEO_WIDTH`/`VIDEO_HEIGHT` env vars were actually inert for the real
+render — `Root.tsx` hardcoded `1080`/`1920` as static JSX props, so even the
+*global* config-level setting had no effect on actual output, only on what
+got written into the `renders` row's metadata. That latent gap is now fixed
+as a side effect: both the per-project override and the plain config default
+flow through the same `calculateMetadata` path.
+
+**`projects.width`/`height` are nullable, following the same pattern as
+`captionStyleId`** rather than the required narrative/voice/image styles: a
+project created before this migration has neither set, and
+`resolveRenderDimensions` falls back to `config.video` exactly the way
+`resolveRenderCaptionStyle` falls back to `DEFAULT_CAPTION_STYLE`.
+
+12 new tests (`lib/resolution.test.ts`, plus additions to
+`lib/pipeline/render.test.ts`) — 290 tests pass, `tsc --noEmit` clean,
+`next build` succeeds. Verified in the browser: the new-project form's
+Resolution selector lists exactly "Standard (720×1280)", "HD (1080×1920)",
+"High (1440×2560)", defaulting to HD.
+
+**M4 is now fully shipped**: caption style CRUD with a live preview,
+a queue-wide jobs screen, and resolution selection — all three pieces
+[`docs/PLAN.md`](PLAN.md) named for the milestone.
+
 ## Known gaps
 
 None open at the moment.
 
 ## What to pick up next
 
-**M4 PR3 — resolution selection**, the last M4 plan item. Touches
-`lib/config.ts` (which already enforces F4 — dimensions must be multiples of
-16 — at startup) and `lib/pipeline/render.ts`'s
-`ctx.config.video.width`/`ctx.config.video.height`, and needs per-project storage the way
-caption style got in PR1 — likely a `projects.resolution` or width/height
-pair, since the config-level default is global and a resolution choice is
-naturally per-project the same way a caption style is.
+**M4 is complete.** M5 — packaging — is next per the plan: containerise,
+configurable output/cache storage location, S3 optional.
 
-Also open, not part of M4 but flagged along the way and still unscheduled:
+Also open, not part of M4/M5 but flagged along the way and still unscheduled:
 **LLM-authoring for styles** (generate a style from a text brief, out of
 scope in M3 PR1).
 

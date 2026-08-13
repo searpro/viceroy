@@ -4,18 +4,21 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 type Style = { id: string; name: string; description: string };
+type ResolutionPreset = { key: string; label: string };
 
 export function NewProjectForm({
   narrativeStyles,
   voiceStyles,
   imageStyles,
   captionStyles,
+  resolutionPresets,
   defaultMode,
 }: {
   narrativeStyles: Style[];
   voiceStyles: Style[];
   imageStyles: Style[];
   captionStyles: Style[];
+  resolutionPresets: ResolutionPreset[];
   defaultMode: "auto" | "manual";
 }) {
   const router = useRouter();
@@ -34,6 +37,7 @@ export function NewProjectForm({
         voiceStyleId: formData.get("voiceStyleId"),
         imageStyleId: formData.get("imageStyleId"),
         captionStyleId: formData.get("captionStyleId"),
+        resolutionKey: formData.get("resolutionKey"),
         mode: formData.get("mode"),
       }),
     });
@@ -72,6 +76,24 @@ export function NewProjectForm({
         <Select label="Voice style" name="voiceStyleId" options={voiceStyles} />
         <Select label="Image style" name="imageStyleId" options={imageStyles} />
         <Select label="Caption style" name="captionStyleId" options={captionStyles} />
+      </div>
+
+      <div>
+        <label htmlFor="resolutionKey" className="block text-sm font-medium">
+          Resolution
+        </label>
+        <select
+          id="resolutionKey"
+          name="resolutionKey"
+          defaultValue="hd"
+          className="mt-2 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none focus:border-white/25 sm:w-56"
+        >
+          {resolutionPresets.map((preset) => (
+            <option key={preset.key} value={preset.key} className="bg-neutral-900">
+              {preset.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       <fieldset className="flex gap-4">

@@ -34,6 +34,13 @@ export const storyVideoSchema = z.object({
   ),
   durationMs: z.number(),
   captionStyle: captionStyleSchema,
+  // Read by Root.tsx's calculateMetadata to override the composition's
+  // declared dimensions per render — a static <Composition width height>
+  // cannot vary per project on its own. See F4: only the *source* image
+  // dimensions are constrained to multiples of 16; the final render target
+  // has no such requirement.
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
 });
 
 export type StoryVideoProps = z.infer<typeof storyVideoSchema>;

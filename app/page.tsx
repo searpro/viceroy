@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db/client";
 import { captionStyles, imageStyles, narrativeStyles, voiceStyles } from "@/lib/db/schema";
 import { listPreferences } from "@/lib/preferences";
 import { listProjects } from "@/lib/projects";
+import { resolutionPresets } from "@/lib/resolution";
 import { createSdApi } from "@/lib/sdapi";
 import { NewProjectForm } from "./new-project-form";
 
@@ -61,7 +62,11 @@ export default async function Home() {
         </p>
       ) : (
         <section className="mt-10 rounded-lg border border-white/10 bg-white/[0.02] p-6">
-          <NewProjectForm {...styles} defaultMode={defaultMode} />
+          <NewProjectForm
+            {...styles}
+            resolutionPresets={resolutionPresets(config)}
+            defaultMode={defaultMode}
+          />
         </section>
       )}
 

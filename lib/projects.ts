@@ -1,5 +1,6 @@
 import { asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
+import { resolveConfig } from "./config";
 import type { Db } from "./db/client";
 import {
   captionStyles,
@@ -17,6 +18,7 @@ import {
 } from "./db/schema";
 import { enqueue, listJobs } from "./queue";
 import { advance, isStalled, nextStep } from "./pipeline/chain";
+import { RESOLUTION_KEYS, resolvePresetDimensions } from "./resolution";
 
 export const createProjectSchema = z.object({
   idea: z.string().trim().min(8, "Give the idea a little more to work with").max(2000),
@@ -24,6 +26,7 @@ export const createProjectSchema = z.object({
   voiceStyleId: z.string().optional(),
   imageStyleId: z.string().optional(),
   captionStyleId: z.string().optional(),
+  resolutionKey: z.enum(RESOLUTION_KEYS).optional(),
   mode: z.enum(["auto", "manual"]).default("auto"),
 });
 
@@ -87,6 +90,7 @@ export function createProject(db: Db, raw: CreateProjectInput) {
     preferenceValue(db, "defaultCaptionStyle"),
     "caption style",
   );
+  const resolution = resolvePresetDimensions(resolveConfig(), input.resolutionKey);
 
   const [project] = db
     .insert(projects)
@@ -97,6 +101,8 @@ export function createProject(db: Db, raw: CreateProjectInput) {
       voiceStyleId: voice.id,
       imageStyleId: image.id,
       captionStyleId: caption.id,
+      width: resolution.width,
+      height: resolution.height,
     })
     .returning()
     .all();

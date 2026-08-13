@@ -6,8 +6,9 @@ import type { Db } from "../db/client";
 import { assets, captionStyles, projects, scenes, voiceovers } from "../db/schema";
 import { claim, enqueue } from "../queue";
 import { createProject } from "../projects";
+import { resolveConfig } from "../config";
 import { captionStyleSchema, DEFAULT_CAPTION_STYLE } from "../../remotion/schema";
-import { resolveRenderCaptionStyle, runRender } from "./render";
+import { resolveRenderCaptionStyle, resolveRenderDimensions, runRender } from "./render";
 import { stubContext } from "./test-support";
 
 let db: Db;
@@ -145,6 +146,41 @@ describe("createProject caption style resolution", () => {
   it("falls back to the seeded default when none is specified", () => {
     const created = createProject(db, { idea: "a plumber became mayor by wits" });
     expect(created.captionStyleId).toBeTruthy();
+  });
+});
+
+describe("createProject resolution", () => {
+  it("resolves and stores a chosen resolution preset", () => {
+    const config = resolveConfig({ VICEROY_DATA_DIR: "./data" });
+    const created = createProject(db, {
+      idea: "a plumber became mayor by wits",
+      resolutionKey: "standard",
+    });
+    expect(created.width).toBeLessThan(config.video.width);
+    expect(created.height).toBeLessThan(config.video.height);
+    expect(created.width! / created.height!).toBeCloseTo(config.video.width / config.video.height, 4);
+  });
+
+  it("falls back to the base config resolution when none is specified", () => {
+    const config = resolveConfig({ VICEROY_DATA_DIR: "./data" });
+    const created = createProject(db, { idea: "a plumber became mayor by wits" });
+    expect(created.width).toBe(config.video.width);
+    expect(created.height).toBe(config.video.height);
+  });
+});
+
+describe("resolveRenderDimensions", () => {
+  const config = resolveConfig({ VICEROY_DATA_DIR: "./data" });
+
+  it("falls back to config.video for a project with neither set", () => {
+    expect(resolveRenderDimensions({ width: null, height: null }, config)).toEqual(config.video);
+  });
+
+  it("uses the project's own dimensions when set", () => {
+    expect(resolveRenderDimensions({ width: 720, height: 1280 }, config)).toEqual({
+      width: 720,
+      height: 1280,
+    });
   });
 });
 

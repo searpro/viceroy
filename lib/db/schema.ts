@@ -130,6 +130,11 @@ export const projects = sqliteTable(
     voiceStyleId: text("voice_style_id").references(() => voiceStyles.id),
     imageStyleId: text("image_style_id").references(() => imageStyles.id),
     captionStyleId: text("caption_style_id").references(() => captionStyles.id),
+    // Nullable, like captionStyleId: a project created before this column
+    // existed has no way to have one set. render.ts falls back to
+    // config.video's dimensions when either is null.
+    width: integer("width"),
+    height: integer("height"),
 
     createdAt: createdAt(),
     updatedAt: updatedAt(),
