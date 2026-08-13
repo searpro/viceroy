@@ -13,6 +13,10 @@ export function NewProjectForm({
   captionStyles,
   resolutionPresets,
   defaultMode,
+  defaultNarrativeStyleName,
+  defaultVoiceStyleName,
+  defaultImageStyleName,
+  defaultCaptionStyleName,
 }: {
   narrativeStyles: Style[];
   voiceStyles: Style[];
@@ -20,6 +24,10 @@ export function NewProjectForm({
   captionStyles: Style[];
   resolutionPresets: ResolutionPreset[];
   defaultMode: "auto" | "manual";
+  defaultNarrativeStyleName?: string;
+  defaultVoiceStyleName?: string;
+  defaultImageStyleName?: string;
+  defaultCaptionStyleName?: string;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -72,10 +80,30 @@ export function NewProjectForm({
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
-        <Select label="Narrative style" name="narrativeStyleId" options={narrativeStyles} />
-        <Select label="Voice style" name="voiceStyleId" options={voiceStyles} />
-        <Select label="Image style" name="imageStyleId" options={imageStyles} />
-        <Select label="Caption style" name="captionStyleId" options={captionStyles} />
+        <Select
+          label="Narrative style"
+          name="narrativeStyleId"
+          options={narrativeStyles}
+          defaultName={defaultNarrativeStyleName}
+        />
+        <Select
+          label="Voice style"
+          name="voiceStyleId"
+          options={voiceStyles}
+          defaultName={defaultVoiceStyleName}
+        />
+        <Select
+          label="Image style"
+          name="imageStyleId"
+          options={imageStyles}
+          defaultName={defaultImageStyleName}
+        />
+        <Select
+          label="Caption style"
+          name="captionStyleId"
+          options={captionStyles}
+          defaultName={defaultCaptionStyleName}
+        />
       </div>
 
       <div>
@@ -138,7 +166,21 @@ export function NewProjectForm({
   );
 }
 
-function Select({ label, name, options }: { label: string; name: string; options: Style[] }) {
+function Select({
+  label,
+  name,
+  options,
+  defaultName,
+}: {
+  label: string;
+  name: string;
+  options: Style[];
+  defaultName?: string;
+}) {
+  // Preferences store the style's name, not its id (matches resolveStyle's lookup contract).
+  // Find the id for the preferred name so <select> defaultValue works against option values.
+  const defaultId = defaultName ? (options.find((o) => o.name === defaultName)?.id ?? undefined) : undefined;
+
   return (
     <div>
       <label htmlFor={name} className="block text-sm font-medium">
@@ -147,6 +189,7 @@ function Select({ label, name, options }: { label: string; name: string; options
       <select
         id={name}
         name={name}
+        defaultValue={defaultId}
         className="mt-2 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none focus:border-white/25"
       >
         {options.map((option) => (

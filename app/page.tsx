@@ -22,7 +22,8 @@ export default async function Home() {
     imageStyles: db.select().from(imageStyles).all(),
     captionStyles: db.select().from(captionStyles).all(),
   };
-  const defaultMode = listPreferences(db).defaultMode === "manual" ? "manual" : "auto";
+  const prefs = listPreferences(db);
+  const defaultMode = prefs.defaultMode === "manual" ? "manual" : "auto";
 
   const seeded = styles.narrativeStyles.length > 0;
 
@@ -66,6 +67,10 @@ export default async function Home() {
             {...styles}
             resolutionPresets={resolutionPresets(config)}
             defaultMode={defaultMode}
+            defaultNarrativeStyleName={prefs.defaultNarrativeStyle}
+            defaultVoiceStyleName={prefs.defaultVoiceStyle}
+            defaultImageStyleName={prefs.defaultImageStyle}
+            defaultCaptionStyleName={prefs.defaultCaptionStyle}
           />
         </section>
       )}
