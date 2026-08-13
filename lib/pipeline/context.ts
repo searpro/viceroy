@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { Config } from "../config";
 import type { Db } from "../db/client";
 import {
+  captionStyles,
   imageStyles,
   narrativeStyles,
   projects,
@@ -41,14 +42,20 @@ export type ProjectBundle = {
   narrativeStyle: typeof narrativeStyles.$inferSelect;
   voiceStyle: typeof voiceStyles.$inferSelect;
   imageStyle: typeof imageStyles.$inferSelect;
+  // Unlike the other three, optional and not part of the required check
+  // below: it only matters to the final render stage, and a project created
+  // before captionStyleId existed has no way to have one set. render.ts
+  // falls back to DEFAULT_CAPTION_STYLE when this is undefined.
+  captionStyle: typeof captionStyles.$inferSelect | undefined;
 };
 
 /**
- * Load a project with its three styles.
+ * Load a project with its style set.
  *
- * Every stage needs the style triple, and every stage needs to fail the same
- * way when one is missing — a project without a narrative style has no
- * checklist to be judged against and no guidance to be written from.
+ * Every generation stage needs the narrative/voice/image triple, and every
+ * one needs to fail the same way when one is missing — a project without a
+ * narrative style has no checklist to be judged against and no guidance to be
+ * written from.
  */
 export function loadProject(db: Db, projectId: string): ProjectBundle {
   const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
@@ -62,6 +69,9 @@ export function loadProject(db: Db, projectId: string): ProjectBundle {
     : undefined;
   const imageStyle = project.imageStyleId
     ? db.select().from(imageStyles).where(eq(imageStyles.id, project.imageStyleId)).get()
+    : undefined;
+  const captionStyle = project.captionStyleId
+    ? db.select().from(captionStyles).where(eq(captionStyles.id, project.captionStyleId)).get()
     : undefined;
 
   const missing = [
@@ -78,6 +88,7 @@ export function loadProject(db: Db, projectId: string): ProjectBundle {
     narrativeStyle: narrativeStyle!,
     voiceStyle: voiceStyle!,
     imageStyle: imageStyle!,
+    captionStyle,
   };
 }
 

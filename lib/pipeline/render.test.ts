@@ -3,11 +3,11 @@ import { eq } from "drizzle-orm";
 import { createTestDb } from "../db/testing";
 import { seed } from "../db/seed";
 import type { Db } from "../db/client";
-import { assets, projects, scenes, voiceovers } from "../db/schema";
+import { assets, captionStyles, projects, scenes, voiceovers } from "../db/schema";
 import { claim, enqueue } from "../queue";
 import { createProject } from "../projects";
-import { captionStyleSchema } from "../../remotion/schema";
-import { runRender } from "./render";
+import { captionStyleSchema, DEFAULT_CAPTION_STYLE } from "../../remotion/schema";
+import { resolveRenderCaptionStyle, runRender } from "./render";
 import { stubContext } from "./test-support";
 
 let db: Db;
@@ -100,6 +100,51 @@ describe("caption style defaults", () => {
       fontSize: 120,
       uppercase: true,
     });
+  });
+});
+
+describe("resolveRenderCaptionStyle", () => {
+  it("falls back to the default for a project with no caption style row", () => {
+    expect(resolveRenderCaptionStyle(undefined)).toEqual(DEFAULT_CAPTION_STYLE);
+  });
+
+  it("uses the project's caption style, stripped down to what the composition declares", () => {
+    const [style] = db
+      .insert(captionStyles)
+      .values({
+        name: "Loud",
+        description: "d",
+        fontSize: 120,
+        uppercase: true,
+      })
+      .returning()
+      .all();
+
+    const resolved = resolveRenderCaptionStyle(style);
+    expect(resolved).toMatchObject({ fontSize: 120, uppercase: true });
+    expect(resolved).not.toHaveProperty("id");
+    expect(resolved).not.toHaveProperty("name");
+  });
+});
+
+describe("createProject caption style resolution", () => {
+  it("resolves a project's caption style the same way as the other three", () => {
+    const [style] = db
+      .insert(captionStyles)
+      .values({ name: "Custom Caption", description: "d", fontSize: 50 })
+      .returning()
+      .all();
+
+    const created = createProject(db, {
+      idea: "a plumber became mayor by wits",
+      captionStyleId: style!.id,
+    });
+    expect(created.captionStyleId).toBe(style!.id);
+  });
+
+  it("falls back to the seeded default when none is specified", () => {
+    const created = createProject(db, { idea: "a plumber became mayor by wits" });
+    expect(created.captionStyleId).toBeTruthy();
   });
 });
 

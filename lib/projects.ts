@@ -2,6 +2,7 @@ import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "./db/client";
 import {
+  captionStyles,
   characters,
   evaluations,
   imageStyles,
@@ -22,6 +23,7 @@ export const createProjectSchema = z.object({
   narrativeStyleId: z.string().optional(),
   voiceStyleId: z.string().optional(),
   imageStyleId: z.string().optional(),
+  captionStyleId: z.string().optional(),
   mode: z.enum(["auto", "manual"]).default("auto"),
 });
 
@@ -79,6 +81,12 @@ export function createProject(db: Db, raw: CreateProjectInput) {
     preferenceValue(db, "defaultImageStyle"),
     "image style",
   );
+  const caption = resolveStyle(
+    db.select().from(captionStyles).all(),
+    input.captionStyleId,
+    preferenceValue(db, "defaultCaptionStyle"),
+    "caption style",
+  );
 
   const [project] = db
     .insert(projects)
@@ -88,6 +96,7 @@ export function createProject(db: Db, raw: CreateProjectInput) {
       narrativeStyleId: narrative.id,
       voiceStyleId: voice.id,
       imageStyleId: image.id,
+      captionStyleId: caption.id,
     })
     .returning()
     .all();

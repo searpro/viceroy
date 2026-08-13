@@ -2,20 +2,25 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTestDb } from "./db/testing";
 import { seed } from "./db/seed";
 import type { Db } from "./db/client";
-import { narrativeStyles, voiceStyles, imageStyles } from "./db/schema";
+import { narrativeStyles, voiceStyles, imageStyles, captionStyles } from "./db/schema";
 import { createProject } from "./projects";
 import {
+  captionStyleSchema,
+  createCaptionStyle,
   createImageStyle,
   createNarrativeStyle,
   createVoiceStyle,
+  deleteCaptionStyle,
   deleteImageStyle,
   deleteNarrativeStyle,
   deleteVoiceStyle,
   imageStyleSchema,
+  listCaptionStyles,
   listImageStyles,
   listNarrativeStyles,
   listVoiceStyles,
   narrativeStyleSchema,
+  updateCaptionStyle,
   updateImageStyle,
   updateNarrativeStyle,
   updateVoiceStyle,
@@ -58,6 +63,19 @@ const IMAGE_INPUT = {
   negativePrompt: "blurry",
   model: "flux2-klein-4b",
   defaultParams: { steps: 20 },
+};
+
+const CAPTION_INPUT = {
+  name: "Custom caption",
+  description: "d",
+  fontFamily: "Georgia, serif",
+  fontSize: 60,
+  fontWeight: 700,
+  color: "#ffcc00",
+  outlineColor: "#000000",
+  outlineWidth: 8,
+  bottomOffset: 0.2,
+  uppercase: true,
 };
 
 describe("narrative styles", () => {
@@ -163,5 +181,38 @@ describe("image styles", () => {
     const updated = updateImageStyle(db, created.id, patch);
     expect(updated.defaultParams).toEqual(IMAGE_INPUT.defaultParams);
     expect(updated.promptPrefix).toBe(IMAGE_INPUT.promptPrefix);
+  });
+});
+
+describe("caption styles", () => {
+  it("creates, lists and updates a custom style", () => {
+    const created = createCaptionStyle(db, CAPTION_INPUT);
+    expect(listCaptionStyles(db).map((s) => s.id)).toContain(created.id);
+
+    const updated = updateCaptionStyle(db, created.id, { fontSize: 90 });
+    expect(updated.fontSize).toBe(90);
+    expect(updated.color).toBe(CAPTION_INPUT.color);
+  });
+
+  it("refuses to delete a built-in style", () => {
+    const builtin = db.select().from(captionStyles).all().find((s) => s.isBuiltin)!;
+    expect(() => deleteCaptionStyle(db, builtin.id)).toThrow(/built-in/);
+  });
+
+  it("refuses to delete a style a project depends on", () => {
+    const created = createCaptionStyle(db, CAPTION_INPUT);
+    createProject(db, { idea: "a plumber became mayor by wits", captionStyleId: created.id });
+    expect(() => deleteCaptionStyle(db, created.id)).toThrow(/used by an existing project/);
+  });
+
+  it("does not have the .partial() schema inject defaults on an omitted patch field", () => {
+    const patch = captionStyleSchema.partial().parse({ description: "changed only" });
+    expect(patch).not.toHaveProperty("fontSize");
+    expect(patch).not.toHaveProperty("bottomOffset");
+
+    const created = createCaptionStyle(db, CAPTION_INPUT);
+    const updated = updateCaptionStyle(db, created.id, patch);
+    expect(updated.fontSize).toBe(CAPTION_INPUT.fontSize);
+    expect(updated.bottomOffset).toBe(CAPTION_INPUT.bottomOffset);
   });
 });

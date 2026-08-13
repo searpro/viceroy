@@ -49,7 +49,7 @@ function Scene({
  * disappears against a bright frame. `paintOrder: stroke` keeps the outline
  * outside the glyph rather than eating into it.
  */
-function Caption({ text, style }: { text: string; style: StoryVideoProps["captionStyle"] }) {
+export function Caption({ text, style }: { text: string; style: StoryVideoProps["captionStyle"] }) {
   const { height } = useVideoConfig();
 
   return (

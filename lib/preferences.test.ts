@@ -20,6 +20,7 @@ describe("listPreferences", () => {
     const prefs = listPreferences(db);
     expect(prefs.defaultMode).toBe("auto");
     expect(prefs.defaultNarrativeStyle).toBeTruthy();
+    expect(prefs.defaultCaptionStyle).toBeTruthy();
   });
 });
 

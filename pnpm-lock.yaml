@@ -14,6 +14,9 @@ importers:
       '@remotion/media-utils':
         specifier: ^4.0.508
         version: 4.0.508(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@remotion/player':
+        specifier: 4.0.508
+        version: 4.0.508(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@remotion/renderer':
         specifier: ^4.0.508
         version: 4.0.508(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { resolveConfig } from "@/lib/config";
 import { getDb } from "@/lib/db/client";
-import { imageStyles, narrativeStyles, voiceStyles } from "@/lib/db/schema";
+import { captionStyles, imageStyles, narrativeStyles, voiceStyles } from "@/lib/db/schema";
 import { listPreferences } from "@/lib/preferences";
 import { listProjects } from "@/lib/projects";
 import { createSdApi } from "@/lib/sdapi";
@@ -19,6 +19,7 @@ export default async function Home() {
     narrativeStyles: db.select().from(narrativeStyles).all(),
     voiceStyles: db.select().from(voiceStyles).all(),
     imageStyles: db.select().from(imageStyles).all(),
+    captionStyles: db.select().from(captionStyles).all(),
   };
   const defaultMode = listPreferences(db).defaultMode === "manual" ? "manual" : "auto";
 

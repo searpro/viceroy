@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "./db/client";
-import { imageStyles, narrativeStyles, voiceStyles } from "./db/schema";
+import { captionStyles, imageStyles, narrativeStyles, voiceStyles } from "./db/schema";
 
 export const narrativeStyleSchema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -41,6 +41,24 @@ export const imageStyleSchema = z.object({
   defaultParams: z.record(z.string(), z.union([z.number(), z.string()])).optional(),
 });
 export type ImageStyleInput = z.infer<typeof imageStyleSchema>;
+
+// Style fields mirror remotion/schema.ts's captionStyleSchema field-for-field
+// — that is what the render pipeline and the live preview actually validate
+// props against. No .default() here for the same .partial()-PATCH reason as
+// every other schema in this file.
+export const captionStyleSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  description: z.string().trim().min(1),
+  fontFamily: z.string().trim().min(1).optional(),
+  fontSize: z.number().int().positive().optional(),
+  fontWeight: z.number().int().positive().optional(),
+  color: z.string().trim().min(1).optional(),
+  outlineColor: z.string().trim().min(1).optional(),
+  outlineWidth: z.number().min(0).optional(),
+  bottomOffset: z.number().min(0).max(1).optional(),
+  uppercase: z.boolean().optional(),
+});
+export type CaptionStyleInput = z.infer<typeof captionStyleSchema>;
 
 /** better-sqlite3's shape for a FOREIGN KEY constraint violation. */
 function isForeignKeyError(error: unknown): boolean {
@@ -124,6 +142,33 @@ export function deleteImageStyle(db: Db, id: string): void {
   }
   try {
     db.delete(imageStyles).where(eq(imageStyles.id, id)).run();
+  } catch (error) {
+    if (isForeignKeyError(error)) {
+      throw new Error(`Cannot delete "${existing.name}" — it is used by an existing project`);
+    }
+    throw error;
+  }
+}
+
+export function listCaptionStyles(db: Db) {
+  return db.select().from(captionStyles).all();
+}
+export function createCaptionStyle(db: Db, input: CaptionStyleInput) {
+  return db.insert(captionStyles).values(input).returning().get();
+}
+export function updateCaptionStyle(db: Db, id: string, input: Partial<CaptionStyleInput>) {
+  const existing = db.select().from(captionStyles).where(eq(captionStyles.id, id)).get();
+  if (!existing) throw new Error("No such caption style");
+  return db.update(captionStyles).set(input).where(eq(captionStyles.id, id)).returning().get();
+}
+export function deleteCaptionStyle(db: Db, id: string): void {
+  const existing = db.select().from(captionStyles).where(eq(captionStyles.id, id)).get();
+  if (!existing) throw new Error("No such caption style");
+  if (existing.isBuiltin) {
+    throw new Error(`Cannot delete the built-in caption style "${existing.name}"`);
+  }
+  try {
+    db.delete(captionStyles).where(eq(captionStyles.id, id)).run();
   } catch (error) {
     if (isForeignKeyError(error)) {
       throw new Error(`Cannot delete "${existing.name}" — it is used by an existing project`);

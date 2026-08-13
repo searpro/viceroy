@@ -74,6 +74,27 @@ export const imageStyles = sqliteTable("image_styles", {
   updatedAt: updatedAt(),
 });
 
+// Mirrors remotion/schema.ts's captionStyleSchema field-for-field — that file
+// is what the render pipeline and the live preview actually validate props
+// against, so a field added there needs the same field added here to reach a
+// render at all.
+export const captionStyles = sqliteTable("caption_styles", {
+  id: id(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull(),
+  fontFamily: text("font_family").notNull().default("Inter, system-ui, -apple-system, sans-serif"),
+  fontSize: integer("font_size").notNull().default(76),
+  fontWeight: integer("font_weight").notNull().default(800),
+  color: text("color").notNull().default("#ffffff"),
+  outlineColor: text("outline_color").notNull().default("#000000"),
+  outlineWidth: integer("outline_width").notNull().default(10),
+  bottomOffset: real("bottom_offset").notNull().default(0.17),
+  uppercase: integer("uppercase", { mode: "boolean" }).notNull().default(false),
+  isBuiltin: integer("is_builtin", { mode: "boolean" }).notNull().default(false),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
 /* ----------------------------------------------------------------- project */
 
 export const PROJECT_STAGES = [
@@ -108,6 +129,7 @@ export const projects = sqliteTable(
     narrativeStyleId: text("narrative_style_id").references(() => narrativeStyles.id),
     voiceStyleId: text("voice_style_id").references(() => voiceStyles.id),
     imageStyleId: text("image_style_id").references(() => imageStyles.id),
+    captionStyleId: text("caption_style_id").references(() => captionStyles.id),
 
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -383,6 +405,7 @@ export const schema = {
   narrativeStyles,
   voiceStyles,
   imageStyles,
+  captionStyles,
   projects,
   characters,
   scenes,

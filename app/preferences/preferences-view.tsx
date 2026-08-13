@@ -9,6 +9,7 @@ type Preferences = {
   defaultNarrativeStyle?: string;
   defaultVoiceStyle?: string;
   defaultImageStyle?: string;
+  defaultCaptionStyle?: string;
   defaultMode?: string;
 };
 
@@ -17,11 +18,13 @@ export function PreferencesView({
   narrativeStyles,
   voiceStyles,
   imageStyles,
+  captionStyles,
 }: {
   preferences: Preferences;
   narrativeStyles: Style[];
   voiceStyles: Style[];
   imageStyles: Style[];
+  captionStyles: Style[];
 }) {
   const [prefs, setPrefs] = useState(preferences);
 
@@ -67,6 +70,12 @@ export function PreferencesView({
           value={prefs.defaultImageStyle ?? ""}
           options={imageStyles.map((s) => s.name)}
           onChange={(value) => save("defaultImageStyle", value)}
+        />
+        <PreferenceSelect
+          label="Default caption style"
+          value={prefs.defaultCaptionStyle ?? ""}
+          options={captionStyles.map((s) => s.name)}
+          onChange={(value) => save("defaultCaptionStyle", value)}
         />
 
         <div>

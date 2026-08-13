@@ -5,7 +5,7 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M3 PR4 shipped.** Preferences screen; M3 complete._
+_Last updated: 2026-08-12 — **M4 PR1 shipped.** Caption style CRUD with a live Remotion preview._
 
 ---
 
@@ -25,7 +25,7 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | M1 — Thin end-to-end slice (idea → MP4) | **Complete** — a real 1080×1920 MP4 exists |
 | M2 — Manual mode and review surfaces | PR1 + PR2 + PR3 shipped |
 | M3 — Management screens | **Complete** — PR1 + PR2 + PR3 + PR4 |
-| M4 — Output control | Not started |
+| M4 — Output control | PR1 shipped |
 | M5 — Packaging | Not started |
 
 ## M0 progress
@@ -547,17 +547,81 @@ was checked, which the form correctly picked up.
 editor with reset-to-built-in, and preferences — all four pieces
 [`docs/PLAN.md`](PLAN.md) named for the milestone.
 
+## M4 PR1 — caption style CRUD with a live Remotion preview (shipped)
+
+Before this, caption styling was a single hardcoded `DEFAULT_CAPTION_STYLE`
+(`remotion/schema.ts`) baked into every render — no table, no reuse across
+projects, no way to see a style before rendering three minutes of video with
+it. This PR gives captions the same style-CRUD shape as narrative/voice/image
+(M3 PR1), plus the live preview half of M4's plan item.
+
+| Piece | Where |
+| ----- | ----- |
+| `caption_styles` table + `projects.caption_style_id`, migration `0003` | `lib/db/schema.ts`, `drizzle/0003_quick_captain_america.sql` |
+| Two built-in styles ("Standard", "Bold Uppercase") + `defaultCaptionStyle` preference | `lib/db/seed.ts` |
+| Zod schema + CRUD functions | `lib/styles.ts` (`captionStyleSchema`, `*CaptionStyle`) |
+| `GET`/`POST`, `PATCH`/`DELETE` | `app/api/styles/caption/`, `app/api/styles/caption/[id]/` |
+| "Caption" tab, form + live preview | `app/styles/styles-view.tsx` |
+| `<Player>` wrapper around a dedicated lightweight composition | `app/styles/caption-preview-player.tsx`, `remotion/CaptionPreview.tsx` |
+| `createProject` resolves a caption style the same way as the other three; new-project form gets a 4th select; preferences screen gets a 4th dropdown | `lib/projects.ts`, `app/new-project-form.tsx`, `app/preferences/` |
+| Render pipeline uses the project's caption style instead of always the default | `lib/pipeline/render.ts` (`resolveRenderCaptionStyle`), `lib/pipeline/context.ts` (`loadProject` now also returns `captionStyle`) |
+
+**The live preview needed no bundling, no staged files, and no headless
+browser** — the three things the real render path (`@remotion/renderer`,
+`lib/pipeline/render.ts`) exists to manage. `@remotion/player` (newly added,
+pinned to the same `4.0.508` as the rest of the Remotion toolchain) renders a
+composition as a plain React component directly in the browser, so
+`remotion/CaptionPreview.tsx` — the `Caption` component from `StoryVideo.tsx`
+(now exported) over a placeholder gradient, cycling through three sample
+lines — mounts straight into the style editor and updates on every keystroke.
+Verified in the browser: typing a new text color repainted the preview
+immediately, with no save or reload.
+
+**`captionStyleId` is optional, not required, in `loadProject`.** The other
+three styles are required — every generation stage needs them and `loadProject`
+throws if one is missing. A project created before this migration has no
+`captionStyleId` to resolve, and the caption style only matters to the last
+stage, so `loadProject` returns `captionStyle: undefined` for such a project
+instead of throwing, and `resolveRenderCaptionStyle` falls back to
+`DEFAULT_CAPTION_STYLE` — an old project stays renderable rather than being
+blocked on a column that postdates it.
+
+**Style fields intentionally duplicate `remotion/schema.ts`'s
+`captionStyleSchema`**, field-for-field, rather than the render pipeline
+reading the new table directly as its schema. The table is what a user edits
+through CRUD (name, description, builtin protection, FK-in-use checks); the
+composition's schema is what actually gates a render (F22 — defaults are not
+auto-filled into `inputProps`). Keeping them separate means a `caption_styles`
+row can carry fields a composition doesn't need without touching render code,
+and `resolveRenderCaptionStyle` explicitly bridges the two with
+`captionStyleSchema.parse()`, which also strips the CRUD-only columns
+(`id`/`name`/`description`/`isBuiltin`/timestamps) down to just what the
+composition declares.
+
+12 new tests across `lib/styles.test.ts`, `lib/preferences.test.ts` and
+`lib/pipeline/render.test.ts` (the last covering `resolveRenderCaptionStyle`
+and `createProject`'s caption-style resolution as pure logic, not a real
+render — per finding F7, an actual render is verified with `ffprobe`, never
+by a unit test) — 278 tests pass, `tsc --noEmit` clean, `next build`
+succeeds. Verified in the browser: both built-in styles list correctly, a
+full create → live-preview-updates → verify → delete round-trip was run
+against a throwaway style, and the new 4th selector renders correctly on
+both the new-project form and the preferences screen.
+
 ## Known gaps
 
 None open at the moment.
 
 ## What to pick up next
 
-**M3 is complete.** M4 — output control — is next per the plan: caption
-style customisation with a live Remotion preview, resolution selection, and a
-job queue screen (status, logs, abort, retry, delete — `lib/queue/index.ts`
-already has abort/retry/delete; project detail already lists jobs inline,
-but there is no queue-wide view).
+**M4 PR2 — resolution selection, or the job queue screen.** Two pieces of
+M4's plan item remain. Resolution selection touches `lib/config.ts` (which
+already enforces F4 — dimensions must be multiples of 16 — at startup) and
+`lib/pipeline/render.ts`'s `ctx.config.video.width`/`height`, and would need
+per-project storage the way caption style just got. The job queue screen is
+more purely additive: `lib/queue/index.ts` already has abort/retry/delete and
+project detail already lists jobs inline, but there is no queue-wide view
+across projects.
 
 Also open, not part of M4 but flagged along the way and still unscheduled:
 **LLM-authoring for styles** (generate a style from a text brief, out of

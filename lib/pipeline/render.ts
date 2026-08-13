@@ -5,8 +5,8 @@ import { asc, eq } from "drizzle-orm";
 import { bundle } from "@remotion/bundler";
 import { ensureBrowser, renderMedia, selectComposition } from "@remotion/renderer";
 import { storeAsset } from "../assets";
-import { captionStyleSchema, DEFAULT_CAPTION_STYLE } from "../../remotion/schema";
-import { assets, renders, scenes, subtitleCues, voiceovers } from "../db/schema";
+import { captionStyleSchema, DEFAULT_CAPTION_STYLE, type CaptionStyle } from "../../remotion/schema";
+import { assets, captionStyles, renders, scenes, subtitleCues, voiceovers } from "../db/schema";
 import {
   awaitReview,
   checkAbort,
@@ -18,6 +18,21 @@ import {
 
 const COMPOSITION_ID = "StoryVideo";
 const FPS = 30;
+
+/**
+ * A project created before `captionStyleId` existed has no row to resolve —
+ * falling back to `DEFAULT_CAPTION_STYLE` keeps an old project renderable
+ * instead of failing a stage over a column that predates it.
+ *
+ * `captionStyleSchema.parse` both validates and strips the row down to just
+ * the fields the composition's schema declares, discarding
+ * `id`/`name`/`description`/`isBuiltin`/timestamps.
+ */
+export function resolveRenderCaptionStyle(
+  captionStyle: typeof captionStyles.$inferSelect | undefined,
+): CaptionStyle {
+  return captionStyle ? captionStyleSchema.parse(captionStyle) : DEFAULT_CAPTION_STYLE;
+}
 
 const remotionEntry = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -39,7 +54,7 @@ const remotionEntry = path.resolve(
  */
 export async function runRender(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
-  const { project } = loadProject(ctx.db, projectId);
+  const { project, captionStyle } = loadProject(ctx.db, projectId);
 
   const voiceover = ctx.db.select().from(voiceovers).where(eq(voiceovers.projectId, projectId)).get();
   if (!voiceover?.audioAssetId || !voiceover.durationMs) {
@@ -98,7 +113,7 @@ export async function runRender(ctx: StageContext): Promise<void> {
       width: ctx.config.video.width,
       height: ctx.config.video.height,
       fps: FPS,
-      captionStyle: DEFAULT_CAPTION_STYLE,
+      captionStyle: resolveRenderCaptionStyle(captionStyle),
       status: "rendering",
     })
     .returning()

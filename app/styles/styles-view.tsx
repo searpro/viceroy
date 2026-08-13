@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { CaptionPreviewPlayer } from "./caption-preview-player";
 
 type NarrativeStyle = {
   id: string;
@@ -38,10 +39,26 @@ type ImageStyle = {
   isBuiltin: boolean;
 };
 
+type CaptionStyle = {
+  id: string;
+  name: string;
+  description: string;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  color: string;
+  outlineColor: string;
+  outlineWidth: number;
+  bottomOffset: number;
+  uppercase: boolean;
+  isBuiltin: boolean;
+};
+
 const TABS = [
   { key: "narrative", label: "Narrative" },
   { key: "voice", label: "Voice" },
   { key: "image", label: "Image" },
+  { key: "caption", label: "Caption" },
 ] as const;
 type Tab = (typeof TABS)[number]["key"];
 
@@ -49,15 +66,18 @@ export function StylesView({
   narrativeStyles,
   voiceStyles,
   imageStyles,
+  captionStyles,
 }: {
   narrativeStyles: NarrativeStyle[];
   voiceStyles: VoiceStyle[];
   imageStyles: ImageStyle[];
+  captionStyles: CaptionStyle[];
 }) {
   const [tab, setTab] = useState<Tab>("narrative");
   const [narrative, setNarrative] = useState(narrativeStyles);
   const [voice, setVoice] = useState(voiceStyles);
   const [image, setImage] = useState(imageStyles);
+  const [caption, setCaption] = useState(captionStyles);
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-14">
@@ -67,8 +87,8 @@ export function StylesView({
 
       <h1 className="mt-4 text-2xl font-semibold tracking-tight">Styles</h1>
       <p className="mt-2 text-sm text-white/45">
-        Narrative, voice and image styles a project can be built with. Built-in styles can be
-        edited but not deleted.
+        Narrative, voice, image and caption styles a project can be built with. Built-in styles
+        can be edited but not deleted.
       </p>
 
       <nav className="mt-6 flex gap-1 border-b border-white/10">
@@ -91,6 +111,7 @@ export function StylesView({
         {tab === "narrative" && <NarrativeTab styles={narrative} onChange={setNarrative} />}
         {tab === "voice" && <VoiceTab styles={voice} onChange={setVoice} />}
         {tab === "image" && <ImageTab styles={image} onChange={setImage} />}
+        {tab === "caption" && <CaptionTab styles={caption} onChange={setCaption} />}
       </div>
     </main>
   );
@@ -795,6 +816,295 @@ function ImageCard({
   );
 }
 
+/* ---------------------------------------------------------------- caption */
+
+const EMPTY_CAPTION = {
+  name: "",
+  description: "",
+  fontFamily: "Inter, system-ui, -apple-system, sans-serif",
+  fontSize: 76,
+  fontWeight: 800,
+  color: "#ffffff",
+  outlineColor: "#000000",
+  outlineWidth: 10,
+  bottomOffset: 0.17,
+  uppercase: false,
+};
+
+type CaptionForm = typeof EMPTY_CAPTION;
+
+function CaptionTab({
+  styles,
+  onChange,
+}: {
+  styles: CaptionStyle[];
+  onChange: (styles: CaptionStyle[]) => void;
+}) {
+  const [form, setForm] = useState<CaptionForm>(EMPTY_CAPTION);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function create() {
+    setBusy(true);
+    setError(null);
+    const response = await fetch("/api/styles/caption", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setError(body.error ?? "Could not create style");
+    } else {
+      onChange([...styles, body.style]);
+      setForm(EMPTY_CAPTION);
+    }
+    setBusy(false);
+  }
+
+  async function save(id: string, patch: Partial<CaptionForm>): Promise<string | null> {
+    const response = await fetch(`/api/styles/caption/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const body = await response.json();
+    if (!response.ok) return body.error ?? "Could not save";
+    onChange(styles.map((s) => (s.id === id ? body.style : s)));
+    return null;
+  }
+
+  async function remove(id: string): Promise<string | null> {
+    const response = await fetch(`/api/styles/caption/${id}`, { method: "DELETE" });
+    if (response.status === 204) {
+      onChange(styles.filter((s) => s.id !== id));
+      return null;
+    }
+    const body = await response.json().catch(() => ({}));
+    return body.error ?? "Could not delete";
+  }
+
+  return (
+    <div className="space-y-3">
+      {styles.map((style) => (
+        <CaptionCard key={style.id} style={style} onSave={save} onDelete={remove} />
+      ))}
+
+      <section className="rounded-lg border border-white/10 bg-white/[0.02] p-4">
+        <h2 className="text-sm font-medium uppercase tracking-wide text-white/40">
+          New caption style
+        </h2>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Field label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
+            <Field
+              label="Description"
+              value={form.description}
+              onChange={(v) => setForm({ ...form, description: v })}
+            />
+            <Field
+              label="Font family"
+              value={form.fontFamily}
+              onChange={(v) => setForm({ ...form, fontFamily: v })}
+            />
+            <div className="flex gap-2">
+              <NumberField
+                label="Font size"
+                value={form.fontSize}
+                onChange={(v) => setForm({ ...form, fontSize: v })}
+              />
+              <NumberField
+                label="Font weight"
+                value={form.fontWeight}
+                onChange={(v) => setForm({ ...form, fontWeight: v })}
+              />
+            </div>
+            <div className="flex gap-2">
+              <ColorField
+                label="Text color"
+                value={form.color}
+                onChange={(v) => setForm({ ...form, color: v })}
+              />
+              <ColorField
+                label="Outline color"
+                value={form.outlineColor}
+                onChange={(v) => setForm({ ...form, outlineColor: v })}
+              />
+            </div>
+            <div className="flex gap-2">
+              <NumberField
+                label="Outline width"
+                value={form.outlineWidth}
+                onChange={(v) => setForm({ ...form, outlineWidth: v })}
+              />
+              <NumberField
+                label="Bottom offset (0-1)"
+                value={form.bottomOffset}
+                step={0.01}
+                onChange={(v) => setForm({ ...form, bottomOffset: v })}
+              />
+            </div>
+            <label className="flex items-center gap-2 text-xs text-white/60">
+              <input
+                type="checkbox"
+                checked={form.uppercase}
+                onChange={(event) => setForm({ ...form, uppercase: event.target.checked })}
+              />
+              Uppercase
+            </label>
+          </div>
+          <CaptionPreviewPlayer captionStyle={form} />
+        </div>
+        {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+        <button
+          onClick={create}
+          disabled={busy || !form.name}
+          className="mt-3 rounded-md bg-amber-400 px-3 py-1.5 text-xs font-medium text-black transition hover:bg-amber-300 disabled:opacity-40"
+        >
+          Create
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function CaptionCard({
+  style,
+  onSave,
+  onDelete,
+}: {
+  style: CaptionStyle;
+  onSave: (id: string, patch: Partial<CaptionForm>) => Promise<string | null>;
+  onDelete: (id: string) => Promise<string | null>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState<CaptionForm>({
+    name: style.name,
+    description: style.description,
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    fontWeight: style.fontWeight,
+    color: style.color,
+    outlineColor: style.outlineColor,
+    outlineWidth: style.outlineWidth,
+    bottomOffset: style.bottomOffset,
+    uppercase: style.uppercase,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    const err = await onSave(style.id, form);
+    setError(err);
+    setBusy(false);
+    if (!err) setEditing(false);
+  }
+
+  async function remove() {
+    setBusy(true);
+    setError(await onDelete(style.id));
+    setBusy(false);
+  }
+
+  return (
+    <section className="rounded-lg border border-white/10 bg-white/[0.02] p-4">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-sm font-medium">
+          {style.name} {style.isBuiltin && <span className="text-xs text-white/35">built-in</span>}
+        </h3>
+        <div className="flex gap-3 text-xs text-white/40">
+          <button onClick={() => setEditing((v) => !v)} className="hover:text-amber-300">
+            {editing ? "cancel" : "edit"}
+          </button>
+          {!style.isBuiltin && (
+            <button onClick={remove} disabled={busy} className="hover:text-red-300">
+              delete
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="mt-1 text-xs text-white/50">{style.description}</p>
+      <p className="mt-1 text-[11px] text-white/30">
+        {style.fontFamily.split(",")[0]} · {style.fontSize}px{style.uppercase ? " · uppercase" : ""}
+      </p>
+
+      {editing && (
+        <div className="mt-3 grid gap-4 border-t border-white/5 pt-3 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Field label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
+            <Field
+              label="Description"
+              value={form.description}
+              onChange={(v) => setForm({ ...form, description: v })}
+            />
+            <Field
+              label="Font family"
+              value={form.fontFamily}
+              onChange={(v) => setForm({ ...form, fontFamily: v })}
+            />
+            <div className="flex gap-2">
+              <NumberField
+                label="Font size"
+                value={form.fontSize}
+                onChange={(v) => setForm({ ...form, fontSize: v })}
+              />
+              <NumberField
+                label="Font weight"
+                value={form.fontWeight}
+                onChange={(v) => setForm({ ...form, fontWeight: v })}
+              />
+            </div>
+            <div className="flex gap-2">
+              <ColorField
+                label="Text color"
+                value={form.color}
+                onChange={(v) => setForm({ ...form, color: v })}
+              />
+              <ColorField
+                label="Outline color"
+                value={form.outlineColor}
+                onChange={(v) => setForm({ ...form, outlineColor: v })}
+              />
+            </div>
+            <div className="flex gap-2">
+              <NumberField
+                label="Outline width"
+                value={form.outlineWidth}
+                onChange={(v) => setForm({ ...form, outlineWidth: v })}
+              />
+              <NumberField
+                label="Bottom offset (0-1)"
+                value={form.bottomOffset}
+                step={0.01}
+                onChange={(v) => setForm({ ...form, bottomOffset: v })}
+              />
+            </div>
+            <label className="flex items-center gap-2 text-xs text-white/60">
+              <input
+                type="checkbox"
+                checked={form.uppercase}
+                onChange={(event) => setForm({ ...form, uppercase: event.target.checked })}
+              />
+              Uppercase
+            </label>
+            {error && <p className="text-xs text-red-400">{error}</p>}
+            <button
+              onClick={save}
+              disabled={busy}
+              className="rounded-md border border-white/15 px-3 py-1.5 text-xs transition hover:border-white/35 disabled:opacity-40"
+            >
+              Save
+            </button>
+          </div>
+          <CaptionPreviewPlayer captionStyle={form} />
+        </div>
+      )}
+      {!editing && error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </section>
+  );
+}
+
 /* ----------------------------------------------------------------- shared */
 
 function Field({
@@ -825,6 +1135,60 @@ function Field({
           className="mt-1 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none focus:border-white/25"
         />
       )}
+    </label>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  onChange,
+  step,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  step?: number;
+}) {
+  return (
+    <label className="block flex-1">
+      <span className="block text-xs text-white/45">{label}</span>
+      <input
+        type="number"
+        value={value}
+        step={step ?? 1}
+        onChange={(event) => onChange(Number(event.target.value) || 0)}
+        className="mt-1 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none focus:border-white/25"
+      />
+    </label>
+  );
+}
+
+function ColorField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block flex-1">
+      <span className="block text-xs text-white/45">{label}</span>
+      <div className="mt-1 flex items-center gap-2 rounded-md border border-white/10 bg-black/20 px-2 py-1.5">
+        <input
+          type="color"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-6 w-8 cursor-pointer border-0 bg-transparent p-0"
+        />
+        <input
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="w-full bg-transparent text-sm outline-none"
+        />
+      </div>
     </label>
   );
 }

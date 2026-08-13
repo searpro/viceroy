@@ -1,5 +1,5 @@
 import { getDb } from "@/lib/db/client";
-import { listImageStyles, listNarrativeStyles, listVoiceStyles } from "@/lib/styles";
+import { listCaptionStyles, listImageStyles, listNarrativeStyles, listVoiceStyles } from "@/lib/styles";
 import { StylesView } from "./styles-view";
 
 export const dynamic = "force-dynamic";
@@ -12,6 +12,7 @@ export default async function StylesPage() {
       narrativeStyles={listNarrativeStyles(db)}
       voiceStyles={listVoiceStyles(db)}
       imageStyles={listImageStyles(db)}
+      captionStyles={listCaptionStyles(db)}
     />
   );
 }

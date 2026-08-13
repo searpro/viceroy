@@ -9,11 +9,13 @@ export function NewProjectForm({
   narrativeStyles,
   voiceStyles,
   imageStyles,
+  captionStyles,
   defaultMode,
 }: {
   narrativeStyles: Style[];
   voiceStyles: Style[];
   imageStyles: Style[];
+  captionStyles: Style[];
   defaultMode: "auto" | "manual";
 }) {
   const router = useRouter();
@@ -31,6 +33,7 @@ export function NewProjectForm({
         narrativeStyleId: formData.get("narrativeStyleId"),
         voiceStyleId: formData.get("voiceStyleId"),
         imageStyleId: formData.get("imageStyleId"),
+        captionStyleId: formData.get("captionStyleId"),
         mode: formData.get("mode"),
       }),
     });
@@ -64,10 +67,11 @@ export function NewProjectForm({
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
         <Select label="Narrative style" name="narrativeStyleId" options={narrativeStyles} />
         <Select label="Voice style" name="voiceStyleId" options={voiceStyles} />
         <Select label="Image style" name="imageStyleId" options={imageStyles} />
+        <Select label="Caption style" name="captionStyleId" options={captionStyles} />
       </div>
 
       <fieldset className="flex gap-4">

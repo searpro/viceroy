@@ -3,6 +3,7 @@ import { createDb, createSqlite, type Db } from "./client";
 import { runMigrations } from "./migrate";
 import { resolveConfig } from "../config";
 import {
+  captionStyles,
   imageStyles,
   narrativeStyles,
   preferences,
@@ -11,6 +12,7 @@ import {
   voiceStyles,
 } from "./schema";
 import { DEFAULT_PROMPT_TEMPLATES } from "../prompts/defaults";
+import { DEFAULT_CAPTION_STYLE } from "../../remotion/schema";
 
 /**
  * Built-in narrative styles.
@@ -165,6 +167,22 @@ const IMAGE_STYLES = [
   },
 ];
 
+const CAPTION_STYLES = [
+  {
+    name: "Standard",
+    description: "Large white caption with a heavy black outline. Legible over any frame.",
+    ...DEFAULT_CAPTION_STYLE,
+  },
+  {
+    name: "Bold Uppercase",
+    description: "All-caps, tighter to the bottom edge. Suits fast-cut, high-urgency material.",
+    ...DEFAULT_CAPTION_STYLE,
+    fontSize: 64,
+    bottomOffset: 0.1,
+    uppercase: true,
+  },
+];
+
 const PROVIDERS = [
   { kind: "llm" as const, name: "sd-api (local)", model: "mistral-nemo-12b" },
   { kind: "image" as const, name: "sd-api (local)", model: IMAGE_MODEL },
@@ -210,6 +228,13 @@ export function seed(db: Db): { inserted: Record<string, number> } {
     .returning({ id: imageStyles.id })
     .all().length;
 
+  inserted.captionStyles = db
+    .insert(captionStyles)
+    .values(CAPTION_STYLES.map((s) => ({ ...s, isBuiltin: true })))
+    .onConflictDoNothing()
+    .returning({ id: captionStyles.id })
+    .all().length;
+
   const config = resolveConfig();
   const existingProviders = db.select({ kind: providers.kind }).from(providers).all();
   const haveKinds = new Set(existingProviders.map((p) => p.kind));
@@ -228,6 +253,7 @@ export function seed(db: Db): { inserted: Record<string, number> } {
       { key: "defaultNarrativeStyle", value: NARRATIVE_STYLES[0]!.name },
       { key: "defaultVoiceStyle", value: VOICE_STYLES[0]!.name },
       { key: "defaultImageStyle", value: IMAGE_STYLES[0]!.name },
+      { key: "defaultCaptionStyle", value: CAPTION_STYLES[0]!.name },
       { key: "defaultMode", value: "auto" },
     ])
     .onConflictDoNothing()

@@ -12,6 +12,7 @@ export const PREFERENCE_KEYS = [
   "defaultNarrativeStyle",
   "defaultVoiceStyle",
   "defaultImageStyle",
+  "defaultCaptionStyle",
   "defaultMode",
 ] as const;
 export type PreferenceKey = (typeof PREFERENCE_KEYS)[number];
