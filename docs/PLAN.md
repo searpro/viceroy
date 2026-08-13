@@ -233,11 +233,28 @@ generation task with variable hints.
 Caption style customisation with live Remotion preview. Resolution selection.
 Job queue screen: status, logs, abort, retry, delete.
 
-### M5 — Packaging
+### M5 — Beta hardening
+
+M1–M4 shipped every planned screen and pipeline stage; this milestone finds
+and fixes what breaks when a person actually uses them, rather than adding
+scope. Testing is manual, done by the user against the running app — not a
+new automated suite (existing Vitest/Playwright coverage stays as-is unless a
+fix needs a regression test).
+
+Process: the user reports a bug from real use → it's captured in
+[`docs/bugs.md`](bugs.md) with enough detail to reproduce (the flow, expected
+vs. actual) → each bug is fixed as its own PR, oldest open first unless the
+user reprioritises → the tracker entry is closed with the fixing commit.
+
+**Deliverable:** `docs/bugs.md` shows every reported bug closed, or the
+milestone stays open. No fixed bug count target — done means the tracker is
+empty, not that a quota was hit.
+
+### M6 — Packaging
 
 Containerise. Configurable output/cache storage location, S3 optional.
 
-**Beyond M5** the requirements doc's priority list takes over: platform
+**Beyond M6** the requirements doc's priority list takes over: platform
 publishing + analytics, storytelling quality, motion video via WAN/LTX, AI
 influencers.
 

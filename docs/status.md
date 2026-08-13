@@ -5,7 +5,8 @@ built, what is next, and what is deliberately not built yet. The plan lives in
 [`docs/PLAN.md`](PLAN.md); measured facts about the local stack live in
 [`docs/findings.md`](findings.md).
 
-_Last updated: 2026-08-12 — **M4 PR3 shipped.** Resolution selection; M4 complete._
+_Last updated: 2026-08-12 — **M5 (beta hardening) started.** Manual testing
+begins; bugs tracked in [`docs/bugs.md`](bugs.md)._
 
 ---
 
@@ -26,7 +27,8 @@ Verified output: h264 1080×1920 @ 30fps, 5369 frames, AAC 48 kHz stereo,
 | M2 — Manual mode and review surfaces | PR1 + PR2 + PR3 shipped |
 | M3 — Management screens | **Complete** — PR1 + PR2 + PR3 + PR4 |
 | M4 — Output control | **Complete** — PR1 + PR2 + PR3 |
-| M5 — Packaging | Not started |
+| M5 — Beta hardening | **In progress** — manual testing, tracker at [`docs/bugs.md`](bugs.md) |
+| M6 — Packaging | Not started |
 
 ## M0 progress
 
@@ -709,12 +711,15 @@ None open at the moment.
 
 ## What to pick up next
 
-**M4 is complete.** M5 — packaging — is next per the plan: containerise,
-configurable output/cache storage location, S3 optional.
+**M5 — beta hardening is in progress.** Feature/milestone work is paused.
+The user tests the running app manually; when a bug is reported, capture it
+in [`docs/bugs.md`](bugs.md) under Open before root-causing it, then fix it
+as its own PR, oldest open first unless reprioritised. See
+[`docs/PLAN.md`](PLAN.md#m5--beta-hardening) for the full process.
 
-Also open, not part of M4/M5 but flagged along the way and still unscheduled:
-**LLM-authoring for styles** (generate a style from a text brief, out of
-scope in M3 PR1).
+Deferred until M5's tracker is empty: M6 — packaging (containerise,
+configurable output/cache storage, S3 optional), and the still-unscheduled
+**LLM-authoring for styles** item flagged in M3 PR1.
 
 ## Environment as found (2026-08-11)
 
