@@ -11,6 +11,9 @@ data/
 .env.local
 .DS_Store
 
+# queued by .githooks/post-commit, drained by the log-progress skill
+docs/.notion-pending.log
+
 coverage/
 test-results/
 playwright-report/

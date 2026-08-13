@@ -1,0 +1,19 @@
+#!/bin/sh
+# A git hook has no way to drive the Notion MCP tools — only an agent session
+# running the log-progress skill can. So this doesn't talk to Notion itself;
+# it queues the commit into docs/.notion-pending.log, which AGENTS.md's
+# session-start check reads and the log-progress skill drains. See
+# docs/notion.md for the full mechanism.
+
+pending_log="docs/.notion-pending.log"
+mkdir -p "$(dirname "$pending_log")"
+
+commit_hash=$(git rev-parse --short HEAD)
+commit_subject=$(git log -1 --pretty=%s)
+commit_date=$(git log -1 --pretty=%ad --date=short)
+
+printf '%s\t%s\t%s\n' "$commit_hash" "$commit_date" "$commit_subject" >> "$pending_log"
+
+pending_count=$(wc -l < "$pending_log" | tr -d ' ')
+echo "queued for Notion progress log ($commit_hash): $commit_subject" >&2
+echo "  -> $pending_count commit(s) pending; the log-progress skill drains this at the next session" >&2
