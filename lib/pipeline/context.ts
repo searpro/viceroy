@@ -121,6 +121,44 @@ export function awaitReview(db: Db, projectId: string, reason?: string): void {
     .run();
 }
 
-export function formatChecklist(style: typeof narrativeStyles.$inferSelect): string {
-  return style.evaluationChecklist.map((c) => `- ${c.key}: ${c.description}`).join("\n");
+/**
+ * `extra` lets a caller append checklist items that do not belong to the
+ * style itself — e.g. `factual_grounding`, which only applies to Context-mode
+ * projects and would otherwise mean touching every `narrative_styles` row.
+ */
+export function formatChecklist(
+  style: typeof narrativeStyles.$inferSelect,
+  extra: { key: string; description: string }[] = [],
+): string {
+  return [...style.evaluationChecklist, ...extra].map((c) => `- ${c.key}: ${c.description}`).join("\n");
+}
+
+// Appended to `factual_grounding` when Context mode is active — kept next to
+// the checklist builder so the wording used to score a project always matches
+// the wording used to prompt it.
+export const FACTUAL_GROUNDING_CHECKLIST_ITEM = {
+  key: "factual_grounding",
+  description:
+    "Introduces no people, events, dates, causes or outcomes beyond what the supplied " +
+    "context states or reasonably paraphrases.",
+};
+
+/**
+ * The clause every story-content stage injects when a project is grounded in
+ * user-supplied source material rather than a freely invented idea.
+ *
+ * Empty in Idea mode, so every template that references `{{groundingInstruction}}`
+ * degrades to today's behaviour with no visible change in the rendered prompt.
+ */
+export function groundingInstruction(project: typeof projects.$inferSelect): string {
+  if (project.inputMode !== "context") return "";
+  return (
+    "This project is grounded in source material the user supplied, not a freely " +
+    "invented premise. Treat that material as the factual ground truth: do not introduce " +
+    "characters, events, dates, causes or outcomes that are not present in it or a " +
+    "reasonable paraphrase of it. If the material runs out before the requested length, " +
+    "stay narrower and more incomplete rather than inventing to fill the gap. This is a " +
+    "prompt-adherence instruction, not fact-checking against the real world — you have no " +
+    "way to verify the material itself, only to avoid adding to it."
+  );
 }

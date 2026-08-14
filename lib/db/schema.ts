@@ -118,6 +118,15 @@ export const projects = sqliteTable(
     id: id(),
     idea: text("idea").notNull(),
     title: text("title"),
+    // How the story's facts originate: "idea" is today's freely-invented
+    // one-liner; "context" grounds every downstream stage in a longer,
+    // user-supplied source text (see `context`). Deliberately not named
+    // `mode` — that already means the auto/manual *review* cadence below.
+    inputMode: text("input_mode", { enum: ["idea", "context"] }).notNull().default("idea"),
+    // Populated only when inputMode === "context". Only the synopsis stage
+    // reads this directly; every later stage works from the synopsis/story
+    // text it produced, so the context's token cost is paid once.
+    context: text("context"),
     synopsis: text("synopsis"),
     story: text("story"),
     stage: text("stage", { enum: PROJECT_STAGES }).notNull().default("draft"),

@@ -5,7 +5,9 @@ import { enqueue } from "../queue";
 import {
   awaitReview,
   checkAbort,
+  FACTUAL_GROUNDING_CHECKLIST_ITEM,
   formatChecklist,
+  groundingInstruction,
   loadProject,
   requireProjectId,
   resolveProvider,
@@ -13,7 +15,15 @@ import {
   type StageContext,
 } from "./context";
 
-/** Stage 1 — the user's one-line idea becomes a working synopsis. */
+/**
+ * Stage 1 — the user's source material becomes a working synopsis.
+ *
+ * In Idea mode that source is the one-line idea, freely elaborated. In
+ * Context mode it is the longer pasted material, which this is the only
+ * stage to see in full: every later stage works from the synopsis/story text
+ * this one produces, so the context's token cost is paid once here rather
+ * than resent to every downstream call.
+ */
 export async function runSynopsis(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
   const { project, narrativeStyle } = loadProject(ctx.db, projectId);
@@ -21,14 +31,16 @@ export async function runSynopsis(ctx: StageContext): Promise<void> {
 
   const direction = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction : "";
   const key = project.synopsis && direction ? "synopsis.refine" : "synopsis.generate";
+  const source = project.inputMode === "context" ? (project.context ?? "") : project.idea;
 
   const prompt = renderPrompt(ctx.db, key, {
-    idea: project.idea,
+    idea: source,
     synopsis: project.synopsis ?? "",
     direction,
     narrativeStyle: narrativeStyle.name,
     plannerGuidance: narrativeStyle.plannerGuidance,
     targetSceneCount: String(narrativeStyle.targetSceneCount),
+    groundingInstruction: groundingInstruction(project),
   });
 
   ctx.log(`Generating synopsis with ${provider.model} (${key})`);
@@ -68,6 +80,7 @@ export async function runStory(ctx: StageContext): Promise<void> {
     deliveryCues: voiceStyle.deliveryCues,
     targetSceneCount: String(narrativeStyle.targetSceneCount),
     targetWordCount: String(narrativeStyle.targetWordCount),
+    groundingInstruction: groundingInstruction(project),
   });
 
   ctx.log(`Writing story with ${provider.model} (${key})`);
@@ -110,10 +123,21 @@ export async function runStoryEval(ctx: StageContext): Promise<void> {
 
   if (!project.story) throw new Error(`Project ${projectId} has no story to evaluate`);
 
+  // Context mode adds one checklist dimension at evaluation time rather than
+  // touching the narrative style's own rows — the dimension is a property of
+  // this project's input mode, not of the style.
+  const isContext = project.inputMode === "context";
+  const extraChecklist = isContext ? [FACTUAL_GROUNDING_CHECKLIST_ITEM] : [];
+  const allowedKeys = narrativeStyle.evaluationChecklist.map((c) => c.key).concat(extraChecklist.map((c) => c.key));
+
   const prompt = renderPrompt(ctx.db, "story.evaluate", {
     story: project.story,
     narrativeStyle: narrativeStyle.name,
-    checklist: formatChecklist(narrativeStyle),
+    checklist: formatChecklist(narrativeStyle, extraChecklist),
+    contextBlock:
+      isContext && project.context
+        ? `\nSource context this narration must stay grounded in:\n${project.context}\n`
+        : "",
   });
 
   ctx.log(`Evaluating story with ${provider.model}`);
@@ -127,7 +151,7 @@ export async function runStoryEval(ctx: StageContext): Promise<void> {
   });
 
   const iteration = countEvaluations(ctx, projectId);
-  const parsed = parseEvaluation(raw, narrativeStyle.evaluationChecklist.map((c) => c.key));
+  const parsed = parseEvaluation(raw, allowedKeys);
 
   ctx.db
     .insert(evaluations)
@@ -196,6 +220,7 @@ export async function runStoryRevise(ctx: StageContext): Promise<void> {
     writingGuidance: narrativeStyle.writingGuidance,
     issues: latest.issues.map((i) => `- [${i.severity}] ${i.note}`).join("\n"),
     targetWordCount: String(narrativeStyle.targetWordCount),
+    groundingInstruction: groundingInstruction(project),
   });
 
   ctx.log(`Revising story against ${latest.issues.length} issue(s)`);

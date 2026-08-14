@@ -28,6 +28,18 @@ const STORY_VARS = [
   { name: "direction", description: "Free-text steer supplied by the user, may be empty" },
   { name: "checklist", description: "The narrative style's evaluation checklist, pre-formatted" },
   { name: "issues", description: "Issues the evaluator raised, pre-formatted" },
+  {
+    name: "groundingInstruction",
+    description:
+      "Context-mode faithfulness clause; empty string in Idea mode, so the template " +
+      "renders identically to today when this is unused",
+  },
+  {
+    name: "contextBlock",
+    description:
+      "The source context text, pre-formatted with a heading, shown to the evaluator " +
+      "only in Context mode; empty string otherwise",
+  },
 ];
 
 function pick(...names: string[]) {
@@ -47,13 +59,20 @@ export const DEFAULT_PROMPT_TEMPLATES: PromptTemplateSeed[] = [
     section: "Synopsis",
     label: "Generate synopsis",
     description: "Turns the user's one-line idea into a working synopsis.",
-    variables: pick("idea", "narrativeStyle", "plannerGuidance", "targetSceneCount"),
+    variables: pick(
+      "idea",
+      "narrativeStyle",
+      "plannerGuidance",
+      "targetSceneCount",
+      "groundingInstruction",
+    ),
     template: `You are a story developer working in the "{{narrativeStyle}}" style.
 
 Style guidance:
 {{plannerGuidance}}
+{{groundingInstruction}}
 
-Expand this idea into a synopsis for a short narrated video of about {{targetSceneCount}} scenes:
+Develop the following into a synopsis for a short narrated video of about {{targetSceneCount}} scenes:
 
 "{{idea}}"
 
@@ -72,12 +91,13 @@ preamble, no closing commentary. Output only the synopsis.`,
     section: "Synopsis",
     label: "Refine synopsis",
     description: "Rewrites the current synopsis under a user's direction.",
-    variables: pick("synopsis", "direction", "narrativeStyle", "plannerGuidance"),
+    variables: pick("synopsis", "direction", "narrativeStyle", "plannerGuidance", "groundingInstruction"),
     template: `You are revising a synopsis for a short narrated video in the
 "{{narrativeStyle}}" style.
 
 Style guidance:
 {{plannerGuidance}}
+{{groundingInstruction}}
 
 Current synopsis:
 {{synopsis}}
@@ -102,12 +122,14 @@ Write 120-180 words of flowing prose. Output only the revised synopsis.`,
       "deliveryCues",
       "targetSceneCount",
       "targetWordCount",
+      "groundingInstruction",
     ),
     template: `You are writing the narration for a short video in the
 "{{narrativeStyle}}" style.
 
 Style guidance:
 {{writingGuidance}}
+{{groundingInstruction}}
 
 It will be read aloud by a single narrator. Delivery:
 {{deliveryCues}}
@@ -137,12 +159,14 @@ Output only the narration text.`,
       "writingGuidance",
       "deliveryCues",
       "targetWordCount",
+      "groundingInstruction",
     ),
     template: `You are revising the narration for a short video in the
 "{{narrativeStyle}}" style.
 
 Style guidance:
 {{writingGuidance}}
+{{groundingInstruction}}
 
 It will be read aloud by a single narrator. Delivery:
 {{deliveryCues}}
@@ -165,7 +189,7 @@ Output only the revised narration.`,
     section: "Story",
     label: "Evaluate story",
     description: "Scores the story against the narrative style's own checklist.",
-    variables: pick("story", "narrativeStyle", "checklist"),
+    variables: pick("story", "narrativeStyle", "checklist", "contextBlock"),
     template: `You are a story editor judging a short video narration written in the
 "{{narrativeStyle}}" style.
 
@@ -176,6 +200,7 @@ not mention is not a flaw here.
 
 Narration:
 {{story}}
+{{contextBlock}}
 
 Respond with a single JSON object, no prose around it:
 
@@ -206,12 +231,14 @@ Rules:
       "writingGuidance",
       "issues",
       "targetWordCount",
+      "groundingInstruction",
     ),
     template: `You are revising the narration for a short video in the
 "{{narrativeStyle}}" style.
 
 Style guidance:
 {{writingGuidance}}
+{{groundingInstruction}}
 
 Current narration:
 {{story}}
@@ -231,7 +258,7 @@ Output only the revised narration.`,
     section: "Elements",
     label: "Extract characters",
     description: "Finds the cast and fixes each one's canonical look.",
-    variables: pick("story", "visualGuidance"),
+    variables: pick("story", "visualGuidance", "groundingInstruction"),
     template: `Identify the people who appear in this narration.
 
 Narration:
@@ -239,6 +266,7 @@ Narration:
 
 Art direction for this story:
 {{visualGuidance}}
+{{groundingInstruction}}
 
 For each person who is actually depicted — not merely mentioned in passing —
 give a name and a fixed visual description.
@@ -303,7 +331,14 @@ Respond with a single JSON object, no prose around it:
     section: "Elements",
     label: "Visualise a scene",
     description: "Turns one scene's narration into a storyboard and an image prompt.",
-    variables: pick("sceneText", "sceneDescription", "characters", "visualGuidance", "direction"),
+    variables: pick(
+      "sceneText",
+      "sceneDescription",
+      "characters",
+      "visualGuidance",
+      "direction",
+      "groundingInstruction",
+    ),
     template: `Design a single still image for one scene of a narrated video.
 
 What the narrator says over this scene:
@@ -317,6 +352,7 @@ Cast (use these appearance descriptions verbatim if the character appears):
 
 Art direction:
 {{visualGuidance}}
+{{groundingInstruction}}
 
 Additional direction from the writer for this redo, if any:
 {{direction}}

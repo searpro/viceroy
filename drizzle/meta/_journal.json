@@ -36,6 +36,13 @@
       "when": 1786599618105,
       "tag": "0004_shocking_patch",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1786695882777,
+      "tag": "0005_add_project_input_mode",
+      "breakpoints": true
     }
   ]
 }

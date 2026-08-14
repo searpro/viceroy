@@ -6,6 +6,11 @@ import { useState, useTransition } from "react";
 type Style = { id: string; name: string; description: string };
 type ResolutionPreset = { key: string; label: string };
 
+// Mirrors CONTEXT_MAX in lib/projects.ts — a sane UX ceiling, not a measured
+// model token-budget limit. Enforced again server-side, since a client check
+// alone is not validation.
+const CONTEXT_MAX = 8000;
+
 export function NewProjectForm({
   narrativeStyles,
   voiceStyles,
@@ -32,7 +37,9 @@ export function NewProjectForm({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [inputMode, setInputMode] = useState<"idea" | "context">("idea");
   const [idea, setIdea] = useState("");
+  const [context, setContext] = useState("");
 
   async function submit(formData: FormData) {
     setError(null);
@@ -40,7 +47,12 @@ export function NewProjectForm({
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        idea: formData.get("idea"),
+        inputMode,
+        // Only the active mode's field is sent — the schema does not require
+        // both, and sending the inactive one would just be stale leftovers.
+        ...(inputMode === "context"
+          ? { context: formData.get("context") }
+          : { idea: formData.get("idea") }),
         narrativeStyleId: formData.get("narrativeStyleId"),
         voiceStyleId: formData.get("voiceStyleId"),
         imageStyleId: formData.get("imageStyleId"),
@@ -60,24 +72,86 @@ export function NewProjectForm({
 
   return (
     <form action={submit} className="space-y-5">
-      <div>
-        <label htmlFor="idea" className="block text-sm font-medium">
-          The idea
-        </label>
-        <textarea
-          id="idea"
-          name="idea"
-          rows={3}
-          required
-          value={idea}
-          onChange={(event) => setIdea(event.target.value)}
-          placeholder="a plumber became mayor just by using his wits"
-          className="mt-2 w-full resize-none rounded-md border border-white/10 bg-black/20 px-3 py-2 text-base outline-none placeholder:text-white/25 focus:border-white/25"
-        />
-        <p className="mt-1.5 text-xs text-white/40">
-          One line is enough — the synopsis is written from it.
-        </p>
-      </div>
+      <fieldset className="flex gap-4">
+        <legend className="mb-2 text-sm font-medium">Input</legend>
+        {[
+          { value: "idea" as const, label: "Idea based", hint: "A one-line idea, freely elaborated" },
+          {
+            value: "context" as const,
+            label: "Context based",
+            hint: "Paste in source material to stay grounded in",
+          },
+        ].map((option) => (
+          <label
+            key={option.value}
+            className="flex flex-1 cursor-pointer gap-3 rounded-md border border-white/10 bg-black/20 p-3 has-[:checked]:border-amber-400/50 has-[:checked]:bg-amber-400/5"
+          >
+            <input
+              type="radio"
+              name="inputMode"
+              value={option.value}
+              checked={inputMode === option.value}
+              onChange={() => setInputMode(option.value)}
+              className="mt-1 accent-amber-400"
+            />
+            <span>
+              <span className="block text-sm">{option.label}</span>
+              <span className="block text-xs text-white/40">{option.hint}</span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+
+      {inputMode === "idea" ? (
+        <div>
+          <label htmlFor="idea" className="block text-sm font-medium">
+            The idea
+          </label>
+          <textarea
+            id="idea"
+            name="idea"
+            rows={3}
+            required
+            value={idea}
+            onChange={(event) => setIdea(event.target.value)}
+            placeholder="a plumber became mayor just by using his wits"
+            className="mt-2 w-full resize-none rounded-md border border-white/10 bg-black/20 px-3 py-2 text-base outline-none placeholder:text-white/25 focus:border-white/25"
+          />
+          <p className="mt-1.5 text-xs text-white/40">
+            One line is enough — the synopsis is written from it.
+          </p>
+        </div>
+      ) : (
+        <div>
+          <label htmlFor="context" className="block text-sm font-medium">
+            The context
+          </label>
+          <textarea
+            id="context"
+            name="context"
+            rows={14}
+            required
+            maxLength={CONTEXT_MAX}
+            value={context}
+            onChange={(event) => setContext(event.target.value)}
+            placeholder="Paste in an account of the real event, biography, or background notes the story should stay grounded in…"
+            className="mt-2 w-full resize-y rounded-md border border-white/10 bg-black/20 px-3 py-2 text-base outline-none placeholder:text-white/25 focus:border-white/25"
+          />
+          <div className="mt-1.5 flex items-start justify-between gap-4">
+            <p className="text-xs text-white/40">
+              Every stage is instructed to stay inside this material rather than invent — but this is
+              prompt adherence, not fact-checking. Nothing here is verified against the real world.
+            </p>
+            <p
+              className={`shrink-0 text-xs tabular-nums ${
+                context.length > CONTEXT_MAX * 0.95 ? "text-amber-400" : "text-white/40"
+              }`}
+            >
+              {context.length}/{CONTEXT_MAX}
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
         <Select
@@ -157,7 +231,10 @@ export function NewProjectForm({
 
       <button
         type="submit"
-        disabled={pending || idea.trim().length < 8}
+        disabled={
+          pending ||
+          (inputMode === "idea" ? idea.trim().length < 8 : context.trim().length < 8)
+        }
         className="rounded-md bg-amber-400 px-4 py-2 text-sm font-medium text-black transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
       >
         {pending ? "Starting…" : "Start"}

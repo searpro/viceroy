@@ -5,6 +5,7 @@ import { enqueue } from "../queue";
 import {
   awaitReview,
   checkAbort,
+  groundingInstruction,
   loadProject,
   requireProjectId,
   resolveProvider,
@@ -44,6 +45,11 @@ export async function runElements(ctx: StageContext): Promise<void> {
   const sentences = splitSentences(project.story);
   if (sentences.length === 0) throw new Error(`Project ${projectId} has an empty story`);
 
+  // Character/scene invention (names, appearances, causal details not in the
+  // story) is exactly where fabrication tends to reappear even when the story
+  // text itself stayed faithful, so Context mode's grounding reaches here too.
+  const grounding = groundingInstruction(project);
+
   /* Pass 1 — the cast. */
   let cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
   if (cast.length === 0) {
@@ -56,6 +62,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
           content: renderPrompt(ctx.db, "elements.characters", {
             story: project.story,
             visualGuidance: narrativeStyle.visualGuidance,
+            groundingInstruction: grounding,
           }),
         },
       ],
@@ -156,6 +163,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
             characters: castBlock,
             visualGuidance: narrativeStyle.visualGuidance,
             direction,
+            groundingInstruction: grounding,
           }),
         },
       ],

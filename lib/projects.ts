@@ -20,15 +20,41 @@ import { enqueue, listJobs } from "./queue";
 import { advance, isStalled, nextStep } from "./pipeline/chain";
 import { RESOLUTION_KEYS, resolvePresetDimensions } from "./resolution";
 
-export const createProjectSchema = z.object({
-  idea: z.string().trim().min(8, "Give the idea a little more to work with").max(2000),
-  narrativeStyleId: z.string().optional(),
-  voiceStyleId: z.string().optional(),
-  imageStyleId: z.string().optional(),
-  captionStyleId: z.string().optional(),
-  resolutionKey: z.enum(RESOLUTION_KEYS).optional(),
-  mode: z.enum(["auto", "manual"]).default("auto"),
-});
+// A sane UX ceiling, not a measured model token-budget limit (Finding F10
+// covers the actual, model-dependent context window) — see VIC-003.
+const CONTEXT_MAX = 8000;
+
+export const createProjectSchema = z
+  .object({
+    // Deliberately not named `mode` — `mode` already means the auto/manual
+    // review cadence below. This chooses where the story's facts come from.
+    inputMode: z.enum(["idea", "context"]).default("idea"),
+    idea: z.string().trim().max(2000).optional(),
+    context: z.string().trim().max(CONTEXT_MAX).optional(),
+    narrativeStyleId: z.string().optional(),
+    voiceStyleId: z.string().optional(),
+    imageStyleId: z.string().optional(),
+    captionStyleId: z.string().optional(),
+    resolutionKey: z.enum(RESOLUTION_KEYS).optional(),
+    mode: z.enum(["auto", "manual"]).default("auto"),
+  })
+  .superRefine((data, ctx) => {
+    if (data.inputMode === "idea") {
+      if (!data.idea || data.idea.length < 8) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["idea"],
+          message: "Give the idea a little more to work with",
+        });
+      }
+    } else if (!data.context || data.context.length < 8) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["context"],
+        message: "Paste in more context to work with",
+      });
+    }
+  });
 
 // `z.input` rather than `z.infer`, so callers may omit anything with a default
 // — the function parses what it is given rather than trusting it.
@@ -64,6 +90,12 @@ function resolveStyle<T extends { id: string; name: string }>(
   return chosen;
 }
 
+/** A short caller-facing label for a Context-mode project's `idea`/`title`. */
+function shortLabel(context: string): string {
+  const firstLine = context.trim().split("\n")[0]!.trim();
+  return firstLine.length > 120 ? `${firstLine.slice(0, 117)}…` : firstLine;
+}
+
 export function createProject(db: Db, raw: CreateProjectInput) {
   const input = createProjectSchema.parse(raw);
   const narrative = resolveStyle(
@@ -92,10 +124,19 @@ export function createProject(db: Db, raw: CreateProjectInput) {
   );
   const resolution = resolvePresetDimensions(resolveConfig(), input.resolutionKey);
 
+  // `idea` stays NOT NULL either way — rather than a nullability change, a
+  // Context-mode project gets a short label derived from its context, which
+  // doubles as `title` for the list/job views that already fall back to it.
+  const isContext = input.inputMode === "context";
+  const label = isContext ? shortLabel(input.context!) : input.idea!;
+
   const [project] = db
     .insert(projects)
     .values({
-      idea: input.idea,
+      idea: label,
+      title: isContext ? label : null,
+      inputMode: input.inputMode,
+      context: isContext ? input.context : null,
       mode: input.mode,
       narrativeStyleId: narrative.id,
       voiceStyleId: voice.id,

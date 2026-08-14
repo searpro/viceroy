@@ -61,6 +61,42 @@ function startProject(mode: "auto" | "manual" = "auto") {
   return { project, job: claim(db)! };
 }
 
+/** Like `contextFor`, but also records every prompt sent to the fake LLM. */
+function capturingContextFor(
+  job: Job,
+  responses: { content?: string; json?: unknown }[],
+): { ctx: StageContext; prompts: string[] } {
+  const prompts: string[] = [];
+  let index = 0;
+  const next = () => responses[Math.min(index++, responses.length - 1)]!;
+
+  const ctx: StageContext = {
+    db,
+    config: resolveConfig({ VICEROY_DATA_DIR: "./data" }),
+    job,
+    log: () => {},
+    progress: () => {},
+    shouldAbort: () => false,
+    sdApi: {
+      llm: {
+        chat: async ({ messages }: { messages: { content: string }[] }) => {
+          prompts.push(messages[0]!.content);
+          return { content: next().content ?? "", completionTokens: 10 };
+        },
+        chatJson: async ({ messages }: { messages: { content: string }[] }) => {
+          prompts.push(messages[0]!.content);
+          return next().json;
+        },
+      },
+      image: {} as never,
+      audio: {} as never,
+      http: {} as never,
+      health: async () => true,
+    } as unknown as StageContext["sdApi"],
+  };
+  return { ctx, prompts };
+}
+
 describe("runSynopsis", () => {
   it("writes the synopsis and moves the project on", async () => {
     const { project, job } = startProject();
@@ -97,6 +133,38 @@ describe("runSynopsis", () => {
     await expect(
       runSynopsis(contextFor(job, [{ content: "Colder." }])),
     ).resolves.toBeUndefined();
+  });
+
+  // VIC-003: Context mode sources the synopsis from `project.context` rather
+  // than `project.idea`, and every story-content prompt carries a grounding
+  // clause instructing the model to stay inside the supplied material.
+  it("sources the prompt from context and includes the grounding clause in Context mode", async () => {
+    const project = createProject(db, {
+      inputMode: "context",
+      context: "On March 3rd, a plumber in Millbrook fixed a burst main and later ran for mayor.",
+    });
+    const job = claim(db)!;
+
+    const { ctx, prompts } = capturingContextFor(job, [{ content: "A synopsis." }]);
+    await runSynopsis(ctx);
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain(
+      "On March 3rd, a plumber in Millbrook fixed a burst main and later ran for mayor.",
+    );
+    expect(prompts[0]).toContain("do not introduce");
+
+    const after = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(after.synopsis).toBe("A synopsis.");
+  });
+
+  // A regression here is the signal Context mode stopped being additive.
+  it("leaves Idea-mode prompts free of the grounding clause", async () => {
+    const { job } = startProject();
+    const { ctx, prompts } = capturingContextFor(job, [{ content: "A synopsis." }]);
+    await runSynopsis(ctx);
+
+    expect(prompts[0]).not.toContain("do not introduce");
   });
 });
 
@@ -245,6 +313,44 @@ describe("runStoryEval", () => {
         ]),
       ),
     ).rejects.toThrow(/none of this style's checklist keys/);
+  });
+
+  // VIC-003: Context mode adds a `factual_grounding` checklist dimension at
+  // evaluation time, without touching the narrative style's own rows.
+  it("accepts a factual_grounding verdict and shows the evaluator the context in Context mode", async () => {
+    const project = createProject(db, {
+      inputMode: "context",
+      context: "The plumber fixed the main on March 3rd and later ran for mayor.",
+    });
+    claim(db);
+    db.update(projects)
+      .set({ synopsis: "S.", story: "The story." })
+      .where(eq(projects.id, project.id))
+      .run();
+
+    const job = enqueue(db, { type: "story_eval", projectId: project.id });
+    const { ctx, prompts } = capturingContextFor(job, [
+      { json: { ...goodEvaluation(), dimensions: { ...goodEvaluation().dimensions, factual_grounding: { score: 5, comment: "faithful" } } } },
+    ]);
+    await runStoryEval(ctx);
+
+    expect(prompts[0]).toContain("factual_grounding");
+    expect(prompts[0]).toContain("The plumber fixed the main on March 3rd and later ran for mayor.");
+
+    const [evaluation] = db.select().from(evaluations).where(eq(evaluations.projectId, project.id)).all();
+    expect(evaluation!.dimensions.factual_grounding).toEqual({ score: 5, comment: "faithful" });
+  });
+
+  // Idea-mode projects never see the dimension — nothing in the checklist
+  // sent to the evaluator should name it, and the prompt should carry no
+  // context block.
+  it("omits factual_grounding entirely in Idea mode", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "story_eval", projectId: project.id });
+    const { ctx, prompts } = capturingContextFor(job, [{ json: goodEvaluation() }]);
+    await runStoryEval(ctx);
+
+    expect(prompts[0]).not.toContain("factual_grounding");
   });
 });
 

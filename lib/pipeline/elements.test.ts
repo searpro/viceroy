@@ -216,6 +216,52 @@ describe("runElements", () => {
 
     expect(db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()).toHaveLength(3);
   });
+
+  // VIC-003: character/scene invention is where fabrication tends to
+  // reappear even when the story text stayed faithful, so the grounding
+  // clause must reach elements.characters and elements.scene, not just the
+  // synopsis/story stages.
+  it("threads the grounding clause into the character and scene prompts in Context mode", async () => {
+    const project = createProject(db, {
+      inputMode: "context",
+      context: "The plumber, Hal Griffin, fixed the main on March 3rd and later ran for mayor.",
+    });
+    claim(db);
+    db.update(projects)
+      .set({ synopsis: "A synopsis.", story: STORY })
+      .where(eq(projects.id, project.id))
+      .run();
+
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    const prompts: Record<string, unknown>[] = [];
+    await runElements(
+      stubContext(db, job, {
+        llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        onChatJsonRequest: (r) => prompts.push(r),
+      }),
+    );
+
+    const contents = prompts.map((p) => (p.messages as { content: string }[])[0]!.content);
+    // Prompt order is characters, then beats, then one per scene.
+    expect(contents[0]).toContain("do not introduce");
+    expect(contents[2]).toContain("do not introduce");
+  });
+
+  it("leaves the character and scene prompts free of the grounding clause in Idea mode", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    const prompts: Record<string, unknown>[] = [];
+    await runElements(
+      stubContext(db, job, {
+        llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        onChatJsonRequest: (r) => prompts.push(r),
+      }),
+    );
+
+    const contents = prompts.map((p) => (p.messages as { content: string }[])[0]!.content);
+    expect(contents[0]).not.toContain("do not introduce");
+    expect(contents[2]).not.toContain("do not introduce");
+  });
 });
 
 describe("runCharacterImages", () => {
