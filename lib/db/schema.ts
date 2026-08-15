@@ -29,7 +29,13 @@ export const narrativeStyles = sqliteTable("narrative_styles", {
   description: text("description").notNull(),
   plannerGuidance: text("planner_guidance").notNull(),
   writingGuidance: text("writing_guidance").notNull(),
-  visualGuidance: text("visual_guidance").notNull(),
+  // What the world of this story looks like: settings, props, subjects,
+  // framing. Deliberately NOT how it is rendered — grade, film stock and
+  // lighting quality live on the image style's `renderGuidance`, because they
+  // apply to character portraits too and this does not. Conflating the two is
+  // what let a portrait be generated in a different register from the scenes
+  // that use it as a reference (BUG-009).
+  sceneGuidance: text("scene_guidance").notNull(),
   evaluationChecklist: text("evaluation_checklist", { mode: "json" })
     .notNull()
     .$type<{ key: string; description: string }[]>(),
@@ -64,8 +70,19 @@ export const imageStyles = sqliteTable("image_styles", {
   id: id(),
   name: text("name").notNull().unique(),
   description: text("description").notNull(),
+  // The rendering register in prose, written to be read by the LLM that
+  // composes an image prompt. `promptPrefix`/`promptSuffix` are the mechanical
+  // wrapper applied afterwards; this is what stops the model writing a prompt
+  // that argues with that wrapper (BUG-008).
+  renderGuidance: text("render_guidance").notNull().default(""),
   promptPrefix: text("prompt_prefix").notNull().default(""),
   promptSuffix: text("prompt_suffix").notNull().default(""),
+  // Overrides the image provider's negative prompt when set. Moving negatives
+  // onto the provider (commit c19bbbe) merged two styles' avoid-lists into
+  // one, leaving documentary generations arguing against their own available
+  // light (BUG-014). A style may now carry its own; empty means "use the
+  // provider's".
+  negativePrompt: text("negative_prompt").notNull().default(""),
   isBuiltin: integer("is_builtin", { mode: "boolean" }).notNull().default(false),
   createdAt: createdAt(),
   updatedAt: updatedAt(),

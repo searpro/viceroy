@@ -9,12 +9,23 @@ export type PromptTemplateSeed = {
 
 const STORY_VARS = [
   { name: "idea", description: "The one-line idea the user typed" },
+  {
+    name: "context",
+    description: "The source material pasted in Context mode, verbatim",
+  },
   { name: "sentences", description: "The narration, one numbered sentence per line" },
   { name: "sentenceCount", description: "How many numbered sentences there are" },
   { name: "sceneText", description: "The narration span belonging to this scene" },
   { name: "sceneDescription", description: "One-line summary of what this scene shows" },
   { name: "characters", description: "The cast, as name + appearance lines" },
-  { name: "visualGuidance", description: "The narrative style's art direction" },
+  {
+    name: "sceneGuidance",
+    description: "The narrative style's world: settings, props, subjects — not how it is rendered",
+  },
+  {
+    name: "imageStyleGuidance",
+    description: "The image style's rendering register: grade, lighting quality, film stock",
+  },
   { name: "characterName", description: "The character being portrayed" },
   { name: "characterDescription", description: "That character's written description" },
   { name: "synopsis", description: "The working synopsis" },
@@ -25,7 +36,12 @@ const STORY_VARS = [
   { name: "deliveryCues", description: "The voice style's delivery guidance" },
   { name: "targetSceneCount", description: "How many scenes the style asks for" },
   { name: "targetWordCount", description: "Target length of the narration, in words" },
-  { name: "direction", description: "Free-text steer supplied by the user, may be empty" },
+  {
+    name: "direction",
+    description:
+      "Free-text steer supplied by the user, pre-formatted with its own heading; " +
+      "empty string when there is none, so no empty labelled section is left behind",
+  },
   { name: "checklist", description: "The narrative style's evaluation checklist, pre-formatted" },
   { name: "issues", description: "Issues the evaluator raised, pre-formatted" },
   {
@@ -82,6 +98,43 @@ The synopsis must:
 - carry a specific, concrete hook in the first sentence
 - end on the turn or reversal the story is built around
 - stay grounded in the idea as given; do not swap the premise for a different one
+
+Write 120-180 words of flowing prose. No headings, no bullet points, no
+preamble, no closing commentary. Output only the synopsis.`,
+  },
+  {
+    key: "synopsis.fromContext",
+    section: "Synopsis",
+    label: "Generate synopsis from source material",
+    description:
+      "Context mode's opening stage. Distinct from synopsis.generate because the input is " +
+      "pasted source material to be condensed, not a one-line idea to be elaborated.",
+    variables: pick("context", "narrativeStyle", "plannerGuidance", "targetSceneCount"),
+    template: `You are a story developer working in the "{{narrativeStyle}}" style.
+
+Style guidance:
+{{plannerGuidance}}
+
+Below is source material the user supplied. Treat it as the factual ground
+truth for everything that follows. Your job is to find the story already in it
+and condense that into a synopsis for a short narrated video of about
+{{targetSceneCount}} scenes.
+
+Source material:
+{{context}}
+
+The synopsis must:
+- name the central figure and what they want
+- state what stands in their way
+- carry a specific, concrete hook in the first sentence
+- end on the turn or reversal the material is built around
+- introduce no people, events, dates, causes or outcomes the material does not
+  state or reasonably imply
+- stay narrower and more incomplete rather than inventing to fill a gap, if the
+  material does not carry enough for the full length
+
+This is prompt adherence, not fact-checking: you have no way to verify the
+material itself, only to avoid adding to it.
 
 Write 120-180 words of flowing prose. No headings, no bullet points, no
 preamble, no closing commentary. Output only the synopsis.`,
@@ -258,14 +311,14 @@ Output only the revised narration.`,
     section: "Elements",
     label: "Extract characters",
     description: "Finds the cast and fixes each one's canonical look.",
-    variables: pick("story", "visualGuidance", "groundingInstruction"),
+    variables: pick("story", "sceneGuidance", "groundingInstruction"),
     template: `Identify the people who appear in this narration.
 
 Narration:
 {{story}}
 
-Art direction for this story:
-{{visualGuidance}}
+The world this story takes place in:
+{{sceneGuidance}}
 {{groundingInstruction}}
 
 For each person who is actually depicted — not merely mentioned in passing —
@@ -335,7 +388,8 @@ Respond with a single JSON object, no prose around it:
       "sceneText",
       "sceneDescription",
       "characters",
-      "visualGuidance",
+      "sceneGuidance",
+      "imageStyleGuidance",
       "direction",
       "groundingInstruction",
     ),
@@ -350,11 +404,13 @@ What the scene shows:
 Cast (use these appearance descriptions verbatim if the character appears):
 {{characters}}
 
-Art direction:
-{{visualGuidance}}
-{{groundingInstruction}}
+The world this story takes place in:
+{{sceneGuidance}}
 
-Additional direction from the writer for this redo, if any:
+How the finished image is rendered — the prompt you write must agree with this,
+not argue with it:
+{{imageStyleGuidance}}
+{{groundingInstruction}}
 {{direction}}
 
 Respond with a single JSON object, no prose around it:
@@ -384,7 +440,23 @@ what the array is for — the prompt itself describes them without naming them.`
     section: "Elements",
     label: "Character portrait prompt",
     description: "Builds the reference portrait prompt for one character.",
-    variables: pick("characterName", "characterDescription"),
+    // `characterName` is deliberately absent. The image generator paints a
+    // name it is given as literal text into the picture, so advertising it in
+    // the editor is an invitation to produce a portrait with a caption burned
+    // across it — the same failure `elements.scene` warns about at length.
+    // No art-direction variable here, and that is the fix for BUG-009 rather
+    // than an omission. This template's output goes straight to the diffusion
+    // model with no LLM in between, so it must stay comma-separated phrases —
+    // `renderGuidance` is prose written for the model that composes a scene
+    // prompt, and pasting it here would put sentences into a diffusion prompt.
+    //
+    // The rendering register still reaches this portrait: `runCharacterImages`
+    // wraps it in the image style's own `promptPrefix`/`promptSuffix`, the
+    // same wrapper every scene image gets. Once the *scene* register also
+    // comes from the image style rather than the narrative style, portrait and
+    // scene are rendered alike by construction. The story's settings and props
+    // are correctly absent — this is a face against a plain background.
+    variables: pick("characterDescription"),
     template: `{{characterDescription}}, centred head-and-shoulders portrait,
 neutral expression, facing camera, plain uncluttered background, evenly lit,
 full face clearly visible and unobstructed, no text or watermark`,

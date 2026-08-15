@@ -75,6 +75,20 @@ export function nextStep(db: Db, projectId: string): NextStep {
     .get();
   if (!ready) return { kind: "run", type: "render", reason: "no finished video" };
 
+  // Every other artifact above answers "does this exist"; a render is the one
+  // whose existence does not imply it is current. Without this check, a
+  // project whose upstream was regenerated reports `complete` and hands the
+  // user back the previous video — and manual mode reaches this line by
+  // clicking Continue, where nothing else would re-enqueue the render.
+  const newestInput = Math.max(
+    ...sceneRows.map((scene) => scene.updatedAt.getTime()),
+    voiceover.updatedAt.getTime(),
+    ...cues.map((cue) => cue.createdAt.getTime()),
+  );
+  if (newestInput > ready.createdAt.getTime()) {
+    return { kind: "run", type: "render", reason: "the video is older than the scenes it was built from" };
+  }
+
   return { kind: "complete", reason: "the video is rendered" };
 }
 

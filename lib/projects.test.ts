@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { createTestDb } from "./db/testing";
 import { seed } from "./db/seed";
 import type { Db } from "./db/client";
-import { assets, characters, scenes } from "./db/schema";
+import { assets, characters, projects, renders, scenes, voiceovers } from "./db/schema";
 import { listJobs } from "./queue";
 import { createProject, createProjectSchema, listAllJobs, regenerate } from "./projects";
 
@@ -59,14 +59,17 @@ function projectWithSceneAndCharacter() {
 // makes the stage's own "skip what's already there" logic pick it up, rather
 // than requiring the stage to know about scoped redos at all.
 describe("regenerate — per-row scoping", () => {
-  it("clears only the targeted scene's prompt for an elements redo", () => {
+  // The image goes with the prompt that produced it (BUG-019). Keeping it
+  // would leave every scene holding an image, so `nextStep` walks past
+  // `scene_images` and the frame the user was looking at never changes.
+  it("clears the targeted scene's prompt and its now-stale image for an elements redo", () => {
     const { project, scene } = projectWithSceneAndCharacter();
     regenerate(db, project.id, { target: "elements", sceneId: scene.id, direction: "darker" });
 
     const after = db.select().from(scenes).where(eq(scenes.id, scene.id)).get()!;
     expect(after.imagePrompt).toBeNull();
     expect(after.storyboard).toBeNull();
-    expect(after.imageAssetId).toBe(scene.imageAssetId);
+    expect(after.imageAssetId).toBeNull();
   });
 
   it("clears only the targeted scene's image for a scene_images redo", () => {
@@ -141,15 +144,101 @@ describe("regenerate — per-row scoping", () => {
   });
 });
 
-// A story redo rewrites the narration those scene captions were grouped
-// from — leaving the old rows in place would show stale captions forever,
-// since `runElements` only groups sentences into scenes when none exist.
-describe("regenerate — story redo clears stale scenes", () => {
+// An unscoped redo invalidates everything derived from the stage's output.
+// The failure this prevents is silent: a resumable stage skips artifacts the
+// redo left behind, and the pipeline finishes a video assembled from two
+// different stories with nothing erroring, because each half is self-consistent
+// (BUG-002, BUG-015, BUG-016).
+describe("regenerate — downstream invalidation", () => {
   it("removes existing scenes so elements re-groups them from the new story", () => {
     const { project, scene } = projectWithSceneAndCharacter();
     regenerate(db, project.id, { target: "story", direction: "make it colder" });
 
     expect(db.select().from(scenes).where(eq(scenes.id, scene.id)).get()).toBeUndefined();
+  });
+
+  // BUG-016: `runElements` skips extraction whenever the cast is non-empty, so
+  // a surviving character is pasted into every new scene prompt and used as a
+  // reference image for someone who may no longer be in the story.
+  it("removes the cast on a story redo so elements re-extracts it", () => {
+    const { project, character } = projectWithSceneAndCharacter();
+    regenerate(db, project.id, { target: "story" });
+
+    expect(db.select().from(characters).where(eq(characters.id, character.id)).get()).toBeUndefined();
+  });
+
+  // BUG-015: the worst case. A synopsis redo used to clear nothing, so the new
+  // story was written, the old scenes survived, and the voiceover was spoken
+  // from the discarded story's text.
+  it("clears the story and its scenes on a synopsis redo", () => {
+    const { project, scene, character } = projectWithSceneAndCharacter();
+    db.update(projects).set({ story: "the old story" }).where(eq(projects.id, project.id)).run();
+
+    regenerate(db, project.id, { target: "synopsis" });
+
+    const after = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(after.story).toBeNull();
+    expect(db.select().from(scenes).where(eq(scenes.id, scene.id)).get()).toBeUndefined();
+    expect(db.select().from(characters).where(eq(characters.id, character.id)).get()).toBeUndefined();
+  });
+
+  it("leaves the redone stage's own output alone — the stage overwrites it", () => {
+    const { project } = projectWithSceneAndCharacter();
+    db.update(projects).set({ synopsis: "the current synopsis" }).where(eq(projects.id, project.id)).run();
+
+    regenerate(db, project.id, { target: "synopsis" });
+
+    expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.synopsis).toBe(
+      "the current synopsis",
+    );
+  });
+
+  it("does not reach back past the redone stage", () => {
+    const { project } = projectWithSceneAndCharacter();
+    db.update(projects)
+      .set({ synopsis: "kept", story: "kept too" })
+      .where(eq(projects.id, project.id))
+      .run();
+
+    regenerate(db, project.id, { target: "scene_images" });
+
+    const after = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(after.synopsis).toBe("kept");
+    expect(after.story).toBe("kept too");
+  });
+
+  // A redirected delivery lives on the voiceover row, and `runVoiceover` reads
+  // it back to prefer the user's cues over the voice style's default.
+  it("keeps ttsInstruct when invalidating a voiceover upstream", () => {
+    const { project } = projectWithSceneAndCharacter();
+    db.insert(voiceovers)
+      .values({
+        projectId: project.id,
+        script: "One.",
+        ttsInstruct: "slower, less breathy",
+        audioAssetId: imageAsset().id,
+        durationMs: 1000,
+      })
+      .run();
+
+    regenerate(db, project.id, { target: "story" });
+
+    const after = db.select().from(voiceovers).where(eq(voiceovers.projectId, project.id)).get()!;
+    expect(after.ttsInstruct).toBe("slower, less breathy");
+    expect(after.audioAssetId).toBeNull();
+  });
+
+  // A scoped redo is a request to redraw one frame, not to rebuild the project
+  // from that point down.
+  it("does not cascade when the redo is scoped to one row", () => {
+    const { project, scene } = projectWithSceneAndCharacter();
+    db.insert(renders)
+      .values({ projectId: project.id, width: 1080, height: 1920, captionStyle: {}, status: "ready" })
+      .run();
+
+    regenerate(db, project.id, { target: "scene_images", sceneId: scene.id });
+
+    expect(db.select().from(renders).where(eq(renders.projectId, project.id)).all()).toHaveLength(1);
   });
 
   it("still enqueues the story job with the direction", () => {

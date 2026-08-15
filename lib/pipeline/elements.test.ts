@@ -4,7 +4,7 @@ import { asc, eq } from "drizzle-orm";
 import { createTestDb } from "../db/testing";
 import { seed } from "../db/seed";
 import type { Db } from "../db/client";
-import { assets, characters, projects, providers, scenes } from "../db/schema";
+import { assets, characters, imageStyles, projects, providers, scenes } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
 import { runElements } from "./elements";
@@ -60,6 +60,11 @@ const sceneDetail = (n: number) => ({
     characters: ["the plumber"],
   },
 });
+
+/** The image style a project actually resolved to, for negative-prompt assertions. */
+function imageStyleOf(project: { imageStyleId: string | null }) {
+  return db.select().from(imageStyles).where(eq(imageStyles.id, project.imageStyleId!)).get()!;
+}
 
 describe("filterLiveRefs", () => {
   it("drops a candidate whose hasInput check fails and logs why", async () => {
@@ -228,6 +233,119 @@ describe("runElements", () => {
     expect(messages[0]!.content).toContain("make it rain");
   });
 
+  // BUG-008: the model composing a scene prompt must see the register its
+  // output will be wrapped in. Without this it wrote "richly saturated" into a
+  // prompt about to get ", desaturated colour" appended, and the two halves
+  // argued in the same positive prompt.
+  it("shows the scene prompt writer both the world and the rendering register", async () => {
+    const project = projectWithStory();
+    const style = imageStyleOf(project);
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+
+    const prompts: Record<string, unknown>[] = [];
+    await runElements(
+      stubContext(db, job, {
+        llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        onChatJsonRequest: (r) => prompts.push(r),
+      }),
+    );
+
+    const scenePrompt = (prompts[2]!.messages as { content: string }[])[0]!.content;
+    expect(scenePrompt).toContain(style.renderGuidance);
+    expect(scenePrompt).toContain("Institutional interiors");
+  });
+
+  // BUG-010: `description` is narrative prose by the template's own
+  // definition. Substituting it for a missing appearance puts backstory into
+  // the reference portrait and into every scene prompt built from it.
+  it("drops a character returned without an appearance rather than using their description", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+
+    const castWithGap = {
+      json: {
+        characters: [
+          { name: "the plumber", description: "An unassuming tradesman.", appearance: "wiry man in his fifties, navy overalls" },
+          { name: "the mayor", description: "A career politician who never returned a call." },
+        ],
+      },
+    };
+
+    const prompts: Record<string, unknown>[] = [];
+    await runElements(
+      stubContext(db, job, {
+        llm: [castWithGap, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        onChatJsonRequest: (r) => prompts.push(r),
+      }),
+    );
+
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    expect(cast.map((c) => c.name)).toEqual(["the plumber"]);
+
+    // The dropped character's backstory must not reach a scene prompt either.
+    const scenePrompt = (prompts[2]!.messages as { content: string }[])[0]!.content;
+    expect(scenePrompt).not.toContain("career politician");
+  });
+
+  // BUG-013: an optional section's heading travels with its value, so a
+  // non-redo run leaves no labelled blank for the model to fill in.
+  it("omits the direction heading entirely when there is no direction", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+
+    const prompts: Record<string, unknown>[] = [];
+    await runElements(
+      stubContext(db, job, {
+        llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        onChatJsonRequest: (r) => prompts.push(r),
+      }),
+    );
+
+    const scenePrompt = (prompts[2]!.messages as { content: string }[])[0]!.content;
+    expect(scenePrompt).not.toContain("Additional direction");
+  });
+
+  // BUG-018: the scoped scene is not necessarily the only one pending — a run
+  // that died partway leaves others without a prompt, and the same pass picks
+  // them up. Without the guard, a direction typed for one scene rewrites them
+  // all. `runSceneImages` has always guarded this; `runElements` did not.
+  it("applies a scoped direction to its own scene only, not to others still pending", async () => {
+    const project = projectWithStory();
+    db.insert(characters)
+      .values({ projectId: project.id, name: "the plumber", description: "An unassuming tradesman." })
+      .run();
+    db.insert(scenes)
+      .values([
+        { projectId: project.id, index: 0, description: "the burst pipe", voiceoverScript: "a.", imagePrompt: null },
+        { projectId: project.id, index: 1, description: "the election", voiceoverScript: "b.", imagePrompt: null },
+      ])
+      .run();
+    const target = db.select().from(scenes).where(eq(scenes.index, 1)).get()!;
+
+    const job = enqueue(db, {
+      type: "elements",
+      projectId: project.id,
+      payload: { sceneId: target.id, direction: "make it rain" },
+    });
+
+    const prompts: Record<string, unknown>[] = [];
+    await runElements(
+      stubContext(db, job, {
+        llm: [sceneDetail(1), sceneDetail(2)],
+        onChatJsonRequest: (r) => prompts.push(r),
+      }),
+    );
+
+    expect(prompts).toHaveLength(2);
+    const contentFor = (index: number) =>
+      (prompts[index]!.messages as { content: string }[])[0]!.content;
+
+    expect(contentFor(0)).toContain("the burst pipe");
+    expect(contentFor(0)).not.toContain("make it rain");
+    expect(contentFor(1)).toContain("the election");
+    expect(contentFor(1)).toContain("make it rain");
+  });
+
   // BUG-6: a "redo prompt" click on one scene must not cascade into
   // portraits, scene images and voiceover behind the user's back. Setup
   // avoids an initial unscoped `runElements` pass, which would legitimately
@@ -328,7 +446,7 @@ describe("runCharacterImages", () => {
     return project;
   }
 
-  it("asks with the image provider's model, negative prompt and default params — not the style's", async () => {
+  it("asks with the image provider's model and params, and the style's own negative prompt", async () => {
     const project = await elementsOnly();
     db.update(providers)
       .set({ model: "sdxl-turbo", defaultParams: { steps: 20, seed: 7 }, negativePrompt: "blurry" })
@@ -339,12 +457,31 @@ describe("runCharacterImages", () => {
     const requests: Record<string, unknown>[] = [];
     await runCharacterImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
 
-    expect(requests[0]).toMatchObject({
-      model: "sdxl-turbo",
-      negative_prompt: "blurry",
-      steps: 20,
-      seed: 7,
-    });
+    // Model and params are provider configuration; the negative prompt is
+    // style guidance again (BUG-014) and falls back to the provider's only
+    // when the style carries none.
+    expect(requests[0]).toMatchObject({ model: "sdxl-turbo", steps: 20, seed: 7 });
+    expect(requests[0]!.negative_prompt).toBe(imageStyleOf(project).negativePrompt);
+    expect(requests[0]!.negative_prompt).not.toBe("blurry");
+  });
+
+  // BUG-014: a style with no avoid-list of its own still gets one.
+  it("falls back to the provider's negative prompt when the style carries none", async () => {
+    const project = await elementsOnly();
+    db.update(providers)
+      .set({ negativePrompt: "blurry" })
+      .where(eq(providers.kind, "image"))
+      .run();
+    db.update(imageStyles)
+      .set({ negativePrompt: "" })
+      .where(eq(imageStyles.id, project.imageStyleId!))
+      .run();
+
+    const job = enqueue(db, { type: "character_images", projectId: project.id });
+    const requests: Record<string, unknown>[] = [];
+    await runCharacterImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests[0]!.negative_prompt).toBe("blurry");
   });
 
   // The name is what scenes point at; without storing it every frame would
@@ -629,7 +766,7 @@ describe("runSceneImages", () => {
     });
   });
 
-  it("asks with the image provider's model, negative prompt and default params — not the style's", async () => {
+  it("asks with the image provider's model and params, and the style's own negative prompt", async () => {
     const project = await elementsDone();
     db.update(providers)
       .set({ model: "sdxl-turbo", defaultParams: { steps: 20, seed: 7 }, negativePrompt: "blurry" })
@@ -640,12 +777,12 @@ describe("runSceneImages", () => {
     const requests: Record<string, unknown>[] = [];
     await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
 
-    expect(requests[0]).toMatchObject({
-      model: "sdxl-turbo",
-      negative_prompt: "blurry",
-      steps: 20,
-      seed: 7,
-    });
+    // Model and params are provider configuration; the negative prompt is
+    // style guidance again (BUG-014) and falls back to the provider's only
+    // when the style carries none.
+    expect(requests[0]).toMatchObject({ model: "sdxl-turbo", steps: 20, seed: 7 });
+    expect(requests[0]!.negative_prompt).toBe(imageStyleOf(project).negativePrompt);
+    expect(requests[0]!.negative_prompt).not.toBe("blurry");
   });
 
   it("wraps the scene prompt in the image style's prefix and suffix", async () => {

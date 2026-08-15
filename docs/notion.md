@@ -26,6 +26,7 @@ reads it directly, and it can't live only in Notion.
 | **Architecture Decisions** (database) | https://app.notion.com/p/3a83993f25f94730bc13594332565a81 | ADRs — decisions whose reasoning is worth more than a line. Replaces `docs/adr/` |
 | **Bug Tracker** (database) | https://app.notion.com/p/7aa66b802429405e834ad7953f9acd12 | M5 beta-hardening tracker. Replaces `docs/bugs.md` |
 | **Progress Tracker** (database) | https://app.notion.com/p/20a4b70b74a141f7a8135d1512512835 | One row per delivered PR/milestone/bugfix/decision. Updated by `log-progress` |
+| **Prompt & Flow Audit** | https://app.notion.com/p/3bd0755fb99881ce9f88ce566594eac4 | 2026-08-15 audit of the prompt engine and redo/advance flow. Holds the reasoning spanning BUG-007–BUG-021; the per-item detail is in the Bug Tracker |
 
 ## Database schemas
 

@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createDb, createSqlite, type Db } from "./client";
 import { runMigrations } from "./migrate";
 import { resolveConfig } from "../config";
@@ -35,12 +35,16 @@ const NARRATIVE_STYLES = [
       "Flat, precise, unhurried. Short declarative sentences. Let the facts carry the weight and never " +
       "editorialise — no 'shockingly', no 'unbelievably'. Specifics over adjectives: not 'a huge sum' " +
       "but 'a hundred and four million dollars'. Present tense for immediacy in the central beats.",
-    // Phrased entirely as what IS in frame. Negations belong in the image
-    // provider's negativePrompt: a diffusion prompt has no "not", so "no
-    // fantasy elements" pasted into a positive prompt asks for fantasy elements.
-    visualGuidance:
-      "Desaturated, documentary realism. Available light, hard shadows, handheld framing. Institutional " +
-      "interiors, paperwork, surveillance angles, plain functional surfaces.",
+    // What is in the world, not how it is rendered — the grade and lighting
+    // register that used to live here is now the image style's
+    // `renderGuidance`, so portraits and scenes share it (ADR 0002).
+    //
+    // Phrased entirely as what IS in frame. Negations belong in a
+    // negativePrompt: a diffusion prompt has no "not", so "no fantasy
+    // elements" pasted into a positive prompt asks for fantasy elements.
+    sceneGuidance:
+      "Institutional interiors, paperwork, surveillance angles, plain functional surfaces. " +
+      "Evidence rooms, records offices, car parks, front doors.",
     evaluationChecklist: [
       { key: "specificity", description: "Every claim is anchored to a concrete detail, not a generality." },
       { key: "restraint", description: "The prose never editorialises or reaches for shock." },
@@ -63,9 +67,9 @@ const NARRATIVE_STYLES = [
       "Warm, forward-leaning, a little wry. Vary sentence length and let the short ones land the turns. " +
       "Show competence through specific action, not through being told the character is clever. Earn the " +
       "ending — no sudden reversals the story has not paid for.",
-    visualGuidance:
-      "Warm natural light, richly saturated colour. Working environments and civic spaces — workshops, " +
-      "municipal halls, streets at golden hour. Faces and hands doing real work.",
+    sceneGuidance:
+      "Working environments and civic spaces — workshops, municipal halls, streets, meeting rooms. " +
+      "Faces and hands doing real work. Tools, benches, paperwork handled rather than filed.",
     evaluationChecklist: [
       { key: "earned_win", description: "The victory follows from choices the story showed, not luck." },
       { key: "credible_opposition", description: "What stands in the way is real and not a caricature." },
@@ -87,9 +91,9 @@ const NARRATIVE_STYLES = [
     writingGuidance:
       "Measured and quiet, tightening as it goes. Resist the urge to moralise; the consequence is the " +
       "argument. Keep the protagonist sympathetic even at their worst. End on the cost, not on a lesson.",
-    visualGuidance:
-      "Cool palette drifting colder. Domestic and ordinary settings made uneasy by framing and empty " +
-      "space. Late light, interiors after dark, reflections.",
+    sceneGuidance:
+      "Domestic and ordinary settings made uneasy by framing and empty space — kitchens, hallways, " +
+      "parked cars, desks at night. Reflections, doorways, the room after someone has left it.",
     evaluationChecklist: [
       { key: "inevitability", description: "The ending feels foretold by the opening, not tacked on." },
       { key: "sympathy", description: "The protagonist's reasoning stays understandable throughout." },
@@ -142,29 +146,43 @@ const VOICE_STYLES = [
 // 55s for ssd-1b — faster AND a generation ahead in quality, so it wins on
 // both counts. Its params are the bundle manifest's own: FLUX.2 klein is
 // distilled to 4 steps at cfg 1, and raising either costs time without
-// improving the image. Model, params and negative prompt are all provider
-// configuration now, not style guidance — see the image provider entry in
-// PROVIDERS below. The negative prompt here merges what each builtin style
-// used to ask separately (documentary's "no illustration", noir's "no flat
-// lighting"); a provider can only carry one, so a style-specific avoid-list
-// is no longer possible without a second image provider.
+// improving the image. Model and params are provider configuration, not style
+// guidance — see the image provider entry in PROVIDERS below.
+//
+// The negative prompt below is the provider-level fallback, used only by a
+// style that does not carry its own. The built-in styles do (BUG-014): one
+// merged list could not serve both, since noir's "flat lighting, low contrast"
+// argues against the available light documentary asks for.
 const IMAGE_PARAMS = { steps: 4, cfg_scale: 1, sampler: "euler" };
 const IMAGE_MODEL = "flux2-klein-4b";
-const IMAGE_NEGATIVE_PROMPT =
-  "illustration, cartoon, painting, cgi, oversaturated, glossy, text, watermark, flat lighting, low contrast";
+const IMAGE_NEGATIVE_PROMPT = "text, watermark, extra fingers, deformed hands";
 
+// `renderGuidance` is prose for the LLM composing a prompt; prefix/suffix are
+// the mechanical wrapper applied to whatever it writes. They must agree — the
+// whole point of showing the style to the model is that it stops writing
+// prompts the wrapper then contradicts (ADR 0002). `negativePrompt` is
+// per-style again: one merged list left documentary generations arguing
+// against their own available light.
 const IMAGE_STYLES = [
   {
     name: "Documentary Realism",
     description: "Desaturated, available-light realism. Reads as footage rather than illustration.",
+    renderGuidance:
+      "Photographic. Available light, desaturated colour, hard shadows, handheld framing. Natural " +
+      "skin texture and ordinary imperfection. Reads as a frame of documentary footage.",
     promptPrefix: "documentary photograph, available light, ",
     promptSuffix: ", desaturated colour, 35mm, natural skin texture, shallow depth of field",
+    negativePrompt: "illustration, cartoon, painting, cgi, oversaturated, glossy, text, watermark",
   },
   {
     name: "Cinematic Noir",
     description: "High contrast, hard shadows, cool palette. Suits cautionary and crime material.",
+    renderGuidance:
+      "Composed like a film still. High contrast, hard directional light, deep shadow, cool colour " +
+      "grade. Faces partly in shadow. Deliberate, held framing rather than observed.",
     promptPrefix: "cinematic film still, high contrast lighting, ",
     promptSuffix: ", deep shadows, cool colour grade, anamorphic, film grain",
+    negativePrompt: "illustration, cartoon, painting, cgi, flat lighting, low contrast, text, watermark",
   },
 ];
 
@@ -184,8 +202,12 @@ const CAPTION_STYLES = [
   },
 ];
 
+// The model ids here must be the ids sd-api itself resolves, not the friendly
+// names used to discuss them: `/v1/llm/chat/completions` 400s on an unknown id
+// rather than falling back, so a wrong one here breaks every LLM stage on a
+// fresh install. Check against `GET /v1/llm/models` before changing one.
 const PROVIDERS = [
-  { kind: "llm" as const, name: "sd-api (local)", model: "mistral-nemo-12b" },
+  { kind: "llm" as const, name: "sd-api (local)", model: "mistral-nemo-instruct-2407" },
   {
     kind: "image" as const,
     name: "sd-api (local)",
@@ -213,6 +235,35 @@ export function seed(db: Db): { inserted: Record<string, number> } {
     .onConflictDoNothing()
     .returning({ key: promptTemplates.key })
     .all().length;
+
+  // Refresh the surrounding metadata of templates nobody has edited.
+  //
+  // `onConflictDoNothing` protects someone's tuning, which is right for
+  // `template` — but it also freezes `variables`, `label` and `description`,
+  // so a correction to the built-in library never reaches an existing install.
+  // That is how `character.portrait` went on advertising `{{characterName}}`
+  // in the editor after it was withdrawn (BUG-012), and inserting it produces
+  // a portrait with the character's name painted across it.
+  //
+  // An identical `template` is the test for "unedited" — the same comparison
+  // `withEditedFlag` already uses, so no `isEdited` flag can drift out of sync.
+  // A row whose template has been edited is left entirely alone.
+  for (const builtin of DEFAULT_PROMPT_TEMPLATES) {
+    db.update(promptTemplates)
+      .set({
+        section: builtin.section,
+        label: builtin.label,
+        description: builtin.description,
+        variables: builtin.variables,
+      })
+      .where(
+        and(
+          eq(promptTemplates.key, builtin.key),
+          eq(promptTemplates.template, builtin.template),
+        ),
+      )
+      .run();
+  }
 
   inserted.narrativeStyles = db
     .insert(narrativeStyles)

@@ -136,9 +136,15 @@ describe("runSynopsis", () => {
   });
 
   // VIC-003: Context mode sources the synopsis from `project.context` rather
-  // than `project.idea`, and every story-content prompt carries a grounding
-  // clause instructing the model to stay inside the supplied material.
-  it("sources the prompt from context and includes the grounding clause in Context mode", async () => {
+  // than `project.idea`, and the prompt instructs the model to stay inside the
+  // supplied material.
+  //
+  // BUG-011: it does that through its own template now. `synopsis.generate`
+  // quotes its input as a one-line idea and asks for it to be *developed* —
+  // the wrong instruction for several thousand words of source material to be
+  // condensed — so the grounding wording lives in `synopsis.fromContext`
+  // rather than being appended to a template describing a different task.
+  it("uses the Context-mode template, sourced from context and grounded in it", async () => {
     const project = createProject(db, {
       inputMode: "context",
       context: "On March 3rd, a plumber in Millbrook fixed a burst main and later ran for mayor.",
@@ -152,7 +158,10 @@ describe("runSynopsis", () => {
     expect(prompts[0]).toContain(
       "On March 3rd, a plumber in Millbrook fixed a burst main and later ran for mayor.",
     );
-    expect(prompts[0]).toContain("do not introduce");
+    expect(prompts[0]).toContain("Source material:");
+    expect(prompts[0]).toContain("introduce no people, events, dates");
+    // The Idea-mode framing must not survive into it.
+    expect(prompts[0]).not.toContain("Develop the following into a synopsis");
 
     const after = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
     expect(after.synopsis).toBe("A synopsis.");

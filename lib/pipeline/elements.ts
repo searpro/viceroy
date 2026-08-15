@@ -37,7 +37,7 @@ type ScenePayload = {
  */
 export async function runElements(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
-  const { project, narrativeStyle } = loadProject(ctx.db, projectId);
+  const { project, narrativeStyle, imageStyle } = loadProject(ctx.db, projectId);
   const provider = resolveProvider(ctx.db, "llm");
 
   if (!project.story) throw new Error(`Project ${projectId} has no story to break down`);
@@ -61,7 +61,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
           role: "user",
           content: renderPrompt(ctx.db, "elements.characters", {
             story: project.story,
-            visualGuidance: narrativeStyle.visualGuidance,
+            sceneGuidance: narrativeStyle.sceneGuidance,
             groundingInstruction: grounding,
           }),
         },
@@ -69,15 +69,26 @@ export async function runElements(ctx: StageContext): Promise<void> {
       temperature: 0.4,
     });
 
+    // A character with no appearance is a failed extraction, not a character
+    // to fill in from elsewhere: the appearance becomes the reference portrait
+    // and is pasted into every scene prompt, so substituting `description`
+    // (narrative prose, by the template's own definition) puts backstory into
+    // a diffusion prompt — exactly what `elements.characters` forbids.
     const rows = (payload.characters ?? [])
       .filter((c) => typeof c?.name === "string" && (c.name as string).trim().length > 0)
+      .filter((c) => typeof c?.appearance === "string" && (c.appearance as string).trim().length > 0)
       .slice(0, 4)
       .map((c) => ({
         projectId,
         name: (c.name as string).trim(),
         description: typeof c.description === "string" ? c.description.trim() : "",
-        appearanceTag: typeof c.appearance === "string" ? c.appearance.trim() : null,
+        appearanceTag: (c.appearance as string).trim(),
       }));
+
+    const dropped = (payload.characters ?? []).length - rows.length;
+    if (dropped > 0) {
+      ctx.log(`Dropped ${dropped} character(s) returned without an appearance description`, "warn");
+    }
 
     if (rows.length > 0) {
       ctx.db.insert(characters).values(rows).run();
@@ -141,17 +152,30 @@ export async function runElements(ctx: StageContext): Promise<void> {
   ctx.progress(0.25);
 
   /* Pass 3 — one storyboard and image prompt per scene. */
+  // Appearance only — never `description`. See the extraction filter above.
   const castBlock =
-    cast.map((c) => `- ${c.name}: ${c.appearanceTag ?? c.description}`).join("\n") || "(nobody)";
+    cast
+      .filter((c) => c.appearanceTag)
+      .map((c) => `- ${c.name}: ${c.appearanceTag}`)
+      .join("\n") || "(nobody)";
 
-  // A per-scene redo clears just that scene's prompt before enqueueing, so it
-  // is the only one "pending" here — the direction applies to it alone.
-  const direction = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction : "";
+  // A per-scene redo clears just that scene's prompt before enqueueing, but it
+  // is not necessarily the only one pending: an earlier run that died partway
+  // leaves other scenes without a prompt too, and they get picked up by the
+  // same pass. So the direction is matched to its scene rather than assumed —
+  // mirroring the guard `runSceneImages` already applies.
+  const jobDirection = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction : "";
   const jobSceneId = typeof ctx.job.payload.sceneId === "string" ? ctx.job.payload.sceneId : undefined;
 
   const pending = sceneRows.filter((scene) => !scene.imagePrompt);
   for (const [position, scene] of pending.entries()) {
     checkAbort(ctx);
+
+    // The heading travels with the value: rendering "Additional direction…"
+    // above an empty slot on every non-redo run leaves the model a labelled
+    // blank to fill in.
+    const steer = jobDirection && (!jobSceneId || jobSceneId === scene.id) ? jobDirection : "";
+    const direction = steer ? `\nAdditional direction from the writer for this redo:\n${steer}` : "";
 
     const payload = await ctx.sdApi.llm.chatJson<ScenePayload>({
       model: provider.model,
@@ -162,7 +186,12 @@ export async function runElements(ctx: StageContext): Promise<void> {
             sceneText: scene.voiceoverScript,
             sceneDescription: scene.description,
             characters: castBlock,
-            visualGuidance: narrativeStyle.visualGuidance,
+            sceneGuidance: narrativeStyle.sceneGuidance,
+            // The model composing this prompt is shown the register its output
+            // will be wrapped in, so it stops writing prompts that argue with
+            // the wrapper — "richly saturated" into a ", desaturated colour"
+            // suffix was the observed case (BUG-008).
+            imageStyleGuidance: imageStyle.renderGuidance,
             direction,
             groundingInstruction: grounding,
           }),
@@ -197,7 +226,9 @@ export async function runElements(ctx: StageContext): Promise<void> {
     ctx.log(`Scene ${scene.index + 1}/${sceneRows.length} visualised`);
   }
 
-  setStage(ctx.db, projectId, "elements");
+  // `stage` records how far the project has got, so a one-scene redo on a
+  // finished project must not report it back at `elements`.
+  if (!jobSceneId) setStage(ctx.db, projectId, "elements");
 
   if (project.mode === "manual") {
     awaitReview(ctx.db, projectId);

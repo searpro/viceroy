@@ -57,6 +57,20 @@
       "when": 1786767238436,
       "tag": "0007_cynical_black_panther",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786852800000,
+      "tag": "0008_split_art_direction",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1786852900000,
+      "tag": "0009_backfill_art_direction",
+      "breakpoints": true
     }
   ]
 }

@@ -10,7 +10,7 @@ type NarrativeStyle = {
   description: string;
   plannerGuidance: string;
   writingGuidance: string;
-  visualGuidance: string;
+  sceneGuidance: string;
   evaluationChecklist: { key: string; description: string }[];
   targetSceneCount: number;
   targetWordCount: number;
@@ -30,8 +30,10 @@ type ImageStyle = {
   id: string;
   name: string;
   description: string;
+  renderGuidance: string;
   promptPrefix: string;
   promptSuffix: string;
+  negativePrompt: string;
   isBuiltin: boolean;
 };
 
@@ -78,7 +80,7 @@ export function StylesView({
   return (
     <main className="mx-auto max-w-3xl px-6 py-14">
       <Link href="/" className="text-xs text-white/40 transition hover:text-white/70">
-        ← home
+        â home
       </Link>
 
       <h1 className="mt-4 text-2xl font-semibold tracking-tight">Styles</h1>
@@ -120,7 +122,7 @@ const EMPTY_NARRATIVE = {
   description: "",
   plannerGuidance: "",
   writingGuidance: "",
-  visualGuidance: "",
+  sceneGuidance: "",
   checklistText: "",
   targetSceneCount: 8,
   targetWordCount: 320,
@@ -223,9 +225,9 @@ function NarrativeTab({
             multiline
           />
           <Field
-            label="Visual guidance"
-            value={form.visualGuidance}
-            onChange={(v) => setForm({ ...form, visualGuidance: v })}
+            label="Scene guidance (settings, props, subjects — not how it is rendered)"
+            value={form.sceneGuidance}
+            onChange={(v) => setForm({ ...form, sceneGuidance: v })}
             multiline
           />
           <Field
@@ -275,7 +277,7 @@ function NarrativeCard({
     description: style.description,
     plannerGuidance: style.plannerGuidance,
     writingGuidance: style.writingGuidance,
-    visualGuidance: style.visualGuidance,
+    sceneGuidance: style.sceneGuidance,
     checklistText: checklistToText(style.evaluationChecklist),
     targetSceneCount: style.targetSceneCount,
     targetWordCount: style.targetWordCount,
@@ -319,7 +321,7 @@ function NarrativeCard({
       </div>
       <p className="mt-1 text-xs text-white/50">{style.description}</p>
       <p className="mt-1 text-[11px] text-white/30">
-        {style.targetSceneCount} scenes · {style.targetWordCount} words ·{" "}
+        {style.targetSceneCount} scenes Â· {style.targetWordCount} words Â·{" "}
         {style.evaluationChecklist.length} checklist items
       </p>
 
@@ -344,9 +346,9 @@ function NarrativeCard({
             multiline
           />
           <Field
-            label="Visual guidance"
-            value={form.visualGuidance}
-            onChange={(v) => setForm({ ...form, visualGuidance: v })}
+            label="Scene guidance (settings, props, subjects — not how it is rendered)"
+            value={form.sceneGuidance}
+            onChange={(v) => setForm({ ...form, sceneGuidance: v })}
             multiline
           />
           <Field
@@ -575,6 +577,8 @@ function VoiceCard({
 /* ------------------------------------------------------------------ image */
 
 const EMPTY_IMAGE = {
+  renderGuidance: "",
+  negativePrompt: "",
   name: "",
   description: "",
   promptPrefix: "",
@@ -650,6 +654,12 @@ function ImageTab({
             onChange={(v) => setForm({ ...form, description: v })}
           />
           <Field
+            label="Render guidance (prose — shown to the model that writes each scene prompt)"
+            value={form.renderGuidance}
+            onChange={(v) => setForm({ ...form, renderGuidance: v })}
+            multiline
+          />
+          <Field
             label="Prompt prefix"
             value={form.promptPrefix}
             onChange={(v) => setForm({ ...form, promptPrefix: v })}
@@ -658,6 +668,12 @@ function ImageTab({
             label="Prompt suffix"
             value={form.promptSuffix}
             onChange={(v) => setForm({ ...form, promptSuffix: v })}
+          />
+          <Field
+            label="Negative prompt (leave empty to use the image provider's)"
+            value={form.negativePrompt}
+            onChange={(v) => setForm({ ...form, negativePrompt: v })}
+            multiline
           />
         </div>
         {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
@@ -686,8 +702,10 @@ function ImageCard({
   const [form, setForm] = useState({
     name: style.name,
     description: style.description,
+    renderGuidance: style.renderGuidance,
     promptPrefix: style.promptPrefix,
     promptSuffix: style.promptSuffix,
+    negativePrompt: style.negativePrompt,
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -734,6 +752,12 @@ function ImageCard({
             onChange={(v) => setForm({ ...form, description: v })}
           />
           <Field
+            label="Render guidance (prose — shown to the model that writes each scene prompt)"
+            value={form.renderGuidance}
+            onChange={(v) => setForm({ ...form, renderGuidance: v })}
+            multiline
+          />
+          <Field
             label="Prompt prefix"
             value={form.promptPrefix}
             onChange={(v) => setForm({ ...form, promptPrefix: v })}
@@ -742,6 +766,12 @@ function ImageCard({
             label="Prompt suffix"
             value={form.promptSuffix}
             onChange={(v) => setForm({ ...form, promptSuffix: v })}
+          />
+          <Field
+            label="Negative prompt (leave empty to use the image provider's)"
+            value={form.negativePrompt}
+            onChange={(v) => setForm({ ...form, negativePrompt: v })}
+            multiline
           />
           {error && <p className="text-xs text-red-400">{error}</p>}
           <button
@@ -968,7 +998,7 @@ function CaptionCard({
       </div>
       <p className="mt-1 text-xs text-white/50">{style.description}</p>
       <p className="mt-1 text-[11px] text-white/30">
-        {style.fontFamily.split(",")[0]} · {style.fontSize}px{style.uppercase ? " · uppercase" : ""}
+        {style.fontFamily.split(",")[0]} Â· {style.fontSize}px{style.uppercase ? " Â· uppercase" : ""}
       </p>
 
       {editing && (

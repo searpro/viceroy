@@ -111,7 +111,9 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
     const bytes = await ctx.sdApi.image.generate(
       {
         prompt: `${imageStyle.promptPrefix}${scene.imagePrompt}${direction}${imageStyle.promptSuffix}`,
-        negative_prompt: imageProvider.negativePrompt || undefined,
+        // The style's own avoid-list wins; the provider's is the fallback for
+        // a style that carries none (BUG-014).
+        negative_prompt: imageStyle.negativePrompt || imageProvider.negativePrompt || undefined,
         model: imageProvider.model,
         width: ctx.config.sourceImage.width,
         height: ctx.config.sourceImage.height,
@@ -144,7 +146,9 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
     ctx.progress(base + share);
   }
 
-  setStage(ctx.db, projectId, "scene_images");
+  // See the note in `runElements`: a scoped redo is not the project reaching
+  // this stage, so it must not move `stage` back to it.
+  if (!jobSceneId) setStage(ctx.db, projectId, "scene_images");
   ctx.log(`All ${all.length} scene image(s) ready`);
 
   const project = ctx.db.select().from(projects).where(eq(projects.id, projectId)).get()!;
@@ -199,11 +203,21 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
     const direction =
       jobDirection && (!jobCharacterId || jobCharacterId === character.id) ? `, ${jobDirection}` : "";
 
+    // `description` is narrative prose ("an unassuming tradesman who never
+    // wanted the job") and must never stand in for a missing appearance: it
+    // would become this portrait, and the portrait is the reference every
+    // scene the character appears in is generated against.
+    if (!character.appearanceTag) {
+      throw new Error(
+        `Character "${character.name}" has no appearance description — ` +
+          `re-run element extraction rather than drawing them from their backstory`,
+      );
+    }
+
     const prompt =
       `${imageStyle.promptPrefix}` +
       renderPrompt(ctx.db, "character.portrait", {
-        characterName: character.name,
-        characterDescription: character.appearanceTag ?? character.description,
+        characterDescription: character.appearanceTag,
       }) +
       direction +
       `${imageStyle.promptSuffix}`;
@@ -212,7 +226,9 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
     const bytes = await ctx.sdApi.image.generate(
       {
         prompt,
-        negative_prompt: imageProvider.negativePrompt || undefined,
+        // The style's own avoid-list wins; the provider's is the fallback for
+        // a style that carries none (BUG-014).
+        negative_prompt: imageStyle.negativePrompt || imageProvider.negativePrompt || undefined,
         model: imageProvider.model,
         width: ctx.config.sourceImage.width,
         height: ctx.config.sourceImage.height,
@@ -254,7 +270,7 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
       : `${pending.length} portrait(s) generated and uploaded as references`,
   );
 
-  setStage(ctx.db, projectId, "character_images");
+  if (!jobCharacterId) setStage(ctx.db, projectId, "character_images");
 
   if (project.mode === "manual") {
     // A malformed portrait now propagates into every frame it appears in, so

@@ -19,6 +19,7 @@ import { CharactersStep } from "./steps/characters-step";
 import { ScenesStep } from "./steps/scenes-step";
 import { NarrationStep } from "./steps/narration-step";
 import { VideoStep } from "./steps/video-step";
+import { redoConfirmation } from "./redo-warning";
 
 const LAYOUT_KEY = "viceroy.layout";
 type Layout = "stepper" | "legacy";
@@ -80,6 +81,14 @@ export function ProjectView({ initial }: { initial: Detail }) {
       | "subtitle_align",
     extra: { ttsInstruct?: string } = {},
   ) {
+    // An unscoped redo discards everything derived from that stage (ADR 0003),
+    // which on a finished project is hours of generation and, for an uploaded
+    // portrait, something the pipeline cannot recreate at all. The old
+    // behaviour destroyed some of this silently and left the rest stale; now
+    // that it is consistent, it is worth confirming.
+    const confirmation = redoConfirmation(target, detail);
+    if (confirmation && !window.confirm(confirmation)) return;
+
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
       method: "POST",

@@ -8,7 +8,7 @@ export const narrativeStyleSchema = z.object({
   description: z.string().trim().min(1),
   plannerGuidance: z.string().trim().min(1),
   writingGuidance: z.string().trim().min(1),
-  visualGuidance: z.string().trim().min(1),
+  sceneGuidance: z.string().trim().min(1),
   evaluationChecklist: z
     .array(z.object({ key: z.string().trim().min(1), description: z.string().trim().min(1) }))
     .min(1, "At least one checklist item is required — it is what the evaluator is held to"),
@@ -30,12 +30,58 @@ export const voiceStyleSchema = z.object({
 });
 export type VoiceStyleInput = z.infer<typeof voiceStyleSchema>;
 
-export const imageStyleSchema = z.object({
+/**
+ * A diffusion prompt has no "not".
+ *
+ * `promptPrefix` and `promptSuffix` are concatenated verbatim onto the
+ * *positive* prompt, so "no artificial CGI appearance" there asks for
+ * artificial CGI — the model sees the concepts and not the refusal. The
+ * built-in styles are held to this by a seed test; this holds user-authored
+ * ones to it at the API boundary, which is where a style that shipped with
+ * exactly that phrase got in.
+ *
+ * Deliberately not applied to `renderGuidance` or a narrative style's
+ * `sceneGuidance`: those are read by the LLM composing a prompt, which is
+ * explicitly instructed about negation and handles "avoid X" correctly.
+ */
+const NEGATION = /\b(no|not|without|never|avoid|excluding)\b/i;
+
+function refuseNegations(value: string | undefined, ctx: z.RefinementCtx, field: string): void {
+  const match = value?.match(NEGATION);
+  if (!match) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: [field],
+    message:
+      `"${match[0]}" cannot be used here — this text is appended to the positive prompt, ` +
+      `where a diffusion model reads the thing you are excluding and generates it. ` +
+      `Put it in the negative prompt instead.`,
+  });
+}
+
+function checkNegations(
+  data: { promptPrefix?: string; promptSuffix?: string },
+  ctx: z.RefinementCtx,
+): void {
+  refuseNegations(data.promptPrefix, ctx, "promptPrefix");
+  refuseNegations(data.promptSuffix, ctx, "promptSuffix");
+}
+
+// The plain object is kept separate because zod throws — at runtime, with no
+// type error to warn you — on `.partial()` applied to a schema carrying
+// refinements, and PATCH needs the partial form. So both shapes are built from
+// these fields rather than one being derived from the other.
+const imageStyleFields = z.object({
   name: z.string().trim().min(1).max(100),
   description: z.string().trim().min(1),
+  renderGuidance: z.string().trim().optional(),
   promptPrefix: z.string().trim().optional(),
   promptSuffix: z.string().trim().optional(),
+  negativePrompt: z.string().trim().optional(),
 });
+
+export const imageStyleSchema = imageStyleFields.superRefine(checkNegations);
+export const imageStylePatchSchema = imageStyleFields.partial().superRefine(checkNegations);
 export type ImageStyleInput = z.infer<typeof imageStyleSchema>;
 
 // Style fields mirror remotion/schema.ts's captionStyleSchema field-for-field

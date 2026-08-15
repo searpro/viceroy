@@ -257,6 +257,95 @@ export const regenerateSchema = z.object({
 });
 
 /**
+ * The pipeline's artifacts, in the order one derives from the last.
+ *
+ * A redo of any stage invalidates everything *after* it here. Deriving that
+ * from one ordered list, rather than a per-target `if` per stage, is what stops
+ * the next target added to `regenerateSchema` from quietly reintroducing
+ * BUG-002's class of failure: a resumable stage skips artifacts a redo forgot
+ * to clear, and the pipeline finishes a video assembled from two different
+ * stories. Nothing errors, because each half is internally consistent.
+ */
+export const INVALIDATION_CHAIN = [
+  "synopsis",
+  "story",
+  "elements",
+  "character_images",
+  "scene_images",
+  "voiceover",
+  "subtitle_align",
+  "render",
+] as const;
+
+type InvalidationStage = (typeof INVALIDATION_CHAIN)[number];
+
+/**
+ * Discard one stage's own output.
+ *
+ * Rows are deleted or nulled; the underlying asset files are left alone, since
+ * `assets` rows are shared and reaped separately.
+ */
+const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = {
+  synopsis: (db, projectId) => {
+    db.update(projects).set({ synopsis: null }).where(eq(projects.id, projectId)).run();
+  },
+  story: (db, projectId) => {
+    db.update(projects).set({ story: null }).where(eq(projects.id, projectId)).run();
+    db.delete(evaluations).where(eq(evaluations.projectId, projectId)).run();
+  },
+  // Scenes and the cast are one stage's output (`runElements` produces both)
+  // and must go together: keeping the cast while regrouping scenes leaves
+  // characters extracted from a story that no longer exists being pasted into
+  // every new scene prompt. A user-uploaded portrait is lost with its
+  // character — the story it belonged to is gone, so the reference no longer
+  // depicts anyone in this project.
+  elements: (db, projectId) => {
+    db.delete(scenes).where(eq(scenes.projectId, projectId)).run();
+    db.delete(characters).where(eq(characters.projectId, projectId)).run();
+  },
+  character_images: (db, projectId) => {
+    db.update(characters)
+      .set({ imageAssetId: null, imagePrompt: null, refInputName: null, imageSource: "generated" })
+      .where(eq(characters.projectId, projectId))
+      .run();
+  },
+  scene_images: (db, projectId) => {
+    db.update(scenes).set({ imageAssetId: null }).where(eq(scenes.projectId, projectId)).run();
+  },
+  // Nulled rather than deleted, to keep `ttsInstruct`: a user who redirected
+  // the delivery ("less breathy, slower") set that on the voiceover row, and
+  // `runVoiceover` reads it back to prefer their cues over the voice style's.
+  // Deleting the row would silently revert them to the style default.
+  voiceover: (db, projectId) => {
+    db.update(voiceovers)
+      .set({ audioAssetId: null, durationMs: null, sampleRate: null })
+      .where(eq(voiceovers.projectId, projectId))
+      .run();
+  },
+  subtitle_align: (db, projectId) => {
+    db.delete(subtitleCues).where(eq(subtitleCues.projectId, projectId)).run();
+    db.update(scenes)
+      .set({ startMs: null, endMs: null })
+      .where(eq(scenes.projectId, projectId))
+      .run();
+  },
+  render: (db, projectId) => {
+    db.delete(renders).where(eq(renders.projectId, projectId)).run();
+  },
+};
+
+/**
+ * Clear every artifact derived from `target`'s output, leaving `target`'s own
+ * output alone — the stage about to run overwrites that itself.
+ */
+export function invalidateDownstreamOf(db: Db, projectId: string, target: InvalidationStage): void {
+  const from = INVALIDATION_CHAIN.indexOf(target);
+  for (const stage of INVALIDATION_CHAIN.slice(from + 1)) {
+    DISCARD[stage]!(db, projectId);
+  }
+}
+
+/**
  * Re-run one stage, optionally under a user's direction.
  *
  * Clears `awaitingReview` so the project is live again — otherwise a project
@@ -264,23 +353,27 @@ export const regenerateSchema = z.object({
  *
  * A `sceneId`/`characterId` scopes the redo to one row rather than the whole
  * stage: its existing artifact is cleared first, which is what makes it the
- * only thing the stage's own "skip what's already there" logic picks up.
+ * only thing the stage's own "skip what's already there" logic picks up. A
+ * scoped redo deliberately does *not* cascade — it is a request to redraw one
+ * frame, not to rebuild the project from that point down.
  */
 export function regenerate(db: Db, projectId: string, input: z.infer<typeof regenerateSchema>) {
   const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
   if (!project) throw new Error(`No such project: ${projectId}`);
 
-  // A story redo rewrites the narration, so the scenes grouped from the old
-  // story are stale — `runElements` only groups sentences into scenes when
-  // none exist yet (resumability for retries), which otherwise left last
-  // run's captions on screen after a "redo story" that changed the text.
-  if (input.target === "story") {
-    db.delete(scenes).where(eq(scenes.projectId, projectId)).run();
+  const scoped = input.sceneId ?? input.characterId;
+
+  if (!scoped) {
+    invalidateDownstreamOf(db, projectId, input.target);
   }
 
   if (input.target === "elements" && input.sceneId) {
+    // The image belongs to the prompt that produced it: leaving it in place
+    // means the new prompt is written, every scene still has an image, and
+    // `nextStep` walks straight past `scene_images` — so the redo the user
+    // asked for never reaches the frame they were looking at.
     db.update(scenes)
-      .set({ imagePrompt: null, storyboard: null })
+      .set({ imagePrompt: null, storyboard: null, imageAssetId: null })
       .where(eq(scenes.id, input.sceneId))
       .run();
   }

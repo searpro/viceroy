@@ -43,6 +43,45 @@ describe("seed", () => {
     seed(db);
     expect(db.select().from(promptTemplates).all().every((t) => t.template === "MINE")).toBe(true);
   });
+
+  // BUG-012: `onConflictDoNothing` also froze `variables`, so a correction to
+  // the built-in library never reached an existing install — which is how
+  // `character.portrait` went on advertising a withdrawn variable in the
+  // editor long after it was removed here.
+  it("refreshes the declared variables of a template nobody has edited", () => {
+    seed(db);
+    db.update(promptTemplates)
+      .set({ variables: [{ name: "stale", description: "no longer supplied" }] })
+      .where(eq(promptTemplates.key, "character.portrait"))
+      .run();
+
+    seed(db);
+
+    const row = db
+      .select()
+      .from(promptTemplates)
+      .where(eq(promptTemplates.key, "character.portrait"))
+      .get()!;
+    expect(row.variables.map((v) => v.name)).not.toContain("stale");
+    expect(row.variables.map((v) => v.name)).not.toContain("characterName");
+  });
+
+  it("does not refresh metadata on a template that has been edited", () => {
+    seed(db);
+    db.update(promptTemplates)
+      .set({ template: "MINE", variables: [{ name: "mine", description: "my own" }] })
+      .where(eq(promptTemplates.key, "character.portrait"))
+      .run();
+
+    seed(db);
+
+    const row = db
+      .select()
+      .from(promptTemplates)
+      .where(eq(promptTemplates.key, "character.portrait"))
+      .get()!;
+    expect(row.variables.map((v) => v.name)).toEqual(["mine"]);
+  });
 });
 
 /**
@@ -55,13 +94,24 @@ describe("seed", () => {
 describe("built-in text destined for image prompts", () => {
   const NEGATION = /\b(no|not|without|never|avoid|excluding)\b/i;
 
-  it("has no negations in any narrative style's visual guidance", () => {
+  it("has no negations in any narrative style's scene guidance", () => {
     seed(db);
     for (const style of db.select().from(narrativeStyles).all()) {
       expect(
-        style.visualGuidance,
-        `${style.name} visual guidance must state only what IS in frame`,
+        style.sceneGuidance,
+        `${style.name} scene guidance must state only what IS in frame`,
       ).not.toMatch(NEGATION);
+    }
+  });
+
+  // `renderGuidance` reaches the LLM rather than the diffusion model directly,
+  // so a negation here is not immediately fatal — but the model composing the
+  // prompt copies phrasing it is given, and a copied "not illustrated" lands
+  // in a positive prompt asking for illustration.
+  it("has no negations in any image style's render guidance", () => {
+    seed(db);
+    for (const style of db.select().from(imageStyles).all()) {
+      expect(style.renderGuidance, `${style.name} render guidance`).not.toMatch(NEGATION);
     }
   });
 

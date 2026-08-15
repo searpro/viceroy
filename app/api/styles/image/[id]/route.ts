@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db/client";
-import { deleteImageStyle, imageStyleSchema, updateImageStyle } from "@/lib/styles";
+import { deleteImageStyle, imageStylePatchSchema, updateImageStyle } from "@/lib/styles";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +8,7 @@ type Params = { params: Promise<{ id: string }> };
 
 export async function PATCH(request: Request, { params }: Params) {
   const { id } = await params;
-  const parsed = imageStyleSchema.partial().safeParse(await request.json().catch(() => null));
+  const parsed = imageStylePatchSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json(
       { error: parsed.error.issues[0]?.message ?? "Invalid request" },

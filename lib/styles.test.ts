@@ -14,6 +14,7 @@ import {
   deleteImageStyle,
   deleteNarrativeStyle,
   deleteVoiceStyle,
+  imageStylePatchSchema,
   imageStyleSchema,
   listCaptionStyles,
   listImageStyles,
@@ -41,7 +42,7 @@ const NARRATIVE_INPUT = {
   description: "d",
   plannerGuidance: "p",
   writingGuidance: "w",
-  visualGuidance: "v",
+  sceneGuidance: "v",
   evaluationChecklist: [{ key: "clarity", description: "Is it clear" }],
   targetSceneCount: 6,
   targetWordCount: 200,
@@ -159,6 +160,45 @@ describe("image styles", () => {
     expect(updated.promptSuffix).toBe(", vintage");
   });
 
+  // A diffusion prompt has no "not": prefix/suffix are concatenated onto the
+  // *positive* prompt, so "no artificial CGI appearance" there asks for CGI.
+  // A user-authored style shipped with exactly that phrase, which is what this
+  // guards. The built-ins are held to the same rule by a seed test.
+  it("refuses a negation in the prompt prefix or suffix", () => {
+    for (const field of ["promptPrefix", "promptSuffix"] as const) {
+      const result = imageStyleSchema.safeParse({
+        ...IMAGE_INPUT,
+        [field]: ", no artificial CGI appearance",
+      });
+      expect(result.success, `${field} must reject a negation`).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(/negative prompt/);
+      }
+    }
+  });
+
+  it("applies the same rule on a patch, which is how an existing style is edited", () => {
+    expect(imageStylePatchSchema.safeParse({ promptSuffix: ", without blur" }).success).toBe(false);
+    expect(imageStylePatchSchema.safeParse({ promptSuffix: ", film grain" }).success).toBe(true);
+  });
+
+  // zod throws on .partial() over a refined schema — at runtime, with no type
+  // error — so the patch shape is built from the plain fields rather than
+  // derived from the refined one. Without this, every PATCH 500s.
+  it("exposes a patch schema that does not throw when built", () => {
+    expect(() => imageStylePatchSchema.safeParse({ name: "Renamed" })).not.toThrow();
+    expect(imageStylePatchSchema.safeParse({ name: "Renamed" }).success).toBe(true);
+  });
+
+  // Guidance is read by the LLM composing a prompt, which is instructed about
+  // negation and handles "avoid X" correctly — the rule is for text that
+  // reaches the diffusion model verbatim, and must not spread beyond it.
+  it("allows a negation in render guidance, which the LLM reads rather than the image model", () => {
+    expect(
+      imageStyleSchema.safeParse({ ...IMAGE_INPUT, renderGuidance: "avoid flat lighting" }).success,
+    ).toBe(true);
+  });
+
   it("refuses to delete a built-in style", () => {
     const builtin = db.select().from(imageStyles).all().find((s) => s.isBuiltin)!;
     expect(() => deleteImageStyle(db, builtin.id)).toThrow(/built-in/);
@@ -171,7 +211,7 @@ describe("image styles", () => {
   });
 
   it("does not have the .partial() schema inject defaults on an omitted patch field", () => {
-    const patch = imageStyleSchema.partial().parse({ description: "changed only" });
+    const patch = imageStylePatchSchema.parse({ description: "changed only" });
     expect(patch).not.toHaveProperty("promptPrefix");
     expect(patch).not.toHaveProperty("promptSuffix");
 

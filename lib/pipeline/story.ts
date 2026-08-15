@@ -30,18 +30,35 @@ export async function runSynopsis(ctx: StageContext): Promise<void> {
   const provider = resolveProvider(ctx.db, "llm");
 
   const direction = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction : "";
-  const key = project.synopsis && direction ? "synopsis.refine" : "synopsis.generate";
-  const source = project.inputMode === "context" ? (project.context ?? "") : project.idea;
 
-  const prompt = renderPrompt(ctx.db, key, {
-    idea: source,
-    synopsis: project.synopsis ?? "",
-    direction,
+  // Context mode gets its own template rather than being pushed through the
+  // Idea-mode one. `synopsis.generate` quotes its input as a one-liner and
+  // asks for it to be *developed*; handing it several thousand words of source
+  // material to condense meant the instructions described the wrong task
+  // (BUG-011). A refine is shared — by then both modes are revising prose.
+  const isContext = project.inputMode === "context";
+  const key = project.synopsis && direction
+    ? "synopsis.refine"
+    : isContext
+      ? "synopsis.fromContext"
+      : "synopsis.generate";
+
+  const common = {
     narrativeStyle: narrativeStyle.name,
     plannerGuidance: narrativeStyle.plannerGuidance,
     targetSceneCount: String(narrativeStyle.targetSceneCount),
-    groundingInstruction: groundingInstruction(project),
-  });
+  };
+
+  const prompt =
+    key === "synopsis.fromContext"
+      ? renderPrompt(ctx.db, key, { ...common, context: project.context ?? "" })
+      : renderPrompt(ctx.db, key, {
+          ...common,
+          idea: project.idea,
+          synopsis: project.synopsis ?? "",
+          direction,
+          groundingInstruction: groundingInstruction(project),
+        });
 
   ctx.log(`Generating synopsis with ${provider.model} (${key})`);
   ctx.progress(0.1);

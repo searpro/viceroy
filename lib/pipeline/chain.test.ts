@@ -184,6 +184,34 @@ describe("nextStep", () => {
     expect(nextStep(db, project.id)).toMatchObject({ kind: "run", type: "scene_images" });
   });
 
+  // BUG-017: every other artifact above answers "does this exist"; a render is
+  // the one whose existence does not imply it is current. Manual mode reaches
+  // this line by clicking Continue, where nothing else re-enqueues a render —
+  // so without the recency check the user is handed back the previous video.
+  it("re-renders when a scene was regenerated after the finished video", () => {
+    const project = newProject();
+    buildUpTo(project.id, "done");
+    expect(nextStep(db, project.id).kind).toBe("complete");
+
+    db.update(scenes)
+      .set({ imageAssetId: imageAsset().id, updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(scenes.projectId, project.id))
+      .run();
+
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "run", type: "render" });
+  });
+
+  it("stays complete when the render is newer than everything it was built from", () => {
+    const project = newProject();
+    buildUpTo(project.id, "done");
+    db.update(renders)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(renders.projectId, project.id))
+      .run();
+
+    expect(nextStep(db, project.id).kind).toBe("complete");
+  });
+
   it("throws for an unknown project", () => {
     expect(() => nextStep(db, "nope")).toThrow(/No such project/);
   });
