@@ -1,5 +1,5 @@
-import { resolveConfig } from "../lib/config";
-import { createDb, createSqlite } from "../lib/db/client";
+import { resolveConfig, type Config } from "../lib/config";
+import { createDb, createSqlite, type Db } from "../lib/db/client";
 import { runMigrations } from "../lib/db/migrate";
 import {
   claim,
@@ -11,8 +11,8 @@ import {
   succeed,
   type Job,
 } from "../lib/queue";
-import { createSdApi } from "../lib/sdapi";
-import { awaitReview, STAGE_HANDLERS, type StageContext } from "../lib/pipeline";
+import { createSdApi, type SdApi } from "../lib/sdapi";
+import { awaitReview, resolveProvider, STAGE_HANDLERS, type StageContext } from "../lib/pipeline";
 
 const IDLE_POLL_MS = 1000;
 
@@ -29,8 +29,8 @@ async function main() {
   const db = createDb(sqlite);
   runMigrations(db);
 
-  const sdApi = createSdApi({ baseUrl: config.sdApiUrl, timeoutMs: config.sdApiTimeoutMs });
-  if (!(await sdApi.health())) {
+  const baseSdApi = createSdApi({ baseUrl: config.sdApiUrl, timeoutMs: config.sdApiTimeoutMs });
+  if (!(await baseSdApi.health())) {
     console.warn(`sd-api is not reachable at ${config.sdApiUrl} — jobs will fail until it is`);
   }
 
@@ -93,7 +93,7 @@ async function main() {
 
     const ctx: StageContext = {
       db,
-      sdApi,
+      sdApi: resolveSdApi(db, config, baseSdApi),
       config,
       job,
       log: (message, level) => log(db, job.id, message, level),
@@ -107,6 +107,28 @@ async function main() {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Image generation is the one stage whose default provider commonly lives on
+ * a different host than the rest of sd-api — a GPU box, not the machine
+ * running the worker — while llm/audio/asr keep using the resolved
+ * provider's model against the shared `SD_API_URL` install. Resolved per job
+ * rather than once at startup, so a provider swapped via the admin UI takes
+ * effect on the next job without a worker restart.
+ */
+function resolveSdApi(db: Db, config: Config, base: SdApi): SdApi {
+  const imageProvider = resolveProvider(db, "image");
+  if (imageProvider.baseUrl.replace(/\/$/, "") === config.sdApiUrl) return base;
+
+  return {
+    ...base,
+    image: createSdApi({
+      baseUrl: imageProvider.baseUrl,
+      apiKey: imageProvider.apiKey ?? undefined,
+      timeoutMs: config.sdApiTimeoutMs,
+    }).image,
+  };
 }
 
 main().catch((error) => {
