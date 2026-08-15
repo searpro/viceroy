@@ -228,6 +228,36 @@ describe("runElements", () => {
     expect(messages[0]!.content).toContain("make it rain");
   });
 
+  // BUG-6: a "redo prompt" click on one scene must not cascade into
+  // portraits, scene images and voiceover behind the user's back. Setup
+  // avoids an initial unscoped `runElements` pass, which would legitimately
+  // enqueue `character_images` itself and mask the regression.
+  it("does not enqueue the next stage after a sceneId-scoped redo", async () => {
+    const project = projectWithStory();
+    db.insert(characters)
+      .values({ projectId: project.id, name: "the plumber", description: "An unassuming tradesman." })
+      .run();
+    db.insert(scenes)
+      .values([
+        { projectId: project.id, index: 0, description: "a", voiceoverScript: "a.", imagePrompt: "prompt a" },
+        { projectId: project.id, index: 1, description: "b", voiceoverScript: "b.", imagePrompt: null },
+        { projectId: project.id, index: 2, description: "c", voiceoverScript: "c.", imagePrompt: "prompt c" },
+      ])
+      .run();
+    const target = db.select().from(scenes).where(eq(scenes.index, 1)).get()!;
+
+    const job = enqueue(db, {
+      type: "elements",
+      projectId: project.id,
+      payload: { sceneId: target.id },
+    });
+    await runElements(stubContext(db, job, { llm: [sceneDetail(9)] }));
+
+    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).not.toContain(
+      "character_images",
+    );
+  });
+
   it("carries on when the story has no characters in it", async () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "elements", projectId: project.id });
@@ -433,6 +463,25 @@ describe("runCharacterImages", () => {
     expect(prompt.indexOf("wearing a red scarf")).toBeLessThan(
       prompt.indexOf("shallow depth of field"),
     );
+  });
+
+  // BUG-6: a "redo portrait" click on one character must not cascade into
+  // scene images (and from there, voiceover) behind the user's back.
+  it("does not enqueue the next stage after a characterId-scoped redo", async () => {
+    // No unscoped `character_images` pass runs first — that would itself
+    // legitimately cascade to `scene_images` and mask the regression this
+    // test guards. `elementsOnly` already leaves the cast portrait-less.
+    const project = await elementsOnly();
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+
+    const job = enqueue(db, {
+      type: "character_images",
+      projectId: project.id,
+      payload: { characterId: cast[0]!.id },
+    });
+    await runCharacterImages(stubContext(db, job));
+
+    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).not.toContain("scene_images");
   });
 
   // VIC-002: an uploaded reference already has imageAssetId set, so the
@@ -655,6 +704,34 @@ describe("runSceneImages", () => {
     expect(prompt.indexOf("storm clouds overhead")).toBeLessThan(
       prompt.indexOf("shallow depth of field"),
     );
+  });
+
+  // BUG-6: a "redo image" click on one scene must not cascade into
+  // voiceover generation behind the user's back.
+  it("does not enqueue the next stage after a sceneId-scoped redo", async () => {
+    // The other scenes' images are faked in directly rather than by running
+    // `scene_images` unscoped first — that pass would itself legitimately
+    // cascade to `voiceover` and mask the regression this test guards.
+    const project = await elementsDone();
+    const rows = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all();
+    const [target, ...rest] = rows;
+    for (const scene of rest) {
+      const asset = db
+        .insert(assets)
+        .values({ kind: "image", path: "/tmp/fake.png", mimeType: "image/png", bytes: 1 })
+        .returning()
+        .all()[0]!;
+      db.update(scenes).set({ imageAssetId: asset.id }).where(eq(scenes.id, scene.id)).run();
+    }
+
+    const job = enqueue(db, {
+      type: "scene_images",
+      projectId: project.id,
+      payload: { sceneId: target!.id },
+    });
+    await runSceneImages(stubContext(db, job));
+
+    expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).not.toContain("voiceover");
   });
 
   // The render reads bytes off disk, not out of the database, so the asset row

@@ -147,6 +147,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
   // A per-scene redo clears just that scene's prompt before enqueueing, so it
   // is the only one "pending" here — the direction applies to it alone.
   const direction = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction : "";
+  const jobSceneId = typeof ctx.job.payload.sceneId === "string" ? ctx.job.payload.sceneId : undefined;
 
   const pending = sceneRows.filter((scene) => !scene.imagePrompt);
   for (const [position, scene] of pending.entries()) {
@@ -203,6 +204,11 @@ export async function runElements(ctx: StageContext): Promise<void> {
     ctx.log("Stopping for review (manual mode)");
     return;
   }
+  // A `sceneId`-scoped job is a user-requested redo of one scene's prompt,
+  // not the stage completing its own pending list — advancing past it would
+  // fire the whole downstream chain (portraits, images, voiceover...) for a
+  // click that only asked for one prompt back (BUG-6).
+  if (jobSceneId) return;
   // Portraits before scenes: scene images reference them, so this order is
   // load-bearing rather than incidental. See docs/adr/0001.
   enqueue(ctx.db, { type: "character_images", projectId });

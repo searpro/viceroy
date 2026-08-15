@@ -153,6 +153,10 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
     ctx.log("Stopping for image review (manual mode)");
     return;
   }
+  // A `sceneId`-scoped job is a "redo image" click on one scene, not the
+  // stage clearing its own pending list — advancing past it would fire
+  // voiceover generation for a click that only asked for one frame (BUG-6).
+  if (jobSceneId) return;
   enqueue(ctx.db, { type: "voiceover", projectId });
 }
 
@@ -259,5 +263,10 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
     ctx.log("Stopping for portrait review (manual mode)");
     return;
   }
+  // A `characterId`-scoped job is a "redo portrait" click on one character,
+  // not the stage clearing its own pending list — advancing past it would
+  // fire scene images (and from there, voiceover) for a click that only
+  // asked for one portrait back (BUG-6).
+  if (jobCharacterId) return;
   enqueue(ctx.db, { type: "scene_images", projectId });
 }
