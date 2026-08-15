@@ -172,6 +172,15 @@ export function ProjectView({ initial }: { initial: Detail }) {
   const { project } = detail;
   const currentPipelineStep = stepForNextStep(detail.nextStep);
 
+  // Manual mode's Cast step has its own per-character "Generate"/"Use my
+  // photo" controls (BUG-5) — once the cast list exists, portrait generation
+  // is a per-row choice, not a stage the generic "Approve & continue" banner
+  // should bulk-fire for every character at once.
+  const castAwaitsPerCharacterChoice =
+    project.mode === "manual" &&
+    detail.nextStep.kind === "run" &&
+    detail.nextStep.type === "character_images";
+
   const stepContent: Record<StepId, React.ReactNode> = {
     story: (
       <SynopsisStoryStep
@@ -195,7 +204,7 @@ export function ProjectView({ initial }: { initial: Detail }) {
         onUploadImage={(characterId, file) => uploadCharacterImage(characterId, file)}
         onClearImage={(characterId) => clearCharacterImage(characterId)}
         onContinue={continueProject}
-        showContinue={currentPipelineStep === "cast"}
+        showContinue={currentPipelineStep === "cast" && !castAwaitsPerCharacterChoice}
       />
     ),
     scenes: (

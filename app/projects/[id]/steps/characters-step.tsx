@@ -130,7 +130,9 @@ export function CharacterRow({
             disabled={busy}
             className="shrink-0 rounded border border-white/15 px-2 py-1 text-[11px] transition hover:border-white/35 disabled:opacity-40"
           >
-            Redo portrait
+            {/* No portrait yet: this is the first, explicit choice to generate
+                one — "Redo" only makes sense once there's something to redo. */}
+            {character.imageAssetId ? "Redo portrait" : "Generate"}
           </button>
         </div>
         {canUpload && (

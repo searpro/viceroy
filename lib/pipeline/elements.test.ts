@@ -350,6 +350,33 @@ describe("runCharacterImages", () => {
     expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).not.toContain("scene_images");
   });
 
+  // BUG-5: manual mode's Cast step generates portraits one character at a
+  // time, on request — before any character has a portrait, a
+  // characterId-scoped job must not sweep up its still-imageless castmates.
+  it("a characterId-scoped job only generates that character, even when others are also imageless", async () => {
+    const project = await elementsOnly("manual");
+    const second = db
+      .insert(characters)
+      .values({ projectId: project.id, name: "the neighbour", description: "Watches from the porch." })
+      .returning()
+      .all()[0]!;
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    const target = cast.find((c) => c.id !== second.id)!;
+
+    const job = enqueue(db, {
+      type: "character_images",
+      projectId: project.id,
+      payload: { characterId: target.id },
+    });
+    const requests: Record<string, unknown>[] = [];
+    await runCharacterImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests).toHaveLength(1);
+    const after = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    expect(after.find((c) => c.id === target.id)!.imageAssetId).toBeTruthy();
+    expect(after.find((c) => c.id === second.id)!.imageAssetId).toBeNull();
+  });
+
   it("passes straight through when the story depicts nobody", async () => {
     const project = projectWithStory();
     const elements = enqueue(db, { type: "elements", projectId: project.id });

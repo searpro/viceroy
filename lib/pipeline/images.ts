@@ -173,13 +173,21 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
   const imageProvider = resolveProvider(ctx.db, "image");
 
   const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
-  const pending = cast.filter((character) => !character.imageAssetId);
 
   // A per-character redo clears just that character's portrait before
   // enqueueing, so extra direction is scoped to it rather than the whole cast.
   const jobDirection = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction.trim() : "";
   const jobCharacterId =
     typeof ctx.job.payload.characterId === "string" ? ctx.job.payload.characterId : undefined;
+
+  // In manual mode, a character with no portrait yet is not necessarily
+  // "pending generation" — it may just be waiting on the user to pick Generate
+  // vs. Use my photo for it (VIC-002/BUG-5). A `characterId`-scoped job (that
+  // per-character "Generate" click) must therefore touch only that one
+  // character, not every other cast member who also happens to be imageless.
+  const pending = jobCharacterId
+    ? cast.filter((character) => character.id === jobCharacterId && !character.imageAssetId)
+    : cast.filter((character) => !character.imageAssetId);
 
   for (const [position, character] of pending.entries()) {
     checkAbort(ctx);
