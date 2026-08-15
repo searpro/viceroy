@@ -4,7 +4,10 @@ import type { Config } from "./config";
 import type { Db } from "./db/client";
 import { assets } from "./db/schema";
 
-const EXTENSIONS: Record<string, string> = {
+// Exported so callers validating an upload before it reaches storeAsset (the
+// character-image upload route) can check against the same set this module
+// actually knows how to name, rather than maintaining a second list.
+export const EXTENSIONS: Record<string, string> = {
   "image/png": ".png",
   "image/jpeg": ".jpg",
   "image/webp": ".webp",

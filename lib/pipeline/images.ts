@@ -3,6 +3,7 @@ import { storeAsset } from "../assets";
 import { characters, projects, scenes } from "../db/schema";
 import { renderPrompt } from "../prompts";
 import { enqueue } from "../queue";
+import type { SdApi } from "../sdapi";
 import {
   awaitReview,
   checkAbort,
@@ -11,6 +12,41 @@ import {
   setStage,
   type StageContext,
 } from "./context";
+
+/**
+ * Drop any character reference sd-api no longer holds.
+ *
+ * `refInputName` points at state in another service (sd-api's own inputs
+ * directory), not at anything viceroy controls, so a name stored here can
+ * dangle if that directory is ever cleared — regardless of whether the
+ * reference came from a generated portrait or a user upload. ADR 0001 states
+ * this must degrade to a text-only generation for the character rather than
+ * fail the stage; this is that check, run once per scene-image stage rather
+ * than once per scene, since the cast (and their references) don't change
+ * mid-stage.
+ */
+export async function filterLiveRefs(
+  image: SdApi["image"],
+  cast: { id: string; name: string; refInputName: string | null }[],
+  log: (message: string, level?: "debug" | "info" | "warn" | "error") => void,
+): Promise<Map<string, string>> {
+  const candidates = cast.filter((c): c is typeof c & { refInputName: string } => Boolean(c.refInputName));
+  const checks = await Promise.all(candidates.map((c) => image.hasInput(c.refInputName)));
+
+  const live = new Map<string, string>();
+  candidates.forEach((character, index) => {
+    if (checks[index]) {
+      live.set(character.id, character.refInputName);
+    } else {
+      log(
+        `Reference image for ${character.name} is no longer available on sd-api; ` +
+          `generating their scenes as text-only`,
+        "warn",
+      );
+    }
+  });
+  return live;
+}
 
 /**
  * Stage 6 — one image per scene.
@@ -40,9 +76,7 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
   if (all.length === 0) throw new Error(`Project ${projectId} has no scenes to illustrate`);
 
   const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
-  const refByCharacter = new Map(
-    cast.filter((c) => c.refInputName).map((c) => [c.id, c.refInputName!]),
-  );
+  const refByCharacter = await filterLiveRefs(ctx.sdApi.image, cast, ctx.log);
 
   const pending = all.filter((scene) => !scene.imageAssetId);
   if (pending.length === 0) {

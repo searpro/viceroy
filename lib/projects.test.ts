@@ -89,6 +89,19 @@ describe("regenerate — per-row scoping", () => {
     expect(after.appearanceTag).toBe("a man");
   });
 
+  // VIC-002: a redo on a previously-uploaded character is a "revert to
+  // generated" — it must flip imageSource back too, or the character stays
+  // (incorrectly) excluded from character_images' pending filter.
+  it("resets imageSource to generated when redoing a previously-uploaded character", () => {
+    const { project, character } = projectWithSceneAndCharacter();
+    db.update(characters).set({ imageSource: "uploaded" }).where(eq(characters.id, character.id)).run();
+
+    regenerate(db, project.id, { target: "character_images", characterId: character.id });
+
+    const after = db.select().from(characters).where(eq(characters.id, character.id)).get()!;
+    expect(after.imageSource).toBe("generated");
+  });
+
   it("does not touch other scenes when one is scoped", () => {
     const { project, scene } = projectWithSceneAndCharacter();
     const [other] = db

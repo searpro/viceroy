@@ -43,6 +43,13 @@
       "when": 1786695882777,
       "tag": "0005_add_project_input_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786699090147,
+      "tag": "0006_regular_silver_fox",
+      "breakpoints": true
     }
   ]
 }

@@ -39,6 +39,7 @@ export type Character = {
   description: string;
   appearanceTag: string | null;
   imageAssetId: string | null;
+  imageSource: "generated" | "uploaded";
 };
 
 export type Cue = {

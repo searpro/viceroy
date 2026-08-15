@@ -288,8 +288,12 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
     db.update(scenes).set({ imageAssetId: null }).where(eq(scenes.id, input.sceneId)).run();
   }
   if (input.target === "character_images" && input.characterId) {
+    // A redo on a previously-uploaded character (a "revert to generated")
+    // must clear imageSource back to its default too, or the character would
+    // keep looking "uploaded" — and stay excluded from character_images'
+    // pending filter — even after its upload was discarded.
     db.update(characters)
-      .set({ imageAssetId: null, imagePrompt: null, refInputName: null })
+      .set({ imageAssetId: null, imagePrompt: null, refInputName: null, imageSource: "generated" })
       .where(eq(characters.id, input.characterId))
       .run();
   }

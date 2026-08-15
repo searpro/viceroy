@@ -8,7 +8,7 @@ import { assets, characters, projects, scenes } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
 import { runElements } from "./elements";
-import { runCharacterImages, runSceneImages } from "./images";
+import { filterLiveRefs, runCharacterImages, runSceneImages } from "./images";
 import { stubContext } from "./test-support";
 
 let db: Db;
@@ -59,6 +59,30 @@ const sceneDetail = (n: number) => ({
     imagePrompt: `wiry man in his fifties, navy overalls, scene ${n}`,
     characters: ["the plumber"],
   },
+});
+
+describe("filterLiveRefs", () => {
+  it("drops a candidate whose hasInput check fails and logs why", async () => {
+    const logs: [string, string | undefined][] = [];
+    const image = {
+      hasInput: async (name: string) => name === "live.png",
+    } as Parameters<typeof filterLiveRefs>[0];
+
+    const live = await filterLiveRefs(
+      image,
+      [
+        { id: "a", name: "Ada", refInputName: "live.png" },
+        { id: "b", name: "Bea", refInputName: "dangling.png" },
+        { id: "c", name: "Cid", refInputName: null },
+      ],
+      (message, level) => logs.push([message, level]),
+    );
+
+    expect([...live.entries()]).toEqual([["a", "live.png"]]);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]![0]).toContain("Bea");
+    expect(logs[0]![1]).toBe("warn");
+  });
 });
 
 describe("runElements", () => {
@@ -360,6 +384,38 @@ describe("runCharacterImages", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]!.prompt).toMatch(/wearing a red scarf$/);
   });
+
+  // VIC-002: an uploaded reference already has imageAssetId set, so the
+  // existing `!character.imageAssetId` pending filter should already skip
+  // it — this pins that down rather than assuming it from reading the code.
+  it("skips a character with a user-supplied reference, even under an unscoped redo", async () => {
+    const project = await elementsOnly();
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    db.update(characters)
+      .set({
+        imageAssetId: (
+          db
+            .insert(assets)
+            .values({ kind: "image", path: "/tmp/upload.png", mimeType: "image/png", bytes: 1 })
+            .returning()
+            .all()[0]!
+        ).id,
+        refInputName: "uploaded-by-user.png",
+        imageSource: "uploaded",
+        imagePrompt: null,
+      })
+      .where(eq(characters.id, cast[0]!.id))
+      .run();
+
+    const job = enqueue(db, { type: "character_images", projectId: project.id });
+    const requests: Record<string, unknown>[] = [];
+    await runCharacterImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests).toHaveLength(0);
+    const after = db.select().from(characters).where(eq(characters.id, cast[0]!.id)).get()!;
+    expect(after.imageSource).toBe("uploaded");
+    expect(after.refInputName).toBe("uploaded-by-user.png");
+  });
 });
 
 describe("runSceneImages", () => {
@@ -545,5 +601,64 @@ describe("runSceneImages", () => {
     const stored = db.select().from(assets).where(eq(assets.id, scene.imageAssetId!)).get()!;
     expect(fs.readFileSync(stored.path).toString()).toBe("real-png-bytes");
     expect(stored.bytes).toBe("real-png-bytes".length);
+  });
+
+  // ref_images is built from refInputName regardless of how it got there
+  // (ADR 0001) — an uploaded reference must flow through identically to a
+  // generated one, with zero branching in the scene-generation loop.
+  it("passes an uploaded character's reference identically to a generated one", async () => {
+    const project = await elementsDone();
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    db.update(characters)
+      .set({ refInputName: "uploaded-by-user.png", imageSource: "uploaded" })
+      .where(eq(characters.id, cast[0]!.id))
+      .run();
+
+    const job = enqueue(db, { type: "scene_images", projectId: project.id });
+    const requests: Record<string, unknown>[] = [];
+    await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests[0]!.ref_images).toEqual(["uploaded-by-user.png"]);
+  });
+
+  // ADR 0001's stated-but-unimplemented rule: a dangling reference name (the
+  // upload cleared out of sd-api's own inputs directory) must degrade that
+  // character's scenes to text-only rather than fail the stage.
+  it("degrades to text-only for a character whose reference sd-api no longer holds", async () => {
+    const project = await elementsDone();
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    db.update(characters)
+      .set({ refInputName: "dangling.png" })
+      .where(eq(characters.id, cast[0]!.id))
+      .run();
+
+    // A second character with a live reference, in the same scene, to prove
+    // the gating is per-character rather than all-or-nothing.
+    db.insert(characters)
+      .values({ projectId: project.id, name: "second", description: "another", refInputName: "live.png" })
+      .run();
+    const second = db
+      .select()
+      .from(characters)
+      .where(eq(characters.projectId, project.id))
+      .all()
+      .find((c) => c.name === "second")!;
+    const target = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()[0]!;
+    db.update(scenes)
+      .set({ characterIds: [cast[0]!.id, second.id] })
+      .where(eq(scenes.id, target.id))
+      .run();
+
+    const job = enqueue(db, { type: "scene_images", projectId: project.id });
+    const requests: Record<string, unknown>[] = [];
+    const logs: string[] = [];
+    const ctx = stubContext(db, job, {
+      onImageRequest: (r) => requests.push(r),
+      hasInput: (name) => name !== "dangling.png",
+    });
+    await runSceneImages({ ...ctx, log: (message) => logs.push(message) });
+
+    expect(requests[0]!.ref_images).toEqual(["live.png"]);
+    expect(logs.some((l) => l.includes("no longer available"))).toBe(true);
   });
 });

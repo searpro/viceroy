@@ -124,6 +124,29 @@ export function ProjectView({ initial }: { initial: Detail }) {
     setBusy(false);
   }
 
+  async function uploadCharacterImage(characterId: string, file: File) {
+    setBusy(true);
+    const form = new FormData();
+    form.append("file", file);
+    await fetch(`/api/projects/${detail.project.id}/characters/${characterId}/image`, {
+      method: "POST",
+      body: form,
+    });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
+  async function clearCharacterImage(characterId: string) {
+    setBusy(true);
+    await fetch(`/api/projects/${detail.project.id}/characters/${characterId}/image`, {
+      method: "DELETE",
+    });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
   async function continueProject() {
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
@@ -169,6 +192,8 @@ export function ProjectView({ initial }: { initial: Detail }) {
         active={active}
         busy={busy}
         onRedoPortrait={(characterId, dir) => regenerateCharacter(characterId, dir)}
+        onUploadImage={(characterId, file) => uploadCharacterImage(characterId, file)}
+        onClearImage={(characterId) => clearCharacterImage(characterId)}
         onContinue={continueProject}
         showContinue={currentPipelineStep === "cast"}
       />

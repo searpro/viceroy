@@ -83,13 +83,29 @@ describe("isComplete", () => {
   it("cast is complete once every character has a portrait", () => {
     const withPortraits = baseDetail({
       characters: [
-        { id: "c1", name: "A", description: "", appearanceTag: null, imageAssetId: "asset1" },
+        {
+          id: "c1",
+          name: "A",
+          description: "",
+          appearanceTag: null,
+          imageAssetId: "asset1",
+          imageSource: "generated",
+        },
       ],
     });
     expect(castStep.isComplete(withPortraits)).toBe(true);
 
     const withoutPortraits = baseDetail({
-      characters: [{ id: "c1", name: "A", description: "", appearanceTag: null, imageAssetId: null }],
+      characters: [
+        {
+          id: "c1",
+          name: "A",
+          description: "",
+          appearanceTag: null,
+          imageAssetId: null,
+          imageSource: "generated",
+        },
+      ],
     });
     expect(castStep.isComplete(withoutPortraits)).toBe(false);
   });

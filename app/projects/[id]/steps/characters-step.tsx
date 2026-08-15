@@ -9,6 +9,8 @@ export function CharactersStep({
   active,
   busy,
   onRedoPortrait,
+  onUploadImage,
+  onClearImage,
   onContinue,
   showContinue,
 }: {
@@ -16,6 +18,8 @@ export function CharactersStep({
   active: boolean;
   busy: boolean;
   onRedoPortrait: (characterId: string, direction: string) => void;
+  onUploadImage: (characterId: string, file: File) => void;
+  onClearImage: (characterId: string) => void;
   onContinue: () => void;
   showContinue: boolean;
 }) {
@@ -34,7 +38,12 @@ export function CharactersStep({
                 key={character.id}
                 character={character}
                 busy={busy || active}
+                // Manual mode is the only surface with an upload control; auto
+                // mode has no review step to host it on (VIC-002 non-goal).
+                canUpload={detail.project.mode === "manual"}
                 onRedoPortrait={(direction) => onRedoPortrait(character.id, direction)}
+                onUploadImage={(file) => onUploadImage(character.id, file)}
+                onClearImage={() => onClearImage(character.id)}
               />
             ))}
           </ul>
@@ -50,13 +59,20 @@ export function CharactersStep({
 export function CharacterRow({
   character,
   busy,
+  canUpload,
   onRedoPortrait,
+  onUploadImage,
+  onClearImage,
 }: {
   character: Character;
   busy: boolean;
+  canUpload: boolean;
   onRedoPortrait: (direction: string) => void;
+  onUploadImage: (file: File) => void;
+  onClearImage: () => void;
 }) {
   const [direction, setDirection] = useState("");
+  const uploaded = character.imageSource === "uploaded";
 
   return (
     <li className="flex gap-3">
@@ -69,7 +85,14 @@ export function CharacterRow({
         />
       )}
       <div className="flex-1">
-        <span className="block font-medium">{character.name}</span>
+        <span className="block font-medium">
+          {character.name}
+          {uploaded && (
+            <span className="ml-2 rounded border border-white/15 px-1.5 py-0.5 text-[10px] font-normal uppercase tracking-wide text-white/45">
+              Uploaded
+            </span>
+          )}
+        </span>
         <span className="block text-xs text-white/45">
           {character.appearanceTag ?? character.description}
         </span>
@@ -81,13 +104,48 @@ export function CharacterRow({
             className="flex-1 rounded border border-white/10 bg-black/20 px-2 py-1 text-[11px] outline-none placeholder:text-white/25 focus:border-white/25"
           />
           <button
-            onClick={() => onRedoPortrait(direction)}
+            onClick={() => {
+              // An uploaded photo is the user's own; a redo would silently
+              // replace it with a generated one, so make that cost explicit
+              // rather than let a misclick lose it.
+              if (uploaded && !window.confirm("This replaces your uploaded photo with a generated portrait. Continue?")) {
+                return;
+              }
+              onRedoPortrait(direction);
+            }}
             disabled={busy}
             className="shrink-0 rounded border border-white/15 px-2 py-1 text-[11px] transition hover:border-white/35 disabled:opacity-40"
           >
             Redo portrait
           </button>
         </div>
+        {canUpload && (
+          <div className="mt-1.5 flex items-center gap-2">
+            <label className="shrink-0 cursor-pointer rounded border border-white/15 px-2 py-1 text-[11px] transition hover:border-white/35 aria-disabled:pointer-events-none aria-disabled:opacity-40">
+              Use my photo
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                disabled={busy}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (file) onUploadImage(file);
+                }}
+                className="hidden"
+              />
+            </label>
+            {uploaded && (
+              <button
+                onClick={onClearImage}
+                disabled={busy}
+                className="shrink-0 rounded border border-white/15 px-2 py-1 text-[11px] transition hover:border-white/35 disabled:opacity-40"
+              >
+                Revert to generated
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </li>
   );

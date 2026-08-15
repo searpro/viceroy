@@ -1,0 +1,1 @@
+ALTER TABLE `characters` ADD `image_source` text DEFAULT 'generated' NOT NULL;

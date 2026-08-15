@@ -35,6 +35,8 @@ export type StubOptions = {
   /** Canned transcript words, already in milliseconds. */
   transcript?: { word: string; startMs: number; endMs: number }[];
   onTranscribeRequest?: (request: Record<string, unknown>) => void;
+  /** Override sd-api's answer to "is this reference still there", per name. */
+  hasInput?: (name: string) => boolean | Promise<boolean>;
 };
 
 /** A 16-bit mono WAV header with no samples — enough to parse a sample rate. */
@@ -99,7 +101,7 @@ export function stubContext(db: Db, job: Job, options: StubOptions = {}): StageC
           return bytes ?? Buffer.from("png");
         },
         uploadInput: async (_bytes: Buffer, filename: string) => `uploaded-${filename}`,
-        hasInput: async () => true,
+        hasInput: async (name: string) => (options.hasInput ? options.hasInput(name) : true),
       },
       audio: {
         speech: async (request: Record<string, unknown>) => {

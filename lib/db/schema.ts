@@ -175,6 +175,15 @@ export const characters = sqliteTable(
     // The reference portrait, generated before any scene so scene images can
     // pass it as ref_images and keep the character consistent between frames.
     imageAssetId: text("image_asset_id").references(() => assets.id),
+    // Distinguishes a portrait the pipeline generated from one the user
+    // uploaded (VIC-002): `imageAssetId`/`refInputName` are already
+    // source-agnostic (a path and an sd-api name work identically either
+    // way), but `character_images`' skip logic, the UI's "revert to
+    // generated" affordance, and a future `elements` re-run all need to know
+    // which one they're looking at without guessing from other fields.
+    imageSource: text("image_source", { enum: ["generated", "uploaded"] })
+      .notNull()
+      .default("generated"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
