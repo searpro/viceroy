@@ -96,6 +96,12 @@ export function CharacterRow({
         <span className="block text-xs text-white/45">
           {character.appearanceTag ?? character.description}
         </span>
+        {character.imagePrompt && (
+          <details className="mt-1 text-[11px] text-white/35">
+            <summary className="cursor-pointer">prompt</summary>
+            <p className="mt-1 leading-relaxed">{character.imagePrompt}</p>
+          </details>
+        )}
         <div className="mt-1.5 flex gap-2">
           <input
             value={direction}

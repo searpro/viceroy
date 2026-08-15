@@ -38,6 +38,7 @@ export type Character = {
   name: string;
   description: string;
   appearanceTag: string | null;
+  imagePrompt: string | null;
   imageAssetId: string | null;
   imageSource: "generated" | "uploaded";
 };
