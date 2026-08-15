@@ -38,6 +38,12 @@ export function CharactersStep({
                 key={character.id}
                 character={character}
                 busy={busy || active}
+                // Uploading a photo doesn't touch the character_images job, so
+                // it shouldn't wait on `active` (any project job running) —
+                // only on `busy` (this row's own upload/clear request being
+                // in flight). Tying it to `active` locked the control for the
+                // whole duration of portrait generation (BUG-4).
+                uploadBusy={busy}
                 // Manual mode is the only surface with an upload control; auto
                 // mode has no review step to host it on (VIC-002 non-goal).
                 canUpload={detail.project.mode === "manual"}
@@ -59,6 +65,7 @@ export function CharactersStep({
 export function CharacterRow({
   character,
   busy,
+  uploadBusy,
   canUpload,
   onRedoPortrait,
   onUploadImage,
@@ -66,6 +73,7 @@ export function CharacterRow({
 }: {
   character: Character;
   busy: boolean;
+  uploadBusy: boolean;
   canUpload: boolean;
   onRedoPortrait: (direction: string) => void;
   onUploadImage: (file: File) => void;
@@ -132,7 +140,7 @@ export function CharacterRow({
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
-                disabled={busy}
+                disabled={uploadBusy}
                 onChange={(event) => {
                   const file = event.target.files?.[0];
                   event.target.value = "";
@@ -144,7 +152,7 @@ export function CharacterRow({
             {uploaded && (
               <button
                 onClick={onClearImage}
-                disabled={busy}
+                disabled={uploadBusy}
                 className="shrink-0 rounded border border-white/15 px-2 py-1 text-[11px] transition hover:border-white/35 disabled:opacity-40"
               >
                 Revert to generated
