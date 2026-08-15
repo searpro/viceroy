@@ -23,7 +23,6 @@ type VoiceStyle = {
   description: string;
   ttsInstruct: string;
   deliveryCues: string;
-  model: string;
   isBuiltin: boolean;
 };
 
@@ -33,9 +32,6 @@ type ImageStyle = {
   description: string;
   promptPrefix: string;
   promptSuffix: string;
-  negativePrompt: string;
-  model: string;
-  defaultParams: Record<string, number | string>;
   isBuiltin: boolean;
 };
 
@@ -393,7 +389,6 @@ const EMPTY_VOICE = {
   description: "",
   ttsInstruct: "",
   deliveryCues: "",
-  model: "qwen3-tts-voicedesign",
 };
 
 function VoiceTab({
@@ -476,7 +471,6 @@ function VoiceTab({
             onChange={(v) => setForm({ ...form, deliveryCues: v })}
             multiline
           />
-          <Field label="Model" value={form.model} onChange={(v) => setForm({ ...form, model: v })} />
         </div>
         {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
         <button
@@ -506,7 +500,6 @@ function VoiceCard({
     description: style.description,
     ttsInstruct: style.ttsInstruct,
     deliveryCues: style.deliveryCues,
-    model: style.model,
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -543,7 +536,6 @@ function VoiceCard({
         </div>
       </div>
       <p className="mt-1 text-xs text-white/50">{style.description}</p>
-      <p className="mt-1 text-[11px] text-white/30">{style.model}</p>
 
       {editing && (
         <div className="mt-3 space-y-2 border-t border-white/5 pt-3">
@@ -565,7 +557,6 @@ function VoiceCard({
             onChange={(v) => setForm({ ...form, deliveryCues: v })}
             multiline
           />
-          <Field label="Model" value={form.model} onChange={(v) => setForm({ ...form, model: v })} />
           {error && <p className="text-xs text-red-400">{error}</p>}
           <button
             onClick={save}
@@ -588,22 +579,7 @@ const EMPTY_IMAGE = {
   description: "",
   promptPrefix: "",
   promptSuffix: "",
-  negativePrompt: "",
-  model: "",
-  paramsText: "{}",
 };
-
-function parseParams(text: string): { value: Record<string, number | string> | null; error: string | null } {
-  try {
-    const parsed = JSON.parse(text || "{}");
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return { value: null, error: "Params must be a JSON object" };
-    }
-    return { value: parsed, error: null };
-  } catch {
-    return { value: null, error: "Params must be valid JSON" };
-  }
-}
 
 function ImageTab({
   styles,
@@ -617,15 +593,12 @@ function ImageTab({
   const [busy, setBusy] = useState(false);
 
   async function create() {
-    const { value: defaultParams, error: paramsError } = parseParams(form.paramsText);
-    if (paramsError) return setError(paramsError);
-
     setBusy(true);
     setError(null);
     const response = await fetch("/api/styles/image", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...form, defaultParams }),
+      body: JSON.stringify(form),
     });
     const body = await response.json();
     if (!response.ok) {
@@ -676,7 +649,6 @@ function ImageTab({
             value={form.description}
             onChange={(v) => setForm({ ...form, description: v })}
           />
-          <Field label="Model" value={form.model} onChange={(v) => setForm({ ...form, model: v })} />
           <Field
             label="Prompt prefix"
             value={form.promptPrefix}
@@ -687,22 +659,11 @@ function ImageTab({
             value={form.promptSuffix}
             onChange={(v) => setForm({ ...form, promptSuffix: v })}
           />
-          <Field
-            label="Negative prompt"
-            value={form.negativePrompt}
-            onChange={(v) => setForm({ ...form, negativePrompt: v })}
-          />
-          <Field
-            label="Default params (JSON)"
-            value={form.paramsText}
-            onChange={(v) => setForm({ ...form, paramsText: v })}
-            multiline
-          />
         </div>
         {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
         <button
           onClick={create}
-          disabled={busy || !form.name || !form.model}
+          disabled={busy || !form.name}
           className="mt-3 rounded-md bg-amber-400 px-3 py-1.5 text-xs font-medium text-black transition hover:bg-amber-300 disabled:opacity-40"
         >
           Create
@@ -727,19 +688,13 @@ function ImageCard({
     description: style.description,
     promptPrefix: style.promptPrefix,
     promptSuffix: style.promptSuffix,
-    negativePrompt: style.negativePrompt,
-    model: style.model,
-    paramsText: JSON.stringify(style.defaultParams, null, 2),
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function save() {
-    const { value: defaultParams, error: paramsError } = parseParams(form.paramsText);
-    if (paramsError) return setError(paramsError);
-
     setBusy(true);
-    const err = await onSave(style.id, { ...form, defaultParams: defaultParams! });
+    const err = await onSave(style.id, form);
     setError(err);
     setBusy(false);
     if (!err) setEditing(false);
@@ -769,7 +724,6 @@ function ImageCard({
         </div>
       </div>
       <p className="mt-1 text-xs text-white/50">{style.description}</p>
-      <p className="mt-1 text-[11px] text-white/30">{style.model}</p>
 
       {editing && (
         <div className="mt-3 space-y-2 border-t border-white/5 pt-3">
@@ -779,7 +733,6 @@ function ImageCard({
             value={form.description}
             onChange={(v) => setForm({ ...form, description: v })}
           />
-          <Field label="Model" value={form.model} onChange={(v) => setForm({ ...form, model: v })} />
           <Field
             label="Prompt prefix"
             value={form.promptPrefix}
@@ -789,17 +742,6 @@ function ImageCard({
             label="Prompt suffix"
             value={form.promptSuffix}
             onChange={(v) => setForm({ ...form, promptSuffix: v })}
-          />
-          <Field
-            label="Negative prompt"
-            value={form.negativePrompt}
-            onChange={(v) => setForm({ ...form, negativePrompt: v })}
-          />
-          <Field
-            label="Default params (JSON)"
-            value={form.paramsText}
-            onChange={(v) => setForm({ ...form, paramsText: v })}
-            multiline
           />
           {error && <p className="text-xs text-red-400">{error}</p>}
           <button

@@ -9,6 +9,7 @@ import {
   checkAbort,
   loadProject,
   requireProjectId,
+  resolveProvider,
   setStage,
   type StageContext,
 } from "./context";
@@ -65,6 +66,7 @@ export async function filterLiveRefs(
 export async function runSceneImages(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
   const { imageStyle } = loadProject(ctx.db, projectId);
+  const imageProvider = resolveProvider(ctx.db, "image");
 
   const all = ctx.db
     .select()
@@ -109,11 +111,11 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
     const bytes = await ctx.sdApi.image.generate(
       {
         prompt: `${imageStyle.promptPrefix}${scene.imagePrompt}${direction}${imageStyle.promptSuffix}`,
-        negative_prompt: imageStyle.negativePrompt || undefined,
-        model: imageStyle.model,
+        negative_prompt: imageProvider.negativePrompt || undefined,
+        model: imageProvider.model,
         width: ctx.config.sourceImage.width,
         height: ctx.config.sourceImage.height,
-        ...(imageStyle.defaultParams as Record<string, never>),
+        ...(imageProvider.defaultParams as Record<string, never>),
         ...(refs.length > 0
           ? {
               ref_images: refs,
@@ -168,6 +170,7 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
 export async function runCharacterImages(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
   const { project, narrativeStyle, imageStyle } = loadProject(ctx.db, projectId);
+  const imageProvider = resolveProvider(ctx.db, "image");
 
   const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
   const pending = cast.filter((character) => !character.imageAssetId);
@@ -195,11 +198,11 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
     const bytes = await ctx.sdApi.image.generate(
       {
         prompt,
-        negative_prompt: imageStyle.negativePrompt || undefined,
-        model: imageStyle.model,
+        negative_prompt: imageProvider.negativePrompt || undefined,
+        model: imageProvider.model,
         width: ctx.config.sourceImage.width,
         height: ctx.config.sourceImage.height,
-        ...(imageStyle.defaultParams as Record<string, never>),
+        ...(imageProvider.defaultParams as Record<string, never>),
       },
       {
         onProgress: (fraction) =>

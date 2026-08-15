@@ -4,7 +4,7 @@ import { asc, eq } from "drizzle-orm";
 import { createTestDb } from "../db/testing";
 import { seed } from "../db/seed";
 import type { Db } from "../db/client";
-import { assets, characters, projects, scenes } from "../db/schema";
+import { assets, characters, projects, providers, scenes } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
 import { runElements } from "./elements";
@@ -298,6 +298,25 @@ describe("runCharacterImages", () => {
     return project;
   }
 
+  it("asks with the image provider's model, negative prompt and default params — not the style's", async () => {
+    const project = await elementsOnly();
+    db.update(providers)
+      .set({ model: "sdxl-turbo", defaultParams: { steps: 20, seed: 7 }, negativePrompt: "blurry" })
+      .where(eq(providers.kind, "image"))
+      .run();
+
+    const job = enqueue(db, { type: "character_images", projectId: project.id });
+    const requests: Record<string, unknown>[] = [];
+    await runCharacterImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests[0]).toMatchObject({
+      model: "sdxl-turbo",
+      negative_prompt: "blurry",
+      steps: 20,
+      seed: 7,
+    });
+  });
+
   // The name is what scenes point at; without storing it every frame would
   // have to re-upload the same portrait.
   it("uploads each portrait to sd-api and stores the returned name", async () => {
@@ -515,7 +534,7 @@ describe("runSceneImages", () => {
     expect(rows.every((s) => s.imageAssetId)).toBe(true);
   });
 
-  it("asks for the configured source frame size and the style's model", async () => {
+  it("asks for the configured source frame size and the provider's model", async () => {
     const project = await elementsDone();
     const job = enqueue(db, { type: "scene_images", projectId: project.id });
 
@@ -527,6 +546,25 @@ describe("runSceneImages", () => {
       height: 768,
       model: "flux2-klein-4b",
       steps: 4,
+    });
+  });
+
+  it("asks with the image provider's model, negative prompt and default params — not the style's", async () => {
+    const project = await elementsDone();
+    db.update(providers)
+      .set({ model: "sdxl-turbo", defaultParams: { steps: 20, seed: 7 }, negativePrompt: "blurry" })
+      .where(eq(providers.kind, "image"))
+      .run();
+
+    const job = enqueue(db, { type: "scene_images", projectId: project.id });
+    const requests: Record<string, unknown>[] = [];
+    await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests[0]).toMatchObject({
+      model: "sdxl-turbo",
+      negative_prompt: "blurry",
+      steps: 20,
+      seed: 7,
     });
   });
 

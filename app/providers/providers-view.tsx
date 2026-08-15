@@ -10,6 +10,7 @@ type Provider = {
   baseUrl: string;
   model: string;
   defaultParams: Record<string, unknown>;
+  negativePrompt: string;
   isDefault: boolean;
   hasApiKey: boolean;
 };
@@ -87,6 +88,7 @@ const emptyForm = (kind: Kind) => ({
   model: "",
   isDefault: false,
   paramsText: "{}",
+  negativePrompt: "",
 });
 
 function KindTab({
@@ -121,6 +123,7 @@ function KindTab({
         model: form.model,
         isDefault: form.isDefault,
         defaultParams,
+        ...(kind === "image" ? { negativePrompt: form.negativePrompt } : {}),
       }),
     });
     const body = await response.json();
@@ -194,6 +197,13 @@ function KindTab({
             onChange={(v) => setForm({ ...form, paramsText: v })}
             multiline
           />
+          {kind === "image" && (
+            <Field
+              label="Negative prompt"
+              value={form.negativePrompt}
+              onChange={(v) => setForm({ ...form, negativePrompt: v })}
+            />
+          )}
           <label className="flex items-center gap-2 text-xs text-white/60">
             <input
               type="checkbox"
@@ -233,6 +243,7 @@ function ProviderCard({
     model: provider.model,
     isDefault: provider.isDefault,
     paramsText: JSON.stringify(provider.defaultParams, null, 2),
+    negativePrompt: provider.negativePrompt,
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -249,6 +260,7 @@ function ProviderCard({
       model: form.model,
       isDefault: form.isDefault,
       defaultParams,
+      ...(provider.kind === "image" ? { negativePrompt: form.negativePrompt } : {}),
     });
     setError(err);
     setBusy(false);
@@ -302,6 +314,13 @@ function ProviderCard({
             onChange={(v) => setForm({ ...form, paramsText: v })}
             multiline
           />
+          {provider.kind === "image" && (
+            <Field
+              label="Negative prompt"
+              value={form.negativePrompt}
+              onChange={(v) => setForm({ ...form, negativePrompt: v })}
+            />
+          )}
           <label className="flex items-center gap-2 text-xs text-white/60">
             <input
               type="checkbox"

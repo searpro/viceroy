@@ -16,6 +16,10 @@ export const providerSchema = z.object({
   // would silently un-default a provider or wipe its params on an unrelated
   // edit. Omitted fields fall through to the column's own default instead.
   defaultParams: z.record(z.string(), z.unknown()).optional(),
+  // Diffusion-specific; meaningless outside kind "image" but kept on the
+  // shared schema like every other column here. No .default() for the same
+  // .partial()-PATCH reason as defaultParams above.
+  negativePrompt: z.string().trim().optional(),
   isDefault: z.boolean().optional(),
 });
 export type ProviderInput = z.infer<typeof providerSchema>;

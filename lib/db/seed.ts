@@ -36,8 +36,8 @@ const NARRATIVE_STYLES = [
       "editorialise — no 'shockingly', no 'unbelievably'. Specifics over adjectives: not 'a huge sum' " +
       "but 'a hundred and four million dollars'. Present tense for immediacy in the central beats.",
     // Phrased entirely as what IS in frame. Negations belong in the image
-    // style's negativePrompt: a diffusion prompt has no "not", so "no fantasy
-    // elements" pasted into a positive prompt asks for fantasy elements.
+    // provider's negativePrompt: a diffusion prompt has no "not", so "no
+    // fantasy elements" pasted into a positive prompt asks for fantasy elements.
     visualGuidance:
       "Desaturated, documentary realism. Available light, hard shadows, handheld framing. Institutional " +
       "interiors, paperwork, surveillance angles, plain functional surfaces.",
@@ -142,9 +142,16 @@ const VOICE_STYLES = [
 // 55s for ssd-1b — faster AND a generation ahead in quality, so it wins on
 // both counts. Its params are the bundle manifest's own: FLUX.2 klein is
 // distilled to 4 steps at cfg 1, and raising either costs time without
-// improving the image.
+// improving the image. Model, params and negative prompt are all provider
+// configuration now, not style guidance — see the image provider entry in
+// PROVIDERS below. The negative prompt here merges what each builtin style
+// used to ask separately (documentary's "no illustration", noir's "no flat
+// lighting"); a provider can only carry one, so a style-specific avoid-list
+// is no longer possible without a second image provider.
 const IMAGE_PARAMS = { steps: 4, cfg_scale: 1, sampler: "euler" };
 const IMAGE_MODEL = "flux2-klein-4b";
+const IMAGE_NEGATIVE_PROMPT =
+  "illustration, cartoon, painting, cgi, oversaturated, glossy, text, watermark, flat lighting, low contrast";
 
 const IMAGE_STYLES = [
   {
@@ -152,18 +159,12 @@ const IMAGE_STYLES = [
     description: "Desaturated, available-light realism. Reads as footage rather than illustration.",
     promptPrefix: "documentary photograph, available light, ",
     promptSuffix: ", desaturated colour, 35mm, natural skin texture, shallow depth of field",
-    negativePrompt: "illustration, cartoon, painting, cgi, oversaturated, glossy, text, watermark",
-    model: IMAGE_MODEL,
-    defaultParams: IMAGE_PARAMS,
   },
   {
     name: "Cinematic Noir",
     description: "High contrast, hard shadows, cool palette. Suits cautionary and crime material.",
     promptPrefix: "cinematic film still, high contrast lighting, ",
     promptSuffix: ", deep shadows, cool colour grade, anamorphic, film grain",
-    negativePrompt: "flat lighting, cartoon, cgi, text, watermark, low contrast",
-    model: IMAGE_MODEL,
-    defaultParams: IMAGE_PARAMS,
   },
 ];
 
@@ -185,7 +186,13 @@ const CAPTION_STYLES = [
 
 const PROVIDERS = [
   { kind: "llm" as const, name: "sd-api (local)", model: "mistral-nemo-12b" },
-  { kind: "image" as const, name: "sd-api (local)", model: IMAGE_MODEL },
+  {
+    kind: "image" as const,
+    name: "sd-api (local)",
+    model: IMAGE_MODEL,
+    defaultParams: IMAGE_PARAMS,
+    negativePrompt: IMAGE_NEGATIVE_PROMPT,
+  },
   { kind: "audio" as const, name: "sd-api (local)", model: "qwen3-tts-voicedesign" },
   { kind: "asr" as const, name: "sd-api (local)", model: "parakeet-tdt" },
 ];

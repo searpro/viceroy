@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTestDb } from "./testing";
 import type { Db } from "./client";
 import { seed } from "./seed";
+import { eq } from "drizzle-orm";
 import { imageStyles, narrativeStyles, promptTemplates, providers, voiceStyles } from "./schema";
 
 let db: Db;
@@ -72,10 +73,9 @@ describe("built-in text destined for image prompts", () => {
     }
   });
 
-  it("still expresses exclusions, in the negative prompt where they work", () => {
+  it("still expresses exclusions, in the image provider's negative prompt where they work", () => {
     seed(db);
-    for (const style of db.select().from(imageStyles).all()) {
-      expect(style.negativePrompt.length).toBeGreaterThan(0);
-    }
+    const imageProvider = db.select().from(providers).where(eq(providers.kind, "image")).get()!;
+    expect(imageProvider.negativePrompt.length).toBeGreaterThan(0);
   });
 });

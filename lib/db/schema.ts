@@ -40,6 +40,10 @@ export const narrativeStyles = sqliteTable("narrative_styles", {
   updatedAt: updatedAt(),
 });
 
+// A style is guidance, not configuration: which model runs it and what knobs
+// it's called with belong to the provider (see `providers` below), so the
+// same style produces consistent results however many providers of that kind
+// exist and reads the same regardless of which one is active.
 export const voiceStyles = sqliteTable("voice_styles", {
   id: id(),
   name: text("name").notNull().unique(),
@@ -51,7 +55,6 @@ export const voiceStyles = sqliteTable("voice_styles", {
   // Delivery guidance handed to the writer so the script it produces suits
   // the voice that will read it.
   deliveryCues: text("delivery_cues").notNull(),
-  model: text("model").notNull().default("qwen3-tts-voicedesign"),
   isBuiltin: integer("is_builtin", { mode: "boolean" }).notNull().default(false),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -63,12 +66,6 @@ export const imageStyles = sqliteTable("image_styles", {
   description: text("description").notNull(),
   promptPrefix: text("prompt_prefix").notNull().default(""),
   promptSuffix: text("prompt_suffix").notNull().default(""),
-  negativePrompt: text("negative_prompt").notNull().default(""),
-  model: text("model").notNull(),
-  defaultParams: text("default_params", { mode: "json" })
-    .notNull()
-    .$type<Record<string, number | string>>()
-    .default({}),
   isBuiltin: integer("is_builtin", { mode: "boolean" }).notNull().default(false),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -396,6 +393,9 @@ export const providers = sqliteTable(
       .notNull()
       .$type<Record<string, unknown>>()
       .default({}),
+    // Diffusion-specific: what an image provider's generations should avoid.
+    // Meaningless for kind "llm"/"audio"/"asr", where it stays "".
+    negativePrompt: text("negative_prompt").notNull().default(""),
     isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

@@ -50,6 +50,13 @@
       "when": 1786699090147,
       "tag": "0006_regular_silver_fox",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786767238436,
+      "tag": "0007_cynical_black_panther",
+      "breakpoints": true
     }
   ]
 }

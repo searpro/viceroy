@@ -52,7 +52,6 @@ const VOICE_INPUT = {
   description: "d",
   ttsInstruct: "speak warmly",
   deliveryCues: "slow down on the turn",
-  model: "qwen3-tts-voicedesign",
 };
 
 const IMAGE_INPUT = {
@@ -60,9 +59,6 @@ const IMAGE_INPUT = {
   description: "d",
   promptPrefix: "photo, ",
   promptSuffix: ", 35mm",
-  negativePrompt: "blurry",
-  model: "flux2-klein-4b",
-  defaultParams: { steps: 20 },
 };
 
 const CAPTION_INPUT = {
@@ -142,13 +138,15 @@ describe("voice styles", () => {
     expect(() => deleteVoiceStyle(db, created.id)).toThrow(/used by an existing project/);
   });
 
-  it("does not have the .partial() schema inject a default model on an omitted patch field", () => {
+  it("does not have the .partial() schema inject defaults on an omitted patch field", () => {
     const patch = voiceStyleSchema.partial().parse({ description: "changed only" });
-    expect(patch).not.toHaveProperty("model");
+    expect(patch).not.toHaveProperty("ttsInstruct");
+    expect(patch).not.toHaveProperty("deliveryCues");
 
     const created = createVoiceStyle(db, VOICE_INPUT);
     const updated = updateVoiceStyle(db, created.id, patch);
-    expect(updated.model).toBe(VOICE_INPUT.model);
+    expect(updated.ttsInstruct).toBe(VOICE_INPUT.ttsInstruct);
+    expect(updated.deliveryCues).toBe(VOICE_INPUT.deliveryCues);
   });
 });
 
@@ -157,8 +155,8 @@ describe("image styles", () => {
     const created = createImageStyle(db, IMAGE_INPUT);
     expect(listImageStyles(db).map((s) => s.id)).toContain(created.id);
 
-    const updated = updateImageStyle(db, created.id, { negativePrompt: "watermark" });
-    expect(updated.negativePrompt).toBe("watermark");
+    const updated = updateImageStyle(db, created.id, { promptSuffix: ", vintage" });
+    expect(updated.promptSuffix).toBe(", vintage");
   });
 
   it("refuses to delete a built-in style", () => {
@@ -172,15 +170,15 @@ describe("image styles", () => {
     expect(() => deleteImageStyle(db, created.id)).toThrow(/used by an existing project/);
   });
 
-  it("does not have the .partial() schema inject empty defaultParams on an omitted patch field", () => {
+  it("does not have the .partial() schema inject defaults on an omitted patch field", () => {
     const patch = imageStyleSchema.partial().parse({ description: "changed only" });
-    expect(patch).not.toHaveProperty("defaultParams");
     expect(patch).not.toHaveProperty("promptPrefix");
+    expect(patch).not.toHaveProperty("promptSuffix");
 
     const created = createImageStyle(db, IMAGE_INPUT);
     const updated = updateImageStyle(db, created.id, patch);
-    expect(updated.defaultParams).toEqual(IMAGE_INPUT.defaultParams);
     expect(updated.promptPrefix).toBe(IMAGE_INPUT.promptPrefix);
+    expect(updated.promptSuffix).toBe(IMAGE_INPUT.promptSuffix);
   });
 });
 

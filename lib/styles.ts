@@ -27,7 +27,6 @@ export const voiceStyleSchema = z.object({
   description: z.string().trim().min(1),
   ttsInstruct: z.string().trim().min(1),
   deliveryCues: z.string().trim().min(1),
-  model: z.string().trim().min(1).optional(),
 });
 export type VoiceStyleInput = z.infer<typeof voiceStyleSchema>;
 
@@ -36,9 +35,6 @@ export const imageStyleSchema = z.object({
   description: z.string().trim().min(1),
   promptPrefix: z.string().trim().optional(),
   promptSuffix: z.string().trim().optional(),
-  negativePrompt: z.string().trim().optional(),
-  model: z.string().trim().min(1),
-  defaultParams: z.record(z.string(), z.union([z.number(), z.string()])).optional(),
 });
 export type ImageStyleInput = z.infer<typeof imageStyleSchema>;
 
