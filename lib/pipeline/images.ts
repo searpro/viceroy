@@ -169,7 +169,7 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
  */
 export async function runCharacterImages(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
-  const { project, narrativeStyle, imageStyle } = loadProject(ctx.db, projectId);
+  const { project, imageStyle } = loadProject(ctx.db, projectId);
   const imageProvider = resolveProvider(ctx.db, "image");
 
   const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
@@ -188,11 +188,13 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
       jobDirection && (!jobCharacterId || jobCharacterId === character.id) ? `, ${jobDirection}` : "";
 
     const prompt =
+      `${imageStyle.promptPrefix}` +
       renderPrompt(ctx.db, "character.portrait", {
         characterName: character.name,
         characterDescription: character.appearanceTag ?? character.description,
-        visualGuidance: narrativeStyle.visualGuidance,
-      }) + direction;
+      }) +
+      direction +
+      `${imageStyle.promptSuffix}`;
 
     ctx.log(`Generating portrait for ${character.name}`);
     const bytes = await ctx.sdApi.image.generate(

@@ -401,7 +401,11 @@ describe("runCharacterImages", () => {
     await runCharacterImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]!.prompt).toMatch(/wearing a red scarf$/);
+    const prompt = requests[0]!.prompt as string;
+    expect(prompt).toContain(", wearing a red scarf");
+    expect(prompt.indexOf("wearing a red scarf")).toBeLessThan(
+      prompt.indexOf("shallow depth of field"),
+    );
   });
 
   // VIC-002: an uploaded reference already has imageAssetId set, so the
