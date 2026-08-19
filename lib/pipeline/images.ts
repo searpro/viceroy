@@ -50,6 +50,33 @@ export async function filterLiveRefs(
 }
 
 /**
+ * The provider's avoid-list plus the style's, not one or the other.
+ *
+ * The two exclude different kinds of thing. A provider's list is a property of
+ * the image *model* — malformed hands, extra fingers, text artifacts — and is
+ * true of every generation it produces. A style's is aesthetic, and must not
+ * leak between styles: noir's "flat lighting, low contrast" argues against the
+ * available light documentary asks for, which is why BUG-014 moved these off
+ * the provider in the first place.
+ *
+ * Letting the style *replace* the provider's fixed the leak and lost the
+ * floor: every style then had to restate the model-level terms, and both
+ * built-in styles omitted the anatomy ones, so nothing was guarding hands.
+ * Concatenating keeps the floor under every generation and still lets each
+ * style say what only applies to it.
+ */
+export function negativePromptFor(
+  provider: { negativePrompt: string },
+  style: { negativePrompt: string },
+): string | undefined {
+  const merged = [provider.negativePrompt, style.negativePrompt]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(", ");
+  return merged || undefined;
+}
+
+/**
  * Stage 6 — one image per scene.
  *
  * Each scene is generated with the reference portraits of the characters who
@@ -111,9 +138,7 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
     const bytes = await ctx.sdApi.image.generate(
       {
         prompt: `${imageStyle.promptPrefix}${scene.imagePrompt}${direction}${imageStyle.promptSuffix}`,
-        // The style's own avoid-list wins; the provider's is the fallback for
-        // a style that carries none (BUG-014).
-        negative_prompt: imageStyle.negativePrompt || imageProvider.negativePrompt || undefined,
+        negative_prompt: negativePromptFor(imageProvider, imageStyle),
         model: imageProvider.model,
         width: ctx.config.sourceImage.width,
         height: ctx.config.sourceImage.height,
@@ -226,9 +251,7 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
     const bytes = await ctx.sdApi.image.generate(
       {
         prompt,
-        // The style's own avoid-list wins; the provider's is the fallback for
-        // a style that carries none (BUG-014).
-        negative_prompt: imageStyle.negativePrompt || imageProvider.negativePrompt || undefined,
+        negative_prompt: negativePromptFor(imageProvider, imageStyle),
         model: imageProvider.model,
         width: ctx.config.sourceImage.width,
         height: ctx.config.sourceImage.height,

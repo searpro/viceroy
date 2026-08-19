@@ -71,6 +71,20 @@
       "when": 1786852900000,
       "tag": "0009_backfill_art_direction",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1786939200000,
+      "tag": "0010_prompt_template_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1786939300000,
+      "tag": "0011_split_negative_prompts",
+      "breakpoints": true
     }
   ]
 }

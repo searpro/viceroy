@@ -111,7 +111,6 @@ export function stubContext(db: Db, job: Job, options: StubOptions = {}): StageC
             durationMs: options.speech?.durationMs ?? 10_000,
           };
         },
-        uploadAudio: async () => "/sd-api/inputs/narration.wav",
         transcribeWords: async (request: Record<string, unknown>) => {
           options.onTranscribeRequest?.(request);
           return { words: options.transcript ?? [], text: "" };

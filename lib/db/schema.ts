@@ -427,6 +427,14 @@ export const promptTemplates = sqliteTable("prompt_templates", {
   label: text("label").notNull(),
   description: text("description").notNull(),
   template: text("template").notNull(),
+  // The built-in text this row was last seeded or reset from.
+  //
+  // "Has this been edited" is `template <> builtinTemplate`, which does not
+  // depend on what the built-in library happens to say today — so seeding can
+  // upgrade untouched rows and leave edited ones alone. Comparing against the
+  // current library instead made those two cases indistinguishable, which is
+  // how every install stayed frozen at its first-seeded text.
+  builtinTemplate: text("builtin_template").notNull().default(""),
   // Documents every {{var}} the template may use, for the editor's hints.
   variables: text("variables", { mode: "json" })
     .notNull()

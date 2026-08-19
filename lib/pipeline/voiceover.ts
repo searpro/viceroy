@@ -22,8 +22,9 @@ import { alignWords, buildCues, splitWords } from "./align";
  * verbatim spans of the narration: concatenating them reproduces exactly the
  * text that was reviewed.
  *
- * Voice design goes through the task runner. `/v1/audio/speech` accepts an
- * `instruct` field, forwards it, and silently ignores it — see findings F2.
+ * Voice design goes through Pepper's audio job queue, which honours the
+ * instruction and survives the ~6 minutes a full narration takes. See the note
+ * on `AudioClient.speech`, which supersedes finding F2.
  */
 export async function runVoiceover(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
@@ -55,11 +56,17 @@ export async function runVoiceover(ctx: StageContext): Promise<void> {
   ctx.progress(0.1);
   checkAbort(ctx);
 
-  const { audio, durationMs } = await ctx.sdApi.audio.speech({
-    model: provider.model,
-    text: script,
-    instruct: ttsInstruct,
-  });
+  const { audio, durationMs } = await ctx.sdApi.audio.speech(
+    {
+      model: provider.model,
+      text: script,
+      instruct: ttsInstruct,
+    },
+    {
+      onProgress: (fraction) => ctx.progress(0.1 + 0.8 * fraction),
+      shouldAbort: ctx.shouldAbort,
+    },
+  );
 
   assertPlausibleDuration(script, durationMs);
 
@@ -133,19 +140,10 @@ export async function runSubtitleAlign(ctx: StageContext): Promise<void> {
   ctx.progress(0.1);
   checkAbort(ctx);
 
-  // `words_out` needs a path on sd-api's own filesystem, and the multipart
-  // form ignores the flag entirely — so the audio goes up through voice-refs
-  // to get an absolute path back. See findings F3.
-  ctx.log("Uploading narration for transcription");
-  const serverPath = await ctx.sdApi.audio.uploadAudio(readAsset(audioAsset.path), "narration.wav");
-
-  ctx.progress(0.3);
-  checkAbort(ctx);
-
   ctx.log(`Transcribing with ${provider.model} for word timings`);
   const { words } = await ctx.sdApi.audio.transcribeWords({
     model: provider.model,
-    serverPath,
+    audio: readAsset(audioAsset.path),
     // The drift guard: alignment fails loudly rather than shipping captions
     // that run ahead of the audio. See findings F1.
     expectedDurationMs: voiceover.durationMs,

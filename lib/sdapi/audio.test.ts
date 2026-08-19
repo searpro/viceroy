@@ -24,76 +24,158 @@ describe("samplesToMs (finding F1)", () => {
   });
 });
 
-describe("AudioClient.speech (finding F2)", () => {
-  it("goes through the task runner, never /audio/speech, and uses `text` not `input`", async () => {
-    const { audio, fetchImpl } = audioClient(() =>
-      json({ audio: Buffer.from("wav-bytes").toString("base64"), timing: { audio_duration_ms: 4200 } }),
+describe("AudioClient.speech", () => {
+  /** A real 24 kHz mono 16-bit WAV of `ms` milliseconds, so duration is readable. */
+  function wav(ms: number, sampleRate = 24_000): Buffer {
+    const bytes = Math.round((ms / 1000) * sampleRate * 2);
+    const buffer = Buffer.alloc(44 + bytes);
+    buffer.write("RIFF", 0, "ascii");
+    buffer.writeUInt32LE(36 + bytes, 4);
+    buffer.write("WAVE", 8, "ascii");
+    buffer.write("fmt ", 12, "ascii");
+    buffer.writeUInt32LE(16, 16);
+    buffer.writeUInt16LE(1, 20);
+    buffer.writeUInt16LE(1, 22);
+    buffer.writeUInt32LE(sampleRate, 24);
+    buffer.writeUInt32LE(sampleRate * 2, 28); // byte rate
+    buffer.writeUInt16LE(2, 32);
+    buffer.writeUInt16LE(16, 34);
+    buffer.write("data", 36, "ascii");
+    buffer.writeUInt32LE(bytes, 40);
+    return buffer;
+  }
+
+  const audioResponse = (body: Buffer) =>
+    new Response(new Uint8Array(body), { status: 200, headers: { "content-type": "audio/wav" } });
+
+  /** The queue → poll → fetch round trip, with the clip Pepper would return. */
+  function speechServer(clip: Buffer, opts: { runningPolls?: number } = {}) {
+    let polls = 0;
+    return audioClient((url) => {
+      if (url.endsWith("/v1/jobs/audio")) return json({ id: "job-1", status: "queued", progress: 0 });
+      if (url.endsWith("/v1/jobs/job-1")) {
+        if (polls++ < (opts.runningPolls ?? 0)) return json({ id: "job-1", status: "running", progress: 0.5 });
+        return json({
+          id: "job-1",
+          status: "completed",
+          progress: 1,
+          result: { audio_url: "/v1/outputs/speech-1.wav", metadata: { duration_ms: 1 } },
+        });
+      }
+      if (url.endsWith("/v1/outputs/speech-1.wav")) return audioResponse(clip);
+      throw new Error(`unexpected ${url}`);
+    });
+  }
+
+  // The task runner Pepper removed. Calling it now 404s with "unknown
+  // endpoint", which is how voiceover jobs started failing.
+  it("enqueues on /v1/jobs/audio, never the removed task runner", async () => {
+    const { audio, fetchImpl } = speechServer(wav(4200));
+
+    const result = await audio.speech(
+      { model: "qwen3-tts-voicedesign", text: "Once upon a time.", instruct: "a deep, gravelly older man" },
+      { pollIntervalMs: 0 },
     );
 
-    const result = await audio.speech({
-      model: "qwen3-tts-voicedesign",
-      text: "Once upon a time.",
-      instruct: "a deep, gravelly older man",
-    });
-
     const [url, init] = fetchImpl.mock.calls[0]!;
-    expect(url).toBe("http://sd/v1/audio/tasks/run");
-    expect(url).not.toContain("/audio/speech");
+    expect(url).toBe("http://sd/v1/jobs/audio");
+    expect(fetchImpl.mock.calls.map((c) => c[0]).join(" ")).not.toContain("/audio/tasks/run");
 
-    const body = JSON.parse(init!.body as string);
-    expect(body).toEqual({
+    // Pepper's field names: `input` and `instructions`, not `text`/`instruct`.
+    expect(JSON.parse(init!.body as string)).toEqual({
       model: "qwen3-tts-voicedesign",
-      request: {
-        task: "vdes",
-        text: "Once upon a time.",
-        instruct: "a deep, gravelly older man",
-      },
+      input: "Once upon a time.",
+      instructions: "a deep, gravelly older man",
     });
-    expect(body.request.input).toBeUndefined();
 
-    expect(result.audio.toString()).toBe("wav-bytes");
     expect(result.durationMs).toBe(4200);
   });
 
-  it("omits instruct entirely when there is none", async () => {
-    const { audio, fetchImpl } = audioClient(() =>
-      json({ audio: Buffer.from("x").toString("base64"), timing: { audio_duration_ms: 1 } }),
-    );
-    await audio.speech({ model: "m", text: "hi" });
-    expect(JSON.parse(fetchImpl.mock.calls[0]![1]!.body as string).request).not.toHaveProperty(
-      "instruct",
-    );
-  });
+  it("polls until the job completes, then fetches the clip", async () => {
+    const clip = wav(1000);
+    const { audio, fetchImpl } = speechServer(clip, { runningPolls: 2 });
 
-  it("rejects a response with no audio", async () => {
-    const { audio } = audioClient(() => json({ timing: { audio_duration_ms: 100 } }));
-    await expect(audio.speech({ model: "m", text: "hi" })).rejects.toThrow(/no audio/);
-  });
-
-  // The task runner persists nothing, so duration is the only handle on the
-  // clip's length — and alignment's drift guard depends on it.
-  it("rejects a response with no usable duration", async () => {
-    const { audio } = audioClient(() => json({ audio: Buffer.from("x").toString("base64") }));
-    await expect(audio.speech({ model: "m", text: "hi" })).rejects.toThrow(/duration/);
-  });
-});
-
-describe("AudioClient.uploadAudio (finding F3)", () => {
-  it("uploads via voice-refs and returns the absolute server path", async () => {
-    const { audio, fetchImpl } = audioClient(() =>
-      json({ voiceRefs: [{ path: "/srv/sd-api/data/audio-voice-refs/n.wav" }] }, 200),
+    const progress: number[] = [];
+    const result = await audio.speech(
+      { model: "m", text: "hi" },
+      { pollIntervalMs: 0, onProgress: (p) => progress.push(p) },
     );
 
-    const path = await audio.uploadAudio(Buffer.from("riff"));
-
-    expect(fetchImpl.mock.calls[0]![0]).toBe("http://sd/v1/audio-voice-refs");
-    expect(String(fetchImpl.mock.calls[0]![1]!.body)).toContain("FormData");
-    expect(path).toBe("/srv/sd-api/data/audio-voice-refs/n.wav");
+    expect(progress).toEqual([0.5, 0.5, 1]);
+    expect(result.audio.equals(clip)).toBe(true);
+    expect(fetchImpl.mock.calls.at(-1)![0]).toBe("http://sd/v1/outputs/speech-1.wav");
   });
 
-  it("fails when the upload response has no path", async () => {
-    const { audio } = audioClient(() => json({ voiceRefs: [] }));
-    await expect(audio.uploadAudio(Buffer.from("x"))).rejects.toThrow(/voiceRefs\[0\]\.path/);
+  it("omits instructions entirely when there is none", async () => {
+    const { audio, fetchImpl } = speechServer(wav(500));
+    await audio.speech({ model: "m", text: "hi" }, { pollIntervalMs: 0 });
+    expect(JSON.parse(fetchImpl.mock.calls[0]![1]!.body as string)).not.toHaveProperty(
+      "instructions",
+    );
+  });
+
+  // Pepper's own duration is ~4% short of the bytes it just wrote (measured:
+  // 2530 reported for a 2640 ms clip). The drift guard exists to catch
+  // mismatches that size, so it must not be fed one.
+  it("measures duration from the WAV, not from Pepper's metadata", async () => {
+    const { audio } = audioClient((url) => {
+      if (url.endsWith("/v1/jobs/audio")) return json({ id: "j", status: "queued", progress: 0 });
+      if (url.endsWith("/v1/jobs/j"))
+        return json({
+          id: "j",
+          status: "completed",
+          progress: 1,
+          result: { audio_url: "/v1/outputs/a.wav", metadata: { duration_ms: 2530 } },
+        });
+      return audioResponse(wav(2640));
+    });
+
+    const result = await audio.speech({ model: "m", text: "hi" }, { pollIntervalMs: 0 });
+    expect(result.durationMs).toBe(2640);
+  });
+
+  it("cancels the job upstream when the stage aborts", async () => {
+    const { audio, fetchImpl } = speechServer(wav(500));
+    await expect(
+      audio.speech({ model: "m", text: "hi" }, { pollIntervalMs: 0, shouldAbort: () => true }),
+    ).rejects.toThrow(/aborted/i);
+
+    const cancel = fetchImpl.mock.calls.find((c) => c[1]?.method === "DELETE");
+    expect(cancel?.[0]).toBe("http://sd/v1/jobs/job-1");
+  });
+
+  it("surfaces a failed job with its reason", async () => {
+    const { audio } = audioClient((url) =>
+      url.endsWith("/v1/jobs/audio")
+        ? json({ id: "j", status: "queued", progress: 0 })
+        : json({ id: "j", status: "failed", progress: 0, error: { code: "OOM", message: "out of memory" } }),
+    );
+    await expect(audio.speech({ model: "m", text: "hi" }, { pollIntervalMs: 0 })).rejects.toThrow(
+      /out of memory/,
+    );
+  });
+
+  it("refuses a completed job whose payload is not a readable WAV", async () => {
+    const { audio } = audioClient((url) => {
+      if (url.endsWith("/v1/jobs/audio")) return json({ id: "j", status: "queued", progress: 0 });
+      if (url.endsWith("/v1/jobs/j"))
+        return json({ id: "j", status: "completed", progress: 1, result: { audio_url: "/v1/outputs/a.wav" } });
+      return audioResponse(Buffer.from("not a wav at all"));
+    });
+    await expect(audio.speech({ model: "m", text: "hi" }, { pollIntervalMs: 0 })).rejects.toThrow(
+      /readable WAV/,
+    );
+  });
+
+  it("refuses a completed job that carried no audio", async () => {
+    const { audio } = audioClient((url) =>
+      url.endsWith("/v1/jobs/audio")
+        ? json({ id: "j", status: "queued", progress: 0 })
+        : json({ id: "j", status: "completed", progress: 1, result: {} }),
+    );
+    await expect(audio.speech({ model: "m", text: "hi" }, { pollIntervalMs: 0 })).rejects.toThrow(
+      /without audio/,
+    );
   });
 });
 
@@ -102,32 +184,45 @@ describe("AudioClient.transcribeWords", () => {
     { word: "Right", start_sample: 0, end_sample: 8000 },
     { word: "at317,", start_sample: 8000, end_sample: 16000 },
   ];
+  const clip = Buffer.from("RIFF....WAVEfmt ");
 
-  it("sends words_out with a server path and converts offsets at 16 kHz", async () => {
+  it("posts the clip as a raw body and converts offsets at 16 kHz", async () => {
     const { audio, fetchImpl } = audioClient(() => json({ text: "Right at317,", words }));
 
     const result = await audio.transcribeWords({
       model: "parakeet-tdt",
-      serverPath: "/srv/n.wav",
+      audio: clip,
       expectedDurationMs: 1000,
     });
 
-    expect(JSON.parse(fetchImpl.mock.calls[0]![1]!.body as string)).toEqual({
-      model: "parakeet-tdt",
-      audio: "/srv/n.wav",
-      words_out: true,
-    });
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe("http://sd/v1/audio/transcriptions/words?model=parakeet-tdt");
+    // A multipart envelope would be written into the WAV that audio.cpp opens,
+    // so the bytes go up exactly as they are.
+    expect(init!.headers).toMatchObject({ "content-type": "application/octet-stream" });
+    expect(Buffer.from(init!.body as Uint8Array).equals(clip)).toBe(true);
+
     expect(result.words).toEqual([
       { word: "Right", startMs: 0, endMs: 500 },
       { word: "at317,", startMs: 500, endMs: 1000 },
     ]);
   });
 
+  // The two-call upload dance F3 documented: the narration was stored as a
+  // voice reference purely to be handed back a path.
+  it("no longer uploads the narration anywhere first", async () => {
+    const { audio, fetchImpl } = audioClient(() => json({ text: "x", words }));
+    await audio.transcribeWords({ model: "m", audio: clip });
+
+    expect(fetchImpl.mock.calls).toHaveLength(1);
+    expect(fetchImpl.mock.calls.map((c) => c[0]).join(" ")).not.toContain("voice-refs");
+  });
+
   it("drops malformed word entries rather than emitting NaN timings", async () => {
     const { audio } = audioClient(() =>
       json({ words: [...words, { word: "  " }, { start_sample: 1 }] }),
     );
-    const result = await audio.transcribeWords({ model: "m", serverPath: "/a.wav" });
+    const result = await audio.transcribeWords({ model: "m", audio: clip });
     expect(result.words).toHaveLength(2);
   });
 
@@ -135,20 +230,20 @@ describe("AudioClient.transcribeWords", () => {
   it("refuses alignment that runs past the known audio duration", async () => {
     const { audio } = audioClient(() => json({ words }));
     await expect(
-      audio.transcribeWords({ model: "m", serverPath: "/a.wav", expectedDurationMs: 500 }),
+      audio.transcribeWords({ model: "m", audio: clip, expectedDurationMs: 500 }),
     ).rejects.toThrow(/desync/);
   });
 
   it("allows a small overshoot inside tolerance", async () => {
     const { audio } = audioClient(() => json({ words }));
     await expect(
-      audio.transcribeWords({ model: "m", serverPath: "/a.wav", expectedDurationMs: 980 }),
+      audio.transcribeWords({ model: "m", audio: clip, expectedDurationMs: 980 }),
     ).resolves.toMatchObject({ words: expect.any(Array) });
   });
 
   it("fails when nothing usable came back", async () => {
     const { audio } = audioClient(() => json({ words: [] }));
-    await expect(audio.transcribeWords({ model: "m", serverPath: "/a.wav" })).rejects.toThrow(
+    await expect(audio.transcribeWords({ model: "m", audio: clip })).rejects.toThrow(
       /no usable words/,
     );
   });

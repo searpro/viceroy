@@ -245,7 +245,9 @@ describe("runSubtitleAlign", () => {
     );
 
     expect(requests[0]!.expectedDurationMs).toBe(NARRATION.split(" ").length * 400);
-    expect(requests[0]!.serverPath).toBe("/sd-api/inputs/narration.wav");
+    // The stored narration goes up as bytes; there is no upload hop anymore.
+    expect(Buffer.isBuffer(requests[0]!.audio)).toBe(true);
+    expect((requests[0]!.audio as Buffer).toString("ascii", 0, 4)).toBe("RIFF");
   });
 
   it("re-running replaces cues rather than duplicating them", async () => {

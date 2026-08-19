@@ -1,0 +1,25 @@
+-- Give prompt templates a baseline, so built-in improvements can reach an
+-- existing install without overwriting anyone's tuning.
+--
+-- `seed()` inserts with ON CONFLICT DO NOTHING, which protects an edited
+-- template — and also froze every built-in row at whatever text was first
+-- seeded. There was no way to tell "unedited, but old" from "deliberately
+-- edited", because the only thing to compare against was the *current*
+-- built-in, which is exactly what changed.
+--
+-- The cost of that was silent. VIC-003 added `{{groundingInstruction}}` to the
+-- story-content templates; on this database not one row ever received it, so
+-- Context mode's grounding clause was passed to `renderPrompt` and dropped on
+-- the floor for every project. Nothing failed, because a supplied-but-unused
+-- variable is legal — only the reverse is an error.
+--
+-- `builtin_template` records the built-in text a row was last seeded or reset
+-- from. "Edited" becomes `template <> builtin_template`, which is independent
+-- of what the library says today, so an upgrade can apply to untouched rows
+-- and skip edited ones.
+--
+-- Backfilled from each row's own current text: whatever an install has today
+-- becomes its baseline. The one-time upgrade to the current library then runs
+-- through `seed()`.
+ALTER TABLE `prompt_templates` ADD `builtin_template` text DEFAULT '' NOT NULL;--> statement-breakpoint
+UPDATE `prompt_templates` SET `builtin_template` = `template`;

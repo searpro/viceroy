@@ -1,4 +1,4 @@
-import { SdApiHttp, SdFormData } from "./client";
+import { SdApiHttp } from "./client";
 
 /**
  * ASR word offsets come back in the MODEL's sample rate, not the audio file's.
@@ -29,91 +29,177 @@ export type SpeechResult = {
   durationMs: number;
 };
 
+export type SpeechJob = {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  progress: number;
+  result?: { audio_path?: string; audio_url?: string } | undefined;
+  error?: { code: string; message: string } | undefined;
+};
+
+export type SpeechOptions = {
+  onProgress?: (progress: number) => void;
+  /** Called between polls; returning true abandons the job and cancels it upstream. */
+  shouldAbort?: () => boolean;
+  pollIntervalMs?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+};
+
+/**
+ * Duration of a WAV, read from its own header.
+ *
+ * The job result carries a `metadata.duration_ms`, and it is emphatically not
+ * the length of the audio — it is `Date.now() - started` around the
+ * generation call, wall-clock time. On this hardware the two sit close enough
+ * to pass a glance (7080 ms reported for a 7200 ms clip) precisely because a
+ * real-time factor near 1 makes them coincide, so the mistake would survive
+ * casual testing and then break on a faster machine or a cached model.
+ *
+ * This number feeds the caption drift guard, which exists to catch exactly
+ * this class of mismatch, so the bytes are measured rather than trusted.
+ * See findings F1.
+ */
+export function wavDurationMs(buffer: Buffer): number | null {
+  if (buffer.length < 28) return null;
+  if (buffer.toString("ascii", 0, 4) !== "RIFF") return null;
+  if (buffer.toString("ascii", 8, 12) !== "WAVE") return null;
+
+  let offset = 12;
+  let byteRate = 0;
+  while (offset + 8 <= buffer.length) {
+    const id = buffer.toString("ascii", offset, offset + 4);
+    const size = buffer.readUInt32LE(offset + 4);
+    if (id === "fmt ") byteRate = buffer.readUInt32LE(offset + 16);
+    if (id === "data") {
+      if (!byteRate) return null;
+      // A truncated download would otherwise report the header's intent
+      // rather than the bytes actually in hand.
+      const bytes = Math.min(size, buffer.length - offset - 8);
+      return Math.round((bytes / byteRate) * 1000);
+    }
+    offset += 8 + size + (size % 2);
+  }
+  return null;
+}
+
 export class AudioClient {
   constructor(private readonly http: SdApiHttp) {}
 
-  /**
-   * Generate speech with voice design.
-   *
-   * This deliberately does NOT use `POST /v1/audio/speech`. That endpoint
-   * accepts an `instruct` field, forwards it, and audiocpp_server's
-   * OpenAI-shaped handler ignores it — returning a perfectly normal-looking
-   * response in a voice that owes nothing to the instruction. Measured on
-   * qwen3-tts-voicedesign, "a high-pitched young girl" and "a deep, gravelly
-   * older man" both produced ~130 Hz median F0 through /audio/speech; through
-   * the task runner, 419 Hz and 88 Hz. Roughly 10% of /audio/speech calls
-   * against a vdes model also returned noise rather than speech.
-   *
-   * Task-runner quirks, all load-bearing: the text field is `text` not
-   * `input`, the task enum is the short form `vdes`, and it persists nothing —
-   * audio comes back base64 inline and the caller stores the bytes.
-   *
-   * See docs/findings.md F2.
-   */
-  async speech(params: {
+  async createSpeechJob(params: {
     model: string;
     text: string;
     instruct?: string | undefined;
-    signal?: AbortSignal;
-  }): Promise<SpeechResult> {
-    const payload = await this.http.json<{
-      audio?: unknown;
-      timing?: { audio_duration_ms?: unknown };
-    }>("/v1/audio/tasks/run", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      signal: params.signal ?? null,
-      body: JSON.stringify({
-        model: params.model,
-        request: {
-          task: "vdes",
-          text: params.text,
-          ...(params.instruct ? { instruct: params.instruct } : {}),
-        },
-      }),
+  }): Promise<SpeechJob> {
+    return this.http.postJson<SpeechJob>("/v1/jobs/audio", {
+      model: params.model,
+      // Pepper's field names, not viceroy's: `input` and `instructions`.
+      input: params.text,
+      ...(params.instruct ? { instructions: params.instruct } : {}),
     });
+  }
 
-    if (typeof payload.audio !== "string" || payload.audio.length === 0) {
-      throw new Error("Voice-design response carried no audio");
-    }
-    const durationMs = payload.timing?.audio_duration_ms;
-    if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs <= 0) {
-      throw new Error("Voice-design response carried no usable audio duration");
-    }
+  async getSpeechJob(id: string): Promise<SpeechJob> {
+    return this.http.json<SpeechJob>(`/v1/jobs/${id}`);
+  }
 
-    return {
-      audio: Buffer.from(payload.audio, "base64"),
-      durationMs: Math.round(durationMs),
-    };
+  async cancelSpeechJob(id: string): Promise<void> {
+    await this.http.request(`/v1/jobs/${id}`, { method: "DELETE" }).catch(() => undefined);
+  }
+
+  /** Fetch a generated output, e.g. from `result.audio_url`. */
+  async fetchOutput(nameOrUrl: string): Promise<Buffer> {
+    const route = nameOrUrl.startsWith("/v1/")
+      ? nameOrUrl
+      : `/v1/outputs/${encodeURIComponent(nameOrUrl)}`;
+    const response = await this.http.request(route);
+    return Buffer.from(await response.arrayBuffer());
   }
 
   /**
-   * Upload audio and get back the absolute server-side path sd-api needs.
+   * Generate speech with voice design, through the job queue.
    *
-   * `words_out` only works on the JSON body form of /v1/audio/transcriptions,
-   * which takes a path rather than an upload — and a bare output name resolves
-   * against sd-api's own working directory and 404s. The multipart form, which
-   * would accept the bytes directly, ignores `words_out` entirely.
+   * Voice design used to require `POST /v1/audio/tasks/run`, because
+   * `/v1/audio/speech` accepted an `instruct` field and silently ignored it
+   * (finding F2). Pepper has since removed the task runner outright — it now
+   * 404s with "unknown endpoint" — and renamed the field to `instructions`,
+   * which both remaining endpoints honour. Re-measured on
+   * qwen3-tts-voicedesign: "a high-pitched young girl" and "a deep, gravelly
+   * older man" give 343 Hz and 80 Hz median F0 here, so the instruction is
+   * genuinely reaching the model. F2's workaround is therefore superseded.
    *
-   * Going through voice-refs is what squares that circle, and it also means
-   * viceroy never has to share a filesystem with sd-api. See findings F3.
+   * The queued route is chosen over the synchronous `/v1/audio/speech` because
+   * a full narration takes ~6 minutes (finding F18), and holding a connection
+   * open that long is precisely what cost this project four silent failures in
+   * finding F19. Polling also gives abort a checkpoint, matching how images
+   * are generated.
+   *
+   * Pepper persists the clip and returns a URL rather than base64 inline, so
+   * the bytes are fetched in a second call.
    */
-  async uploadAudio(audio: Buffer, filename = "narration.wav"): Promise<string> {
-    const form = new SdFormData();
-    form.append("file", new Blob([new Uint8Array(audio)], { type: "audio/wav" }), filename);
+  async speech(
+    params: {
+      model: string;
+      text: string;
+      instruct?: string | undefined;
+    },
+    options: SpeechOptions = {},
+  ): Promise<SpeechResult> {
+    const pollIntervalMs = options.pollIntervalMs ?? 2000;
+    const timeoutMs = options.timeoutMs ?? 30 * 60_000;
+    const deadline = Date.now() + timeoutMs;
 
-    const payload = await this.http.json<{ voiceRefs?: { path?: string }[] }>(
-      "/v1/audio-voice-refs",
-      { method: "POST", body: form as never },
-    );
+    const job = await this.createSpeechJob(params);
 
-    const path = payload.voiceRefs?.[0]?.path;
-    if (!path) throw new Error("Audio upload response missing voiceRefs[0].path");
-    return path;
+    while (true) {
+      if (options.shouldAbort?.()) {
+        await this.cancelSpeechJob(job.id);
+        throw new Error("Narration aborted");
+      }
+      if (Date.now() > deadline) {
+        await this.cancelSpeechJob(job.id);
+        throw new Error(`Narration timed out after ${timeoutMs}ms`);
+      }
+
+      const current = await this.getSpeechJob(job.id);
+      options.onProgress?.(current.progress);
+
+      if (current.status === "completed") {
+        const output = current.result?.audio_url ?? current.result?.audio_path;
+        if (!output) throw new Error(`Job ${job.id} completed without audio`);
+
+        const audio = await this.fetchOutput(
+          output.startsWith("/v1/") ? output : basename(output),
+        );
+        const durationMs = wavDurationMs(audio);
+        if (durationMs === null || durationMs <= 0) {
+          throw new Error("Narration came back as something other than a readable WAV");
+        }
+        return { audio, durationMs };
+      }
+      if (current.status === "failed" || current.status === "cancelled") {
+        throw new Error(
+          `Narration ${current.status}: ${current.error?.message ?? "unknown error"}`,
+        );
+      }
+
+      await sleep(pollIntervalMs, options.signal);
+    }
   }
 
   /**
-   * Word-level transcription of already-uploaded audio.
+   * Word-level transcription, from the narration bytes themselves.
+   *
+   * This used to take two calls and a detour. `words_out` only worked on the
+   * JSON body form of `/v1/audio/transcriptions`, which takes a path on the
+   * server's own filesystem, so the narration was uploaded as a *voice
+   * reference* purely to be handed back an absolute path — finding F3.
+   *
+   * Pepper now exposes the word-timed transcript directly, taking the clip as
+   * a raw body, so neither the upload nor the path survives. F3 is superseded:
+   * the plain `/v1/audio/transcriptions` still answers with text only, because
+   * audio.cpp's own endpoint does, and `words` come from the task runner
+   * behind this route.
    *
    * `expectedDurationMs` is not optional in spirit: it is the drift guard. If
    * the offsets' sample rate ever changes, alignment must fail loudly here
@@ -121,18 +207,21 @@ export class AudioClient {
    */
   async transcribeWords(params: {
     model: string;
-    serverPath: string;
+    audio: Buffer;
     expectedDurationMs?: number | undefined;
     signal?: AbortSignal;
   }): Promise<{ words: TranscribedWord[]; text: string }> {
     const data = await this.http.json<{
       text?: string;
       words?: { word?: string; start_sample?: number; end_sample?: number }[];
-    }>("/v1/audio/transcriptions", {
+    }>(`/v1/audio/transcriptions/words?model=${encodeURIComponent(params.model)}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      // A raw body, not a form: Pepper writes what it receives straight to the
+      // file audio.cpp opens, so a multipart envelope would land inside the
+      // WAV. It refuses multipart outright rather than store a corrupt clip.
+      headers: { "content-type": "application/octet-stream" },
       signal: params.signal ?? null,
-      body: JSON.stringify({ model: params.model, audio: params.serverPath, words_out: true }),
+      body: new Uint8Array(params.audio) as never,
     });
 
     const words: TranscribedWord[] = (data.words ?? [])
@@ -150,7 +239,7 @@ export class AudioClient {
       }));
 
     if (words.length === 0) {
-      throw new Error(`Transcription returned no usable words for ${params.serverPath}`);
+      throw new Error("Transcription returned no usable words for the narration");
     }
 
     if (params.expectedDurationMs && params.expectedDurationMs > 0) {
@@ -166,4 +255,23 @@ export class AudioClient {
 
     return { words, text: typeof data.text === "string" ? data.text : "" };
   }
+}
+
+function basename(filePath: string): string {
+  return filePath.split("/").pop() ?? filePath;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error("aborted"));
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new Error("aborted"));
+      },
+      { once: true },
+    );
+  });
 }

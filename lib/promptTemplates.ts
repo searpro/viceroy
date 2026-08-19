@@ -12,18 +12,29 @@ export const promptTemplateUpdateSchema = z.object({
 const BUILTIN_BY_KEY = new Map(DEFAULT_PROMPT_TEMPLATES.map((t) => [t.key, t]));
 
 /**
- * Whether a row still reads exactly as seeded.
+ * Whether a row has been edited, and whether its built-in has since moved on.
  *
- * There is no `isEdited` column: `seed()`'s `onConflictDoNothing` means the
- * built-in text this file ships is always available to diff against, so
- * "has this been edited" is a comparison, not state that could drift out of
- * sync with a flag.
+ * `isEdited` compares against `builtinTemplate` — the text this row was last
+ * seeded or reset from — not against the current library. Comparing against
+ * the library made "edited" and "merely old" the same answer, which is why
+ * seeding could never safely upgrade anything and every install stayed frozen
+ * at its first-seeded text.
+ *
+ * `builtinChanged` is the case that used to be invisible: the user edited this
+ * template, and the built-in has been improved since. Seeding deliberately
+ * leaves such a row alone, so the editor has to be able to say so and offer a
+ * reset — otherwise the improvement is lost in silence, exactly as
+ * `{{groundingInstruction}}` was.
  */
-function withEditedFlag<T extends { key: string; template: string }>(
+function withEditedFlag<T extends { key: string; template: string; builtinTemplate: string }>(
   row: T,
-): T & { isEdited: boolean } {
+): T & { isEdited: boolean; builtinChanged: boolean } {
   const builtin = BUILTIN_BY_KEY.get(row.key);
-  return { ...row, isEdited: builtin !== undefined && builtin.template !== row.template };
+  return {
+    ...row,
+    isEdited: row.template !== row.builtinTemplate,
+    builtinChanged: builtin !== undefined && builtin.template !== row.builtinTemplate,
+  };
 }
 
 export function listPromptTemplates(db: Db) {
@@ -89,6 +100,9 @@ export function resetPromptTemplate(db: Db, key: string) {
       description: builtin.description,
       variables: builtin.variables,
       template: builtin.template,
+      // Re-baselines the row, so a reset genuinely returns it to "unedited"
+      // and future built-in improvements reach it again.
+      builtinTemplate: builtin.template,
     })
     .where(eq(promptTemplates.key, key))
     .returning()

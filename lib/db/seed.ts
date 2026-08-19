@@ -149,13 +149,16 @@ const VOICE_STYLES = [
 // improving the image. Model and params are provider configuration, not style
 // guidance — see the image provider entry in PROVIDERS below.
 //
-// The negative prompt below is the provider-level fallback, used only by a
-// style that does not carry its own. The built-in styles do (BUG-014): one
-// merged list could not serve both, since noir's "flat lighting, low contrast"
-// argues against the available light documentary asks for.
+// The provider's negative prompt is the model-level floor, concatenated under
+// every generation whatever style is chosen: these are artifacts flux2 produces
+// regardless of the look being asked for. Aesthetic exclusions belong on the
+// style, where they cannot leak into a style that wants the opposite — noir's
+// "flat lighting" against documentary's available light being the case that
+// forced them apart (BUG-014).
 const IMAGE_PARAMS = { steps: 4, cfg_scale: 1, sampler: "euler" };
 const IMAGE_MODEL = "flux2-klein-4b";
-const IMAGE_NEGATIVE_PROMPT = "text, watermark, extra fingers, deformed hands";
+const IMAGE_NEGATIVE_PROMPT =
+  "text, watermark, extra fingers, deformed hands, malformed limbs, distorted face";
 
 // `renderGuidance` is prose for the LLM composing a prompt; prefix/suffix are
 // the mechanical wrapper applied to whatever it writes. They must agree — the
@@ -172,7 +175,8 @@ const IMAGE_STYLES = [
       "skin texture and ordinary imperfection. Reads as a frame of documentary footage.",
     promptPrefix: "documentary photograph, available light, ",
     promptSuffix: ", desaturated colour, 35mm, natural skin texture, shallow depth of field",
-    negativePrompt: "illustration, cartoon, painting, cgi, oversaturated, glossy, text, watermark",
+    // Aesthetic only — the model-level artifact terms come from the provider.
+    negativePrompt: "illustration, cartoon, painting, cgi, oversaturated, glossy",
   },
   {
     name: "Cinematic Noir",
@@ -182,7 +186,7 @@ const IMAGE_STYLES = [
       "grade. Faces partly in shadow. Deliberate, held framing rather than observed.",
     promptPrefix: "cinematic film still, high contrast lighting, ",
     promptSuffix: ", deep shadows, cool colour grade, anamorphic, film grain",
-    negativePrompt: "illustration, cartoon, painting, cgi, flat lighting, low contrast, text, watermark",
+    negativePrompt: "illustration, cartoon, painting, cgi, flat lighting, low contrast",
   },
 ];
 
@@ -206,6 +210,7 @@ const CAPTION_STYLES = [
 // names used to discuss them: `/v1/llm/chat/completions` 400s on an unknown id
 // rather than falling back, so a wrong one here breaks every LLM stage on a
 // fresh install. Check against `GET /v1/llm/models` before changing one.
+
 const PROVIDERS = [
   { kind: "llm" as const, name: "sd-api (local)", model: "mistral-nemo-instruct-2407" },
   {
@@ -231,23 +236,31 @@ export function seed(db: Db): { inserted: Record<string, number> } {
 
   inserted.promptTemplates = db
     .insert(promptTemplates)
-    .values(DEFAULT_PROMPT_TEMPLATES)
+    .values(DEFAULT_PROMPT_TEMPLATES.map((t) => ({ ...t, builtinTemplate: t.template })))
     .onConflictDoNothing()
     .returning({ key: promptTemplates.key })
     .all().length;
 
-  // Refresh the surrounding metadata of templates nobody has edited.
+  // Upgrade built-in templates nobody has edited to the current library.
   //
-  // `onConflictDoNothing` protects someone's tuning, which is right for
-  // `template` — but it also freezes `variables`, `label` and `description`,
-  // so a correction to the built-in library never reaches an existing install.
-  // That is how `character.portrait` went on advertising `{{characterName}}`
-  // in the editor after it was withdrawn (BUG-012), and inserting it produces
-  // a portrait with the character's name painted across it.
+  // `onConflictDoNothing` above protects someone's tuning, which is right —
+  // but on its own it also froze every untouched row at whatever text was
+  // first seeded, with no way to tell "unedited but old" from "deliberately
+  // edited": the only thing available to compare against was the current
+  // library, which is precisely what changes.
   //
-  // An identical `template` is the test for "unedited" — the same comparison
-  // `withEditedFlag` already uses, so no `isEdited` flag can drift out of sync.
-  // A row whose template has been edited is left entirely alone.
+  // The cost was silent. VIC-003 added `{{groundingInstruction}}` to the
+  // story-content templates and not one existing row ever received it, so
+  // Context mode's grounding clause was handed to `renderPrompt` and dropped,
+  // for every project, without erroring — a supplied-but-unused variable is
+  // legal, only the reverse is a failure. Tests never saw it because they seed
+  // a fresh database, where the library and the rows agree by construction.
+  //
+  // `builtinTemplate` breaks that tie: it is what this row was last seeded or
+  // reset from, so an edit is `template <> builtinTemplate` regardless of what
+  // the library says now. An untouched row is upgraded whole; an edited one is
+  // left exactly as it is, and `listPromptTemplates` reports that its built-in
+  // has moved on so the editor can offer a reset.
   for (const builtin of DEFAULT_PROMPT_TEMPLATES) {
     db.update(promptTemplates)
       .set({
@@ -255,11 +268,13 @@ export function seed(db: Db): { inserted: Record<string, number> } {
         label: builtin.label,
         description: builtin.description,
         variables: builtin.variables,
+        template: builtin.template,
+        builtinTemplate: builtin.template,
       })
       .where(
         and(
           eq(promptTemplates.key, builtin.key),
-          eq(promptTemplates.template, builtin.template),
+          eq(promptTemplates.template, promptTemplates.builtinTemplate),
         ),
       )
       .run();

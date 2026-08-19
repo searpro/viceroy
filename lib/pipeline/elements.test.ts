@@ -8,7 +8,7 @@ import { assets, characters, imageStyles, projects, providers, scenes } from "..
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
 import { runElements } from "./elements";
-import { filterLiveRefs, runCharacterImages, runSceneImages } from "./images";
+import { filterLiveRefs, negativePromptFor, runCharacterImages, runSceneImages } from "./images";
 import { stubContext } from "./test-support";
 
 let db: Db;
@@ -461,12 +461,15 @@ describe("runCharacterImages", () => {
     // style guidance again (BUG-014) and falls back to the provider's only
     // when the style carries none.
     expect(requests[0]).toMatchObject({ model: "sdxl-turbo", steps: 20, seed: 7 });
-    expect(requests[0]!.negative_prompt).toBe(imageStyleOf(project).negativePrompt);
-    expect(requests[0]!.negative_prompt).not.toBe("blurry");
+    // Both lists, not one or the other: the provider's is the model-level floor
+    // and the style's is its own look.
+    expect(requests[0]!.negative_prompt).toContain("blurry");
+    expect(requests[0]!.negative_prompt).toContain(imageStyleOf(project).negativePrompt);
   });
 
-  // BUG-014: a style with no avoid-list of its own still gets one.
-  it("falls back to the provider's negative prompt when the style carries none", async () => {
+  // The floor must survive a style that says nothing, and a style must never
+  // be able to drop it (BUG-025).
+  it("still sends the provider's negative prompt when the style carries none", async () => {
     const project = await elementsOnly();
     db.update(providers)
       .set({ negativePrompt: "blurry" })
@@ -781,8 +784,10 @@ describe("runSceneImages", () => {
     // style guidance again (BUG-014) and falls back to the provider's only
     // when the style carries none.
     expect(requests[0]).toMatchObject({ model: "sdxl-turbo", steps: 20, seed: 7 });
-    expect(requests[0]!.negative_prompt).toBe(imageStyleOf(project).negativePrompt);
-    expect(requests[0]!.negative_prompt).not.toBe("blurry");
+    // Both lists, not one or the other: the provider's is the model-level floor
+    // and the style's is its own look.
+    expect(requests[0]!.negative_prompt).toContain("blurry");
+    expect(requests[0]!.negative_prompt).toContain(imageStyleOf(project).negativePrompt);
   });
 
   it("wraps the scene prompt in the image style's prefix and suffix", async () => {
@@ -943,5 +948,30 @@ describe("runSceneImages", () => {
 
     expect(requests[0]!.ref_images).toEqual(["live.png"]);
     expect(logs.some((l) => l.includes("no longer available"))).toBe(true);
+  });
+});
+
+// BUG-025: letting a style replace the provider's list fixed a leak between
+// styles and removed the model-level floor with it — both built-in styles then
+// omitted the anatomy terms, so nothing guarded hands.
+describe("negativePromptFor", () => {
+  it("concatenates the model-level floor with the style's own look", () => {
+    expect(
+      negativePromptFor({ negativePrompt: "deformed hands" }, { negativePrompt: "cgi, glossy" }),
+    ).toBe("deformed hands, cgi, glossy");
+  });
+
+  it("keeps the floor when the style contributes nothing", () => {
+    expect(negativePromptFor({ negativePrompt: "deformed hands" }, { negativePrompt: "" })).toBe(
+      "deformed hands",
+    );
+  });
+
+  it("still works when only the style has terms", () => {
+    expect(negativePromptFor({ negativePrompt: "" }, { negativePrompt: "cgi" })).toBe("cgi");
+  });
+
+  it("sends nothing rather than an empty string when neither has terms", () => {
+    expect(negativePromptFor({ negativePrompt: "" }, { negativePrompt: "  " })).toBeUndefined();
   });
 });
