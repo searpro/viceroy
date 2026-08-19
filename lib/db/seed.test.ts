@@ -26,7 +26,17 @@ describe("seed", () => {
       "audio",
       "image",
       "llm",
+      "video",
     ]);
+  });
+
+  // Video is the one kind sd-api does not serve: it is vllm-omni on its own
+  // host, and seeding it at SD_API_URL would produce a row that 404s.
+  it("points the video provider at the video host, not sd-api", () => {
+    seed(db);
+    const video = db.select().from(providers).where(eq(providers.kind, "video")).get();
+    const others = db.select().from(providers).all().filter((p) => p.kind !== "video");
+    expect(video!.baseUrl).not.toBe(others[0]!.baseUrl);
   });
 
   it("is idempotent", () => {

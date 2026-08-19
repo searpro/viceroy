@@ -5,7 +5,7 @@ import { useState } from "react";
 
 type Provider = {
   id: string;
-  kind: "llm" | "image" | "audio" | "asr";
+  kind: "llm" | "image" | "audio" | "asr" | "video";
   name: string;
   baseUrl: string;
   model: string;
@@ -20,8 +20,13 @@ const KINDS = [
   { key: "image", label: "Image" },
   { key: "audio", label: "Audio (TTS)" },
   { key: "asr", label: "ASR" },
+  { key: "video", label: "Video" },
 ] as const;
 type Kind = (typeof KINDS)[number]["key"];
+
+// The two diffusion kinds are the only ones a negative prompt means anything
+// to — every other kind stores "" and never reads it.
+const HAS_NEGATIVE_PROMPT = new Set<Kind>(["image", "video"]);
 
 function parseParams(text: string): { value: Record<string, unknown> | null; error: string | null } {
   try {
@@ -123,7 +128,7 @@ function KindTab({
         model: form.model,
         isDefault: form.isDefault,
         defaultParams,
-        ...(kind === "image" ? { negativePrompt: form.negativePrompt } : {}),
+        ...(HAS_NEGATIVE_PROMPT.has(kind) ? { negativePrompt: form.negativePrompt } : {}),
       }),
     });
     const body = await response.json();
@@ -197,7 +202,7 @@ function KindTab({
             onChange={(v) => setForm({ ...form, paramsText: v })}
             multiline
           />
-          {kind === "image" && (
+          {HAS_NEGATIVE_PROMPT.has(kind) && (
             <Field
               label="Negative prompt"
               value={form.negativePrompt}
@@ -260,7 +265,7 @@ function ProviderCard({
       model: form.model,
       isDefault: form.isDefault,
       defaultParams,
-      ...(provider.kind === "image" ? { negativePrompt: form.negativePrompt } : {}),
+      ...(HAS_NEGATIVE_PROMPT.has(provider.kind) ? { negativePrompt: form.negativePrompt } : {}),
     });
     setError(err);
     setBusy(false);
@@ -314,7 +319,7 @@ function ProviderCard({
             onChange={(v) => setForm({ ...form, paramsText: v })}
             multiline
           />
-          {provider.kind === "image" && (
+          {HAS_NEGATIVE_PROMPT.has(provider.kind) && (
             <Field
               label="Negative prompt"
               value={form.negativePrompt}

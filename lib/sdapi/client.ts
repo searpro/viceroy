@@ -14,6 +14,14 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 
 export type SdApiOptions = {
   baseUrl: string;
+  /**
+   * What to call this host in error messages.
+   *
+   * Defaults to sd-api because that is what almost every caller is talking to
+   * — but not all of them are, and a video host's 400 reported as "sd-api
+   * failed" sends whoever reads it to the wrong machine.
+   */
+  service?: string;
   apiKey?: string | undefined;
   fetch?: FetchLike;
   /** Overall per-request ceiling, in ms. Defaults to 30 minutes. */
@@ -54,19 +62,22 @@ export class SdApiError extends Error {
     readonly status: number,
     readonly route: string,
     readonly body: string,
+    readonly service = "sd-api",
   ) {
-    super(`sd-api ${route} failed: ${status} ${body}`);
+    super(`${service} ${route} failed: ${status} ${body}`);
     this.name = "SdApiError";
   }
 }
 
 export class SdApiHttp {
   readonly baseUrl: string;
+  readonly service: string;
   private readonly apiKey: string | undefined;
   private readonly fetchImpl: FetchLike;
 
   constructor(options: SdApiOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
+    this.service = options.service ?? "sd-api";
     this.apiKey = options.apiKey;
 
     if (options.fetch) {
@@ -104,14 +115,19 @@ export class SdApiHttp {
       const cause = (error as { cause?: { code?: string; message?: string } })?.cause;
       const detail = cause?.code ?? cause?.message;
       throw new Error(
-        `sd-api ${route} could not be reached: ${(error as Error).message}` +
+        `${this.service} ${route} could not be reached: ${(error as Error).message}` +
           (detail ? ` (${detail})` : ""),
         { cause: error },
       );
     }
 
     if (!response.ok) {
-      throw new SdApiError(response.status, route, await response.text().catch(() => ""));
+      throw new SdApiError(
+        response.status,
+        route,
+        await response.text().catch(() => ""),
+        this.service,
+      );
     }
     return response;
   }

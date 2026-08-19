@@ -3,7 +3,8 @@ import { z } from "zod";
 import type { Db } from "./db/client";
 import { providers } from "./db/schema";
 
-export const PROVIDER_KINDS = ["llm", "image", "audio", "asr"] as const;
+export const PROVIDER_KINDS = ["llm", "image", "audio", "asr", "video"] as const;
+export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
 export const providerSchema = z.object({
   kind: z.enum(PROVIDER_KINDS),
@@ -16,9 +17,9 @@ export const providerSchema = z.object({
   // would silently un-default a provider or wipe its params on an unrelated
   // edit. Omitted fields fall through to the column's own default instead.
   defaultParams: z.record(z.string(), z.unknown()).optional(),
-  // Diffusion-specific; meaningless outside kind "image" but kept on the
-  // shared schema like every other column here. No .default() for the same
-  // .partial()-PATCH reason as defaultParams above.
+  // Diffusion-specific; meaningless outside kinds "image" and "video" but
+  // kept on the shared schema like every other column here. No .default() for
+  // the same .partial()-PATCH reason as defaultParams above.
   negativePrompt: z.string().trim().optional(),
   isDefault: z.boolean().optional(),
 });

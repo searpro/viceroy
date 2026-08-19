@@ -211,6 +211,26 @@ const CAPTION_STYLES = [
 // rather than falling back, so a wrong one here breaks every LLM stage on a
 // fresh install. Check against `GET /v1/llm/models` before changing one.
 
+// vllm-omni serves exactly one model per process, so this id is whatever that
+// process was launched with — check `GET /v1/models` before changing it, the
+// same way the sd-api ids above have to be checked.
+//
+// `fps` is 16 because Wan's speech-to-video conditioning is built at 16 fps:
+// any other value desynchronises the generated mouth from the driving audio,
+// which is the video-side version of the caption-drift mistake this project
+// exists not to repeat.
+const VIDEO_MODEL = "Wan-AI/Wan2.2-S2V-14B";
+const VIDEO_PARAMS = {
+  width: 832,
+  height: 480,
+  num_frames: 33,
+  fps: 16,
+  num_inference_steps: 40,
+  guidance_scale: 4.5,
+};
+const VIDEO_NEGATIVE_PROMPT =
+  "text, watermark, distorted face, deformed hands, flickering, morphing artifacts";
+
 const PROVIDERS = [
   { kind: "llm" as const, name: "sd-api (local)", model: "mistral-nemo-instruct-2407" },
   {
@@ -222,6 +242,13 @@ const PROVIDERS = [
   },
   { kind: "audio" as const, name: "sd-api (local)", model: "qwen3-tts-voicedesign" },
   { kind: "asr" as const, name: "sd-api (local)", model: "parakeet-tdt" },
+  {
+    kind: "video" as const,
+    name: "vllm-omni (local)",
+    model: VIDEO_MODEL,
+    defaultParams: VIDEO_PARAMS,
+    negativePrompt: VIDEO_NEGATIVE_PROMPT,
+  },
 ];
 
 /**
@@ -313,7 +340,10 @@ export function seed(db: Db): { inserted: Record<string, number> } {
   const haveKinds = new Set(existingProviders.map((p) => p.kind));
   const newProviders = PROVIDERS.filter((p) => !haveKinds.has(p.kind)).map((p) => ({
     ...p,
-    baseUrl: config.sdApiUrl,
+    // Every kind but video is served by sd-api. Video is vllm-omni, which is a
+    // separate process on its own host — pointing it at SD_API_URL would seed
+    // a row that 404s on its first request.
+    baseUrl: p.kind === "video" ? config.videoApiUrl : config.sdApiUrl,
     isDefault: true,
   }));
   if (newProviders.length > 0) {

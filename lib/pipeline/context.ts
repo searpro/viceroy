@@ -10,6 +10,7 @@ import {
   voiceStyles,
   type ProjectStage,
 } from "../db/schema";
+import type { ProviderKind } from "../providers";
 import type { Job } from "../queue";
 import type { SdApi } from "../sdapi";
 
@@ -97,7 +98,7 @@ export function requireProjectId(job: Job): string {
   return job.projectId;
 }
 
-export function resolveProvider(db: Db, kind: "llm" | "image" | "audio" | "asr") {
+export function resolveProvider(db: Db, kind: ProviderKind) {
   const provider =
     db
       .select()

@@ -401,7 +401,7 @@ export const providers = sqliteTable(
   "providers",
   {
     id: id(),
-    kind: text("kind", { enum: ["llm", "image", "audio", "asr"] }).notNull(),
+    kind: text("kind", { enum: ["llm", "image", "audio", "asr", "video"] }).notNull(),
     name: text("name").notNull(),
     baseUrl: text("base_url").notNull(),
     apiKey: text("api_key"),
@@ -410,8 +410,8 @@ export const providers = sqliteTable(
       .notNull()
       .$type<Record<string, unknown>>()
       .default({}),
-    // Diffusion-specific: what an image provider's generations should avoid.
-    // Meaningless for kind "llm"/"audio"/"asr", where it stays "".
+    // Diffusion-specific: what an image or video provider's generations
+    // should avoid. Meaningless for kind "llm"/"audio"/"asr", where it stays "".
     negativePrompt: text("negative_prompt").notNull().default(""),
     isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
     createdAt: createdAt(),
