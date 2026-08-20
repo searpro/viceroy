@@ -13,10 +13,23 @@ import {
 import type { ProviderKind } from "../providers";
 import type { Job } from "../queue";
 import type { SdApi } from "../sdapi";
+import type { ImageBackend, VideoBackend } from "../backends/types";
 
 export type StageContext = {
   db: Db;
+  /**
+   * The sd-api client for the kinds sd-api is the only backend for: llm,
+   * audio and asr. Image and video go through the backends below instead,
+   * because they are the two kinds a host other than sd-api can serve.
+   */
   sdApi: SdApi;
+  /**
+   * Resolved on call rather than up front: an LLM stage must not fail because
+   * no image provider is configured, and a worker resolving both at job start
+   * would do exactly that.
+   */
+  imageBackend: () => ImageBackend;
+  videoBackend: () => VideoBackend;
   config: Config;
   job: Job;
   log: (message: string, level?: "debug" | "info" | "warn" | "error") => void;

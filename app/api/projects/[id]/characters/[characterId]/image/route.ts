@@ -4,10 +4,9 @@ import { EXTENSIONS, storeAsset } from "@/lib/assets";
 import { resolveConfig } from "@/lib/config";
 import { getDb } from "@/lib/db/client";
 import { characters, projects } from "@/lib/db/schema";
-import { resolveProvider } from "@/lib/pipeline/context";
 import { regenerate } from "@/lib/projects";
 import { listJobs } from "@/lib/queue";
-import { createSdApi } from "@/lib/sdapi";
+import { resolveImageBackend } from "@/lib/backends/resolve";
 
 export const dynamic = "force-dynamic";
 
@@ -112,16 +111,13 @@ export async function POST(request: Request, { params }: Params): Promise<NextRe
     meta: { characterId, source: "upload", originalFilename: file.name },
   });
 
-  // The reference upload must land on the same host that will later
-  // generate scenes from it — the image provider, not necessarily the
-  // machine `SD_API_URL` points at.
-  const imageProvider = resolveProvider(db, "image");
-  const sdApi = createSdApi({
-    baseUrl: imageProvider.baseUrl,
-    apiKey: imageProvider.apiKey ?? undefined,
-    timeoutMs: config.sdApiTimeoutMs,
-  });
-  const refInputName = await sdApi.image.uploadInput(bytes, file.name || `${characterId}.png`);
+  // The reference upload must land on the same host that will later generate
+  // scenes from it — the image provider, not necessarily the machine
+  // `SD_API_URL` points at, and not necessarily sd-api at all.
+  const refInputName = await resolveImageBackend(db, config).uploadReference(
+    bytes,
+    file.name || `${characterId}.png`,
+  );
 
   // imagePrompt: null — it's currently the only tell that a generated
   // portrait's displayed prompt is stale, and there is no generated prompt

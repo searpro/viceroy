@@ -5,6 +5,7 @@ import { resolveConfig } from "../config";
 import type { Db } from "../db/client";
 import type { Job } from "../queue";
 import type { StageContext } from "./context";
+import type { ImageBackend, VideoBackend } from "../backends/types";
 
 /**
  * A throwaway data directory per stage-test context.
@@ -35,8 +36,16 @@ export type StubOptions = {
   /** Canned transcript words, already in milliseconds. */
   transcript?: { word: string; startMs: number; endMs: number }[];
   onTranscribeRequest?: (request: Record<string, unknown>) => void;
-  /** Override sd-api's answer to "is this reference still there", per name. */
+  /** Override the host's answer to "is this reference still there", per name. */
   hasInput?: (name: string) => boolean | Promise<boolean>;
+  /**
+   * How many reference slots the stubbed image backend exposes. Defaults to
+   * unlimited, matching sd-api; set it to exercise the crowded-scene warning.
+   */
+  referenceCapacity?: number;
+  /** Bytes returned by each video generation, in order. */
+  videos?: Buffer[];
+  onVideoRequest?: (request: Record<string, unknown>) => void;
 };
 
 /** A 16-bit mono WAV header with no samples — enough to parse a sample rate. */
@@ -78,10 +87,36 @@ export function stubContext(db: Db, job: Job, options: StubOptions = {}): StageC
     return response;
   };
 
+  const imageBackend: ImageBackend = {
+    label: "stub-image",
+    referenceCapacity: () => options.referenceCapacity ?? Number.POSITIVE_INFINITY,
+    generate: async (request) => {
+      options.onImageRequest?.(request as unknown as Record<string, unknown>);
+      const bytes = images[Math.min(imageIndex, images.length - 1)];
+      imageIndex++;
+      return bytes ?? Buffer.from("png");
+    },
+    uploadReference: async (_bytes: Buffer, filename: string) => `uploaded-${filename}`,
+    hasReference: async (name: string) => (options.hasInput ? options.hasInput(name) : true),
+  };
+
+  let videoIndex = 0;
+  const videoBackend: VideoBackend = {
+    label: "stub-video",
+    generate: async (request) => {
+      options.onVideoRequest?.(request as unknown as Record<string, unknown>);
+      const bytes = (options.videos ?? [])[Math.min(videoIndex, (options.videos ?? []).length - 1)];
+      videoIndex++;
+      return bytes ?? Buffer.from("mp4");
+    },
+  };
+
   return {
     db,
     config: resolveConfig({ VICEROY_DATA_DIR: options.dataDir ?? scratchDataDir() }),
     job,
+    imageBackend: () => imageBackend,
+    videoBackend: () => videoBackend,
     log: () => {},
     progress: () => {},
     shouldAbort: options.shouldAbort ?? (() => false),

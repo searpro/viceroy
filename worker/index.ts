@@ -11,8 +11,9 @@ import {
   succeed,
   type Job,
 } from "../lib/queue";
-import { createSdApi, type SdApi } from "../lib/sdapi";
-import { awaitReview, resolveProvider, STAGE_HANDLERS, type StageContext } from "../lib/pipeline";
+import { createSdApi } from "../lib/sdapi";
+import { awaitReview, STAGE_HANDLERS, type StageContext } from "../lib/pipeline";
+import { resolveImageBackend, resolveVideoBackend } from "../lib/backends/resolve";
 
 const IDLE_POLL_MS = 1000;
 
@@ -93,7 +94,12 @@ async function main() {
 
     const ctx: StageContext = {
       db,
-      sdApi: resolveSdApi(db, config, baseSdApi),
+      sdApi: baseSdApi,
+      // Resolved per call, not per job: an LLM stage must not fail because no
+      // image provider is configured, and picking the row at call time is what
+      // lets a provider swapped in the admin UI take effect on the next job.
+      imageBackend: () => resolveImageBackend(db, config, baseSdApi),
+      videoBackend: () => resolveVideoBackend(db, config),
       config,
       job,
       log: (message, level) => log(db, job.id, message, level),
@@ -107,28 +113,6 @@ async function main() {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Image generation is the one stage whose default provider commonly lives on
- * a different host than the rest of sd-api — a GPU box, not the machine
- * running the worker — while llm/audio/asr keep using the resolved
- * provider's model against the shared `SD_API_URL` install. Resolved per job
- * rather than once at startup, so a provider swapped via the admin UI takes
- * effect on the next job without a worker restart.
- */
-function resolveSdApi(db: Db, config: Config, base: SdApi): SdApi {
-  const imageProvider = resolveProvider(db, "image");
-  if (imageProvider.baseUrl.replace(/\/$/, "") === config.sdApiUrl) return base;
-
-  return {
-    ...base,
-    image: createSdApi({
-      baseUrl: imageProvider.baseUrl,
-      apiKey: imageProvider.apiKey ?? undefined,
-      timeoutMs: config.sdApiTimeoutMs,
-    }).image,
-  };
 }
 
 main().catch((error) => {

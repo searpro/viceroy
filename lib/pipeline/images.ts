@@ -3,7 +3,7 @@ import { storeAsset } from "../assets";
 import { characters, projects, scenes } from "../db/schema";
 import { renderPrompt } from "../prompts";
 import { enqueue } from "../queue";
-import type { SdApi } from "../sdapi";
+import type { ImageBackend } from "../backends/types";
 import {
   awaitReview,
   checkAbort,
@@ -15,9 +15,9 @@ import {
 } from "./context";
 
 /**
- * Drop any character reference sd-api no longer holds.
+ * Drop any character reference the image host no longer holds.
  *
- * `refInputName` points at state in another service (sd-api's own inputs
+ * `refInputName` points at state in another service (the host's own inputs
  * directory), not at anything viceroy controls, so a name stored here can
  * dangle if that directory is ever cleared — regardless of whether the
  * reference came from a generated portrait or a user upload. ADR 0001 states
@@ -25,14 +25,19 @@ import {
  * fail the stage; this is that check, run once per scene-image stage rather
  * than once per scene, since the cast (and their references) don't change
  * mid-stage.
+ *
+ * Note this is about a reference that *went missing*, which is transient and
+ * outside the user's control. A provider with no reference workflow at all is
+ * a different situation — a configuration gap the user can fix — and that one
+ * fails loudly rather than degrading.
  */
 export async function filterLiveRefs(
-  image: SdApi["image"],
+  backend: Pick<ImageBackend, "hasReference" | "label">,
   cast: { id: string; name: string; refInputName: string | null }[],
   log: (message: string, level?: "debug" | "info" | "warn" | "error") => void,
 ): Promise<Map<string, string>> {
   const candidates = cast.filter((c): c is typeof c & { refInputName: string } => Boolean(c.refInputName));
-  const checks = await Promise.all(candidates.map((c) => image.hasInput(c.refInputName)));
+  const checks = await Promise.all(candidates.map((c) => backend.hasReference(c.refInputName)));
 
   const live = new Map<string, string>();
   candidates.forEach((character, index) => {
@@ -40,7 +45,7 @@ export async function filterLiveRefs(
       live.set(character.id, character.refInputName);
     } else {
       log(
-        `Reference image for ${character.name} is no longer available on sd-api; ` +
+        `Reference image for ${character.name} is no longer available on ${backend.label}; ` +
           `generating their scenes as text-only`,
         "warn",
       );
@@ -105,7 +110,9 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
   if (all.length === 0) throw new Error(`Project ${projectId} has no scenes to illustrate`);
 
   const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
-  const refByCharacter = await filterLiveRefs(ctx.sdApi.image, cast, ctx.log);
+  const backend = ctx.imageBackend();
+  const refByCharacter = await filterLiveRefs(backend, cast, ctx.log);
+  const refCapacity = backend.referenceCapacity();
 
   const pending = all.filter((scene) => !scene.imageAssetId);
   if (pending.length === 0) {
@@ -124,9 +131,23 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
     const base = position / pending.length;
     const share = 1 / pending.length;
 
-    const refs = scene.characterIds
+    const wanted = scene.characterIds
       .map((id) => refByCharacter.get(id))
       .filter((name): name is string => Boolean(name));
+
+    // A workflow exposes a fixed number of reference slots, and a crowded
+    // scene can want more faces than it has holes for. Dropping the extras is
+    // a visible quality loss rather than a silent one, so it is logged as a
+    // warning and left recoverable — failing the whole render would make any
+    // provider with fewer slots than the busiest scene unusable.
+    const refs = wanted.slice(0, refCapacity);
+    if (wanted.length > refs.length) {
+      ctx.log(
+        `Scene ${scene.index + 1} has ${wanted.length} character reference(s) but ` +
+          `${backend.label} exposes ${refCapacity} slot(s) — generating with the first ${refs.length}`,
+        "warn",
+      );
+    }
 
     const direction = jobDirection && (!jobSceneId || jobSceneId === scene.id) ? `, ${jobDirection}` : "";
 
@@ -135,26 +156,18 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
         (refs.length > 0 ? ` with ${refs.length} character reference(s)` : ""),
     );
 
-    const bytes = await ctx.sdApi.image.generate(
+    const bytes = await backend.generate(
       {
         prompt: `${imageStyle.promptPrefix}${scene.imagePrompt}${direction}${imageStyle.promptSuffix}`,
-        negative_prompt: negativePromptFor(imageProvider, imageStyle),
-        model: imageProvider.model,
+        negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
         width: ctx.config.sourceImage.width,
         height: ctx.config.sourceImage.height,
-        ...(imageProvider.defaultParams as Record<string, never>),
-        ...(refs.length > 0
-          ? {
-              ref_images: refs,
-              // Distinct reference slots, so two people in one frame stay two
-              // people. Harmless with a single reference.
-              ...(refs.length > 1 ? { increase_ref_index: true } : {}),
-            }
-          : {}),
+        references: refs,
       },
       {
         onProgress: (fraction) => ctx.progress(base + share * fraction),
         shouldAbort: ctx.shouldAbort,
+        log: ctx.log,
       },
     );
 
@@ -204,6 +217,7 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
   const { project, imageStyle } = loadProject(ctx.db, projectId);
   const imageProvider = resolveProvider(ctx.db, "image");
+  const backend = ctx.imageBackend();
 
   const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
 
@@ -248,19 +262,20 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
       `${imageStyle.promptSuffix}`;
 
     ctx.log(`Generating portrait for ${character.name}`);
-    const bytes = await ctx.sdApi.image.generate(
+    const bytes = await backend.generate(
       {
         prompt,
-        negative_prompt: negativePromptFor(imageProvider, imageStyle),
-        model: imageProvider.model,
+        negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
         width: ctx.config.sourceImage.width,
         height: ctx.config.sourceImage.height,
-        ...(imageProvider.defaultParams as Record<string, never>),
+        // A portrait is the reference; it has none of its own.
+        references: [],
       },
       {
         onProgress: (fraction) =>
           ctx.progress((position + fraction) / Math.max(pending.length, 1)),
         shouldAbort: ctx.shouldAbort,
+        log: ctx.log,
       },
     );
 
@@ -273,12 +288,9 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
       meta: { characterId: character.id, prompt },
     });
 
-    // Hand the portrait to sd-api once. Scenes reference it by name, so
-    // re-uploading per frame would copy the same bytes eight times.
-    const refInputName = await ctx.sdApi.image.uploadInput(
-      bytes,
-      `${character.id}.png`,
-    );
+    // Hand the portrait to the image host once. Scenes reference it by name,
+    // so re-uploading per frame would copy the same bytes eight times.
+    const refInputName = await backend.uploadReference(bytes, `${character.id}.png`);
 
     ctx.db
       .update(characters)

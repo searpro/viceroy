@@ -69,12 +69,13 @@ function imageStyleOf(project: { imageStyleId: string | null }) {
 describe("filterLiveRefs", () => {
   it("drops a candidate whose hasInput check fails and logs why", async () => {
     const logs: [string, string | undefined][] = [];
-    const image = {
-      hasInput: async (name: string) => name === "live.png",
-    } as Parameters<typeof filterLiveRefs>[0];
+    const backend = {
+      label: "stub-image",
+      hasReference: async (name: string) => name === "live.png",
+    } satisfies Parameters<typeof filterLiveRefs>[0];
 
     const live = await filterLiveRefs(
-      image,
+      backend,
       [
         { id: "a", name: "Ada", refInputName: "live.png" },
         { id: "b", name: "Bea", refInputName: "dangling.png" },
@@ -457,14 +458,11 @@ describe("runCharacterImages", () => {
     const requests: Record<string, unknown>[] = [];
     await runCharacterImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
 
-    // Model and params are provider configuration; the negative prompt is
-    // style guidance again (BUG-014) and falls back to the provider's only
-    // when the style carries none.
-    expect(requests[0]).toMatchObject({ model: "sdxl-turbo", steps: 20, seed: 7 });
     // Both lists, not one or the other: the provider's is the model-level floor
-    // and the style's is its own look.
-    expect(requests[0]!.negative_prompt).toContain("blurry");
-    expect(requests[0]!.negative_prompt).toContain(imageStyleOf(project).negativePrompt);
+    // and the style's is its own look. (Where `model` and `defaultParams` land
+    // on the wire is the adapter's concern — see sdapi-image.test.ts.)
+    expect(requests[0]!.negativePrompt).toContain("blurry");
+    expect(requests[0]!.negativePrompt).toContain(imageStyleOf(project).negativePrompt);
   });
 
   // The floor must survive a style that says nothing, and a style must never
@@ -484,12 +482,12 @@ describe("runCharacterImages", () => {
     const requests: Record<string, unknown>[] = [];
     await runCharacterImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
 
-    expect(requests[0]!.negative_prompt).toBe("blurry");
+    expect(requests[0]!.negativePrompt).toBe("blurry");
   });
 
   // The name is what scenes point at; without storing it every frame would
   // have to re-upload the same portrait.
-  it("uploads each portrait to sd-api and stores the returned name", async () => {
+  it("uploads each portrait to the image host and stores the returned name", async () => {
     const project = await elementsOnly();
     const job = enqueue(db, { type: "character_images", projectId: project.id });
 
@@ -683,29 +681,29 @@ describe("runSceneImages", () => {
     await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
 
     const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
-    expect(requests[0]!.ref_images).toEqual([cast[0]!.refInputName]);
+    expect(requests[0]!.references).toEqual([cast[0]!.refInputName]);
   });
 
   // Without a portrait there is nothing to reference, and sending an empty
   // array would be a different request than sending none.
-  it("omits ref_images entirely when no character has a portrait", async () => {
+  it("passes no references when no character has a portrait", async () => {
     const project = await elementsDone();
     const job = enqueue(db, { type: "scene_images", projectId: project.id });
 
     const requests: Record<string, unknown>[] = [];
     await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
 
-    expect(requests[0]).not.toHaveProperty("ref_images");
+    expect(requests[0]!.references).toEqual([]);
   });
 
-  it("sets increase_ref_index only when a frame carries more than one face", async () => {
+  it("passes one reference per face in the frame", async () => {
     const project = await portraitsDone();
     const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
 
     const single = enqueue(db, { type: "scene_images", projectId: project.id });
     const singleRequests: Record<string, unknown>[] = [];
     await runSceneImages(stubContext(db, single, { onImageRequest: (r) => singleRequests.push(r) }));
-    expect(singleRequests[0]).not.toHaveProperty("increase_ref_index");
+    expect(singleRequests[0]!.references).toHaveLength(1);
 
     // Put two characters in one scene and regenerate it.
     db.insert(characters)
@@ -733,8 +731,7 @@ describe("runSceneImages", () => {
     const multiRequests: Record<string, unknown>[] = [];
     await runSceneImages(stubContext(db, multi, { onImageRequest: (r) => multiRequests.push(r) }));
 
-    expect(multiRequests[0]!.ref_images).toHaveLength(2);
-    expect(multiRequests[0]!.increase_ref_index).toBe(true);
+    expect(multiRequests[0]!.references).toHaveLength(2);
   });
 
   it("generates one image per scene and stores each as an asset", async () => {
@@ -754,19 +751,17 @@ describe("runSceneImages", () => {
     expect(rows.every((s) => s.imageAssetId)).toBe(true);
   });
 
-  it("asks for the configured source frame size and the provider's model", async () => {
+  it("asks for the configured source frame size", async () => {
     const project = await elementsDone();
     const job = enqueue(db, { type: "scene_images", projectId: project.id });
 
     const requests: Record<string, unknown>[] = [];
     await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
 
-    expect(requests[0]).toMatchObject({
-      width: 432,
-      height: 768,
-      model: "flux2-klein-4b",
-      steps: 4,
-    });
+    // The model and its params are no longer part of the stage's request —
+    // ComfyUI has no model field at all, since the checkpoint is a node inside
+    // the workflow. sdapi-image.test.ts covers them reaching sd-api's wire.
+    expect(requests[0]).toMatchObject({ width: 432, height: 768 });
   });
 
   it("asks with the image provider's model and params, and the style's own negative prompt", async () => {
@@ -780,14 +775,11 @@ describe("runSceneImages", () => {
     const requests: Record<string, unknown>[] = [];
     await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
 
-    // Model and params are provider configuration; the negative prompt is
-    // style guidance again (BUG-014) and falls back to the provider's only
-    // when the style carries none.
-    expect(requests[0]).toMatchObject({ model: "sdxl-turbo", steps: 20, seed: 7 });
     // Both lists, not one or the other: the provider's is the model-level floor
-    // and the style's is its own look.
-    expect(requests[0]!.negative_prompt).toContain("blurry");
-    expect(requests[0]!.negative_prompt).toContain(imageStyleOf(project).negativePrompt);
+    // and the style's is its own look. (Where `model` and `defaultParams` land
+    // on the wire is the adapter's concern — see sdapi-image.test.ts.)
+    expect(requests[0]!.negativePrompt).toContain("blurry");
+    expect(requests[0]!.negativePrompt).toContain(imageStyleOf(project).negativePrompt);
   });
 
   it("wraps the scene prompt in the image style's prefix and suffix", async () => {
@@ -891,7 +883,7 @@ describe("runSceneImages", () => {
     expect(stored.bytes).toBe("real-png-bytes".length);
   });
 
-  // ref_images is built from refInputName regardless of how it got there
+  // references are built from refInputName regardless of how it got there
   // (ADR 0001) — an uploaded reference must flow through identically to a
   // generated one, with zero branching in the scene-generation loop.
   it("passes an uploaded character's reference identically to a generated one", async () => {
@@ -906,13 +898,13 @@ describe("runSceneImages", () => {
     const requests: Record<string, unknown>[] = [];
     await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
 
-    expect(requests[0]!.ref_images).toEqual(["uploaded-by-user.png"]);
+    expect(requests[0]!.references).toEqual(["uploaded-by-user.png"]);
   });
 
   // ADR 0001's stated-but-unimplemented rule: a dangling reference name (the
   // upload cleared out of sd-api's own inputs directory) must degrade that
   // character's scenes to text-only rather than fail the stage.
-  it("degrades to text-only for a character whose reference sd-api no longer holds", async () => {
+  it("degrades to text-only for a character whose reference the host no longer holds", async () => {
     const project = await elementsDone();
     const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
     db.update(characters)
@@ -946,7 +938,7 @@ describe("runSceneImages", () => {
     });
     await runSceneImages({ ...ctx, log: (message) => logs.push(message) });
 
-    expect(requests[0]!.ref_images).toEqual(["live.png"]);
+    expect(requests[0]!.references).toEqual(["live.png"]);
     expect(logs.some((l) => l.includes("no longer available"))).toBe(true);
   });
 });

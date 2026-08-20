@@ -43,6 +43,14 @@ function contextFor(job: Job, responses: { content?: string; json?: unknown }[])
     log: () => {},
     progress: () => {},
     shouldAbort: () => false,
+    // Story stages are LLM-only; reaching for an image or video backend here
+    // would be the bug, so the stub says so rather than quietly providing one.
+    imageBackend: () => {
+      throw new Error("story stages must not resolve an image backend");
+    },
+    videoBackend: () => {
+      throw new Error("story stages must not resolve a video backend");
+    },
     sdApi: {
       llm: {
         chat: async () => ({ content: next().content ?? "", completionTokens: 10 }),
@@ -77,6 +85,14 @@ function capturingContextFor(
     log: () => {},
     progress: () => {},
     shouldAbort: () => false,
+    // Story stages are LLM-only; reaching for an image or video backend here
+    // would be the bug, so the stub says so rather than quietly providing one.
+    imageBackend: () => {
+      throw new Error("story stages must not resolve an image backend");
+    },
+    videoBackend: () => {
+      throw new Error("story stages must not resolve a video backend");
+    },
     sdApi: {
       llm: {
         chat: async ({ messages }: { messages: { content: string }[] }) => {

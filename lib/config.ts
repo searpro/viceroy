@@ -18,10 +18,17 @@ const envSchema = z.object({
   SD_API_URL: z.url().default("http://localhost:3004"),
 
   // Video generation is the one kind that does not come from sd-api: it is
-  // served by vllm-omni, which `vllm serve ... --omni` puts on 8091 in its own
-  // examples. Only used to seed the video provider's base URL on a fresh
-  // install — after that the row in the Providers screen is what stages read.
-  VIDEO_API_URL: z.url().default("http://localhost:8091"),
+  // served by ComfyUI, whose default port is 8188. Only used to seed the video
+  // provider's base URL on a fresh install — after that the row in the
+  // Providers screen is what stages read.
+  COMFY_API_URL: z.url().default("http://localhost:8188"),
+
+  // Deliberately an env var and not a provider column. It is an account-wide
+  // credential that can start and stop machines that cost money — a different
+  // class of secret from a per-provider key, and one that has no business
+  // being editable from a web form or readable out of the database file.
+  // Absent means the RunPod controls are simply not offered.
+  RUNPOD_API_KEY: z.string().trim().min(1).optional(),
 
   // How large a frame this machine can produce is a property of the machine:
   // 1080x1920 is routine on a GPU and fails outright on a CPU-only box.
@@ -46,7 +53,8 @@ export type Config = {
   outputsDir: string;
   cacheDir: string;
   sdApiUrl: string;
-  videoApiUrl: string;
+  comfyApiUrl: string;
+  runpodApiKey: string | undefined;
   sourceImage: { width: number; height: number };
   video: { width: number; height: number };
   qcMaxIterations: number;
@@ -78,7 +86,8 @@ export function resolveConfig(env: Record<string, string | undefined> = process.
     outputsDir: path.join(dataDir, "outputs"),
     cacheDir: path.join(dataDir, "cache"),
     sdApiUrl: parsed.SD_API_URL.replace(/\/$/, ""),
-    videoApiUrl: parsed.VIDEO_API_URL.replace(/\/$/, ""),
+    comfyApiUrl: parsed.COMFY_API_URL.replace(/\/$/, ""),
+    runpodApiKey: parsed.RUNPOD_API_KEY,
     sourceImage: source,
     video: { width: parsed.VIDEO_WIDTH, height: parsed.VIDEO_HEIGHT },
     qcMaxIterations: parsed.QC_MAX_ITERATIONS,

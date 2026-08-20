@@ -85,6 +85,13 @@
       "when": 1786939300000,
       "tag": "0011_split_negative_prompts",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1786939400000,
+      "tag": "0012_comfyui_providers",
+      "breakpoints": true
     }
   ]
 }

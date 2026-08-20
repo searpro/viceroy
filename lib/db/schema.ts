@@ -402,6 +402,13 @@ export const providers = sqliteTable(
   {
     id: id(),
     kind: text("kind", { enum: ["llm", "image", "audio", "asr", "video"] }).notNull(),
+    // Which protocol `baseUrl` speaks. Two hosts of the same kind are not
+    // interchangeable — sd-api takes a request shaped like its own API, while
+    // ComfyUI takes a whole workflow graph and has no notion of `model` at
+    // all. Defaulted so every row that predates ComfyUI keeps working.
+    adapter: text("adapter", { enum: ["sdapi", "comfyui"] })
+      .notNull()
+      .default("sdapi"),
     name: text("name").notNull(),
     baseUrl: text("base_url").notNull(),
     apiKey: text("api_key"),
@@ -414,10 +421,113 @@ export const providers = sqliteTable(
     // should avoid. Meaningless for kind "llm"/"audio"/"asr", where it stays "".
     negativePrompt: text("negative_prompt").notNull().default(""),
     isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+    // How to bring this provider's host up on demand, when it is a pod that
+    // costs money to leave running. Null means "assume it is always there",
+    // which is what every local install wants. Nothing reads this yet — the
+    // column is here because migrations are append-only and adding it now is
+    // free, whereas a second migration later is not.
+    compute: text("compute", { mode: "json" }).$type<ProviderCompute | null>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [index("providers_kind_idx").on(t.kind)],
+);
+
+export type ProviderCompute = {
+  kind: "runpod";
+  podId: string;
+  /**
+   * The HTTP port RunPod's proxy fronts, 8188 for ComfyUI.
+   *
+   * Stored alongside the id because together they *are* the base URL —
+   * `https://{podId}-{port}.proxy.runpod.net` — so a pod rebuilt under a new
+   * id needs one field changed rather than a URL re-copied by hand.
+   */
+  port: number;
+  /**
+   * Minutes of idleness before the pod should be stopped. Nothing enforces
+   * this yet; it is recorded so the policy lives with the pod it applies to
+   * rather than in whatever later grows the timer.
+   */
+  idleStopMinutes?: number;
+};
+
+/**
+ * What a workflow is *for*, in the pipeline's vocabulary rather than the
+ * user's.
+ *
+ * A ComfyUI provider cannot be a single workflow, because one kind needs
+ * several shapes of generation: a scene with characters in it has to be
+ * generated against their reference portraits, and a scene with nobody in it
+ * must not be. Those are different graphs, so the pipeline asks for a
+ * provider *and a role*.
+ */
+export const WORKFLOW_ROLES = [
+  "text_to_image",
+  "text_to_image_ref",
+  "image_to_video",
+  "speech_to_video",
+] as const;
+export type WorkflowRole = (typeof WORKFLOW_ROLES)[number];
+
+/**
+ * How one `{{variable}}` in a workflow graph is filled in.
+ *
+ * `binds` is the join between a user's arbitrary graph and the pipeline's
+ * fixed vocabulary: the image stage hands over a prompt and does not care
+ * that this particular workflow calls it `{{positive}}`. A variable bound to
+ * `free` is never set by the pipeline — it is a knob the user exposes to
+ * themselves in the editor.
+ */
+export type WorkflowVariable = {
+  name: string;
+  type: "string" | "number" | "boolean" | "image";
+  binds:
+    | "prompt"
+    | "negativePrompt"
+    | "width"
+    | "height"
+    | "seed"
+    | "refImages"
+    | "audio"
+    | "free";
+  defaultValue?: unknown;
+};
+
+/**
+ * A ComfyUI workflow, stored as its API-format export.
+ *
+ * The graph is kept verbatim rather than parsed into columns because it is the
+ * user's document: nodes this codebase has never heard of have to survive a
+ * round trip through the editor untouched.
+ */
+export const workflows = sqliteTable(
+  "workflows",
+  {
+    id: id(),
+    providerId: text("provider_id")
+      .notNull()
+      .references(() => providers.id, { onDelete: "cascade" }),
+    role: text("role", { enum: WORKFLOW_ROLES }).notNull(),
+    name: text("name").notNull(),
+    // API format (ComfyUI's "Export (API)"), i.e. a flat map of node id to
+    // `{ class_type, inputs }` — NOT the editor's own save format, which
+    // carries link geometry and cannot be submitted to /prompt.
+    graph: text("graph", { mode: "json" }).notNull().$type<Record<string, unknown>>(),
+    variables: text("variables", { mode: "json" })
+      .notNull()
+      .$type<WorkflowVariable[]>()
+      .default([]),
+    // Which node's output to collect. Null means "whichever node produced one",
+    // which is unambiguous for the single-SaveImage graphs that are the norm.
+    outputNodeId: text("output_node_id"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  // One workflow per role per provider: the pipeline resolves by (provider,
+  // role), and a second row would make that pick order-dependent in exactly
+  // the way `isDefault` exists to prevent for providers themselves.
+  (t) => [unique("workflows_provider_role_unq").on(t.providerId, t.role)],
 );
 
 export const promptTemplates = sqliteTable("prompt_templates", {
@@ -465,6 +575,7 @@ export const schema = {
   jobs,
   jobLogs,
   providers,
+  workflows,
   promptTemplates,
   preferences,
 };

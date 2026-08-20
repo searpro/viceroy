@@ -30,13 +30,23 @@ describe("seed", () => {
     ]);
   });
 
-  // Video is the one kind sd-api does not serve: it is vllm-omni on its own
+  // Video is the one kind sd-api does not serve: it is ComfyUI on its own
   // host, and seeding it at SD_API_URL would produce a row that 404s.
-  it("points the video provider at the video host, not sd-api", () => {
+  it("points the video provider at the ComfyUI host, not sd-api", () => {
     seed(db);
     const video = db.select().from(providers).where(eq(providers.kind, "video")).get();
     const others = db.select().from(providers).all().filter((p) => p.kind !== "video");
     expect(video!.baseUrl).not.toBe(others[0]!.baseUrl);
+  });
+
+  // The seeded video row is a ComfyUI placeholder: it cannot generate until a
+  // workflow is attached, and `model` is meaningless because the checkpoint is
+  // a loader node inside that workflow.
+  it("seeds the video provider on the ComfyUI adapter with no model", () => {
+    seed(db);
+    const video = db.select().from(providers).where(eq(providers.kind, "video")).get()!;
+    expect(video.adapter).toBe("comfyui");
+    expect(video.model).toBe("");
   });
 
   it("is idempotent", () => {

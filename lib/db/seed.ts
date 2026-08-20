@@ -211,15 +211,14 @@ const CAPTION_STYLES = [
 // rather than falling back, so a wrong one here breaks every LLM stage on a
 // fresh install. Check against `GET /v1/llm/models` before changing one.
 
-// vllm-omni serves exactly one model per process, so this id is whatever that
-// process was launched with — check `GET /v1/models` before changing it, the
-// same way the sd-api ids above have to be checked.
+// Starting values for a Wan speech-to-video workflow's own variables. Under
+// ComfyUI these are no longer request fields — the graph decides what it
+// exposes — but they remain the right numbers to prefill an editor with.
 //
 // `fps` is 16 because Wan's speech-to-video conditioning is built at 16 fps:
 // any other value desynchronises the generated mouth from the driving audio,
 // which is the video-side version of the caption-drift mistake this project
 // exists not to repeat.
-const VIDEO_MODEL = "Wan-AI/Wan2.2-S2V-14B";
 const VIDEO_PARAMS = {
   width: 832,
   height: 480,
@@ -244,8 +243,12 @@ const PROVIDERS = [
   { kind: "asr" as const, name: "sd-api (local)", model: "parakeet-tdt" },
   {
     kind: "video" as const,
-    name: "vllm-omni (local)",
-    model: VIDEO_MODEL,
+    adapter: "comfyui" as const,
+    name: "comfyui (runpod)",
+    // ComfyUI has no model name to carry: the checkpoint is a loader node
+    // inside the workflow. The Wan model this row used to name is now chosen
+    // in the graph the user pastes on the Providers screen.
+    model: "",
     defaultParams: VIDEO_PARAMS,
     negativePrompt: VIDEO_NEGATIVE_PROMPT,
   },
@@ -340,10 +343,11 @@ export function seed(db: Db): { inserted: Record<string, number> } {
   const haveKinds = new Set(existingProviders.map((p) => p.kind));
   const newProviders = PROVIDERS.filter((p) => !haveKinds.has(p.kind)).map((p) => ({
     ...p,
-    // Every kind but video is served by sd-api. Video is vllm-omni, which is a
+    // Every kind but video is served by sd-api. Video is ComfyUI, which is a
     // separate process on its own host — pointing it at SD_API_URL would seed
-    // a row that 404s on its first request.
-    baseUrl: p.kind === "video" ? config.videoApiUrl : config.sdApiUrl,
+    // a row that 404s on its first request. The seeded row is a placeholder
+    // either way: it cannot generate until a workflow is attached to it.
+    baseUrl: p.kind === "video" ? config.comfyApiUrl : config.sdApiUrl,
     isDefault: true,
   }));
   if (newProviders.length > 0) {
