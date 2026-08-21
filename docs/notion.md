@@ -22,11 +22,13 @@ reads it directly, and it can't live only in Notion.
 | ↳ M2 detail | https://app.notion.com/p/3bb0755fb99881788b6af2684c76cf8f | Manual mode and review surfaces — full detail |
 | ↳ M3 detail | https://app.notion.com/p/3bb0755fb99881b8b4eccecf1507b5d3 | Management screens — full detail |
 | ↳ M4 detail | https://app.notion.com/p/3bb0755fb99881198dc5d8ed8a733f97 | Output control — full detail |
+| ↳ M7 detail | https://app.notion.com/p/3c20755fb99881f7a46ac1b013a8c538 | Film pipeline (LTX shots) — planned, not started. Data model, stage chain, pod lifecycle, PR sequence |
 | **Findings** (database) | https://app.notion.com/p/3567948e711844818d55765a3bb18a73 | F1–F22, measured local-stack behaviour that contradicts its own docs. Replaces `docs/findings.md` |
 | **Architecture Decisions** (database) | https://app.notion.com/p/3a83993f25f94730bc13594332565a81 | ADRs — decisions whose reasoning is worth more than a line. Replaces `docs/adr/` |
 | **Bug Tracker** (database) | https://app.notion.com/p/7aa66b802429405e834ad7953f9acd12 | M5 beta-hardening tracker. Replaces `docs/bugs.md` |
 | **Progress Tracker** (database) | https://app.notion.com/p/20a4b70b74a141f7a8135d1512512835 | One row per delivered PR/milestone/bugfix/decision. Updated by `log-progress` |
 | **Prompt & Flow Audit** | https://app.notion.com/p/3bd0755fb99881ce9f88ce566594eac4 | 2026-08-15 audit of the prompt engine and redo/advance flow. Holds the reasoning spanning BUG-007–BUG-021; the per-item detail is in the Bug Tracker |
+| **LTX Long-Video Feasibility** | https://app.notion.com/p/3c20755fb99881d4b587d1e566a063b3 | 2026-08-20 desk analysis of generating 3–5 min videos with LTX 2.5/2.3 through ComfyUI and LTX Director — model/VRAM ladder, projected generation time and cost, long-form chaining strategies, the unknowns that need measuring, and a phased plan |
 
 ## Database schemas
 
