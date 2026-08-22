@@ -109,6 +109,26 @@ export const captionStyles = sqliteTable("caption_styles", {
   updatedAt: updatedAt(),
 });
 
+// M7 PR2. Feeds the *text* register of the Development chain's prompts only
+// (concept, logline, characters+arcs, world building, story structure) —
+// genre/tone/pacing guidance for the writer. Deliberately not a second owner
+// of the rendering register `imageStyles.renderGuidance` already owns: ADR
+// 0002 and the Prompt & Flow Audit both name mixing narrative-register and
+// rendering-register guidance across two style types as the root cause behind
+// 15 bug entries (visualGuidance vs promptPrefix). A Direction Style's fields
+// must never be threaded into an image-generation prompt path.
+export const directionStyles = sqliteTable("direction_styles", {
+  id: id(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull(),
+  genreGuidance: text("genre_guidance").notNull(),
+  toneGuidance: text("tone_guidance").notNull(),
+  pacingGuidance: text("pacing_guidance").notNull(),
+  isBuiltin: integer("is_builtin", { mode: "boolean" }).notNull().default(false),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
 /* ----------------------------------------------------------------- project */
 
 export const PROJECT_STAGES = [
@@ -172,6 +192,22 @@ export const projects = sqliteTable(
     voiceStyleId: text("voice_style_id").references(() => voiceStyles.id),
     imageStyleId: text("image_style_id").references(() => imageStyles.id),
     captionStyleId: text("caption_style_id").references(() => captionStyles.id),
+    // Only meaningful for a Development-chain project (M7 PR2); the narrative
+    // pipeline never reads this. Nullable like the other three styles were
+    // before this column existed — a project created before Direction Style
+    // shipped has no way to have one set.
+    directionStyleId: text("direction_style_id").references(() => directionStyles.id),
+    // The "characters+arcs" dev-chain stage writes/extends `characters` rows
+    // directly rather than a `dev_artifacts` row (see `DEV_CHAIN_STAGES`), so
+    // it has no artifact row of its own to carry an `approvedAt`. This is
+    // that stage's equivalent gate, read by `devNextStep`.
+    charactersApprovedAt: integer("characters_approved_at", { mode: "timestamp_ms" }),
+    // The "characters+arcs" stage's equivalent of `dev_artifacts.directionHistory`
+    // — there is no single row of its own for a whole-cast redo to attach to.
+    charactersDirectionHistory: text("characters_direction_history", { mode: "json" })
+      .notNull()
+      .$type<string[]>()
+      .default([]),
     // Nullable, like captionStyleId: a project created before this column
     // existed has no way to have one set. render.ts falls back to
     // config.video's dimensions when either is null.
@@ -217,6 +253,12 @@ export const characters = sqliteTable(
     imageSource: text("image_source", { enum: ["generated", "uploaded"] })
       .notNull()
       .default("generated"),
+    // M7 PR2. Written by the Development chain's "characters+arcs" stage —
+    // where this character changes over the story, not who they are at the
+    // start (that's `description`). Null for every character the narrative
+    // pipeline's `elements` stage extracts, since that pipeline has no arc
+    // concept and this column is nullable for exactly that reason.
+    arc: text("arc"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -359,6 +401,37 @@ export const DEV_ARTIFACT_STAGES = [
 ] as const;
 export type DevArtifactStage = (typeof DEV_ARTIFACT_STAGES)[number];
 
+// The Development chain's full ordering (M7 PR2), all ten stages the Model
+// strategy section of the M7 detail page counts. A superset of
+// `DEV_ARTIFACT_STAGES` — "characters" and "world_building" (PR2) sit between
+// "logline" and "story_structure" but write their own tables (`characters`,
+// `world_building`/`locations`/`props`) rather than a `dev_artifacts` row, the
+// same way the narrative pipeline's `elements` stage populates `scenes`/
+// `characters` directly instead of some generic artifact table. `devNextStep`
+// and `INVALIDATION_CHAIN` walk this list, not `DEV_ARTIFACT_STAGES` — that
+// one still means exactly what PR1 defined it to mean: which stages own a
+// `dev_artifacts` row.
+export const DEV_CHAIN_STAGES = [
+  "concept",
+  "logline",
+  "characters",
+  "world_building",
+  "story_structure",
+  "beat_sheet",
+  "treatment",
+  "screenplay",
+  "screenplay_revision",
+  "story_bible",
+] as const;
+export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
+
+// The two dev-chain stages that are NOT `dev_artifacts` rows (see
+// `DEV_CHAIN_STAGES` above) — pulled out as their own type so job dispatch and
+// `DISCARD` can be exhaustive over them without re-deriving the split from
+// `DEV_CHAIN_STAGES` minus `DEV_ARTIFACT_STAGES` by hand.
+export const DEV_TABLE_STAGES = ["characters", "world_building"] as const;
+export type DevTableStage = (typeof DEV_TABLE_STAGES)[number];
+
 export const devArtifacts = sqliteTable(
   "dev_artifacts",
   {
@@ -389,6 +462,83 @@ export const devArtifacts = sqliteTable(
   ],
 );
 
+// M7 PR2. One row per project — rules/tone/theme prose only, deliberately
+// NOT locations or props (those get their own first-class tables below, the
+// same reasoning that keeps `characters` separate from `scenes`). Approved
+// the same way a `dev_artifacts` row is, even though it isn't one: the
+// "world building" stage writes this row plus the `locations`/`props` rows it
+// derived from the same generation in one step, so all three share this row's
+// `approvedAt` as their one gate.
+export const worldBuilding = sqliteTable(
+  "world_building",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    content: text("content").notNull().default(""),
+    approvedAt: integer("approved_at", { mode: "timestamp_ms" }),
+    directionHistory: text("direction_history", { mode: "json" })
+      .notNull()
+      .$type<string[]>()
+      .default([]),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  // One row per project: unlike `dev_artifacts`, a redo overwrites this row in
+  // place rather than versioning, since `locations`/`props` are foreign-keyed
+  // to nothing more specific than the project and are cleared/recreated with
+  // it (see `DISCARD` in lib/projects.ts) — there is no second version of a
+  // world to keep alongside the first.
+  (t) => [unique("world_building_project_idx").on(t.projectId)],
+);
+
+// Mirrors `characters`' visual-consistency columns exactly (name, description,
+// imageAssetId, refInputName, imageSource) — see the M7 detail page. A
+// dangling `refInputName` is handled by the same `filterLiveRefs` the
+// narrative pipeline already uses for characters (lib/pipeline/images.ts),
+// unchanged: degrade to text-only, log a warning, never fail the stage.
+export const locations = sqliteTable(
+  "locations",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    imageAssetId: text("image_asset_id").references(() => assets.id),
+    refInputName: text("ref_input_name"),
+    imageSource: text("image_source", { enum: ["generated", "uploaded"] })
+      .notNull()
+      .default("generated"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("locations_project_idx").on(t.projectId)],
+);
+
+// Same shape as `locations`, same reasoning — see there.
+export const props = sqliteTable(
+  "props",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    imageAssetId: text("image_asset_id").references(() => assets.id),
+    refInputName: text("ref_input_name"),
+    imageSource: text("image_source", { enum: ["generated", "uploaded"] })
+      .notNull()
+      .default("generated"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("props_project_idx").on(t.projectId)],
+);
+
 export const assets = sqliteTable("assets", {
   id: id(),
   kind: text("kind", { enum: ["image", "audio", "video"] }).notNull(),
@@ -412,12 +562,15 @@ export const JOB_TYPES = [
   "voiceover",
   "subtitle_align",
   "render",
-  // The Development chain's stages (M7 PR1) are added here, not to a
-  // parallel job-type list, so `regenerate()` can enqueue them through the
-  // one generic mechanism every narrative stage already uses. Each has no
-  // `STAGE_HANDLERS` entry yet — PR2+ scope — so the worker refuses one if
-  // it is ever claimed, the same way it refuses any other unimplemented type.
-  ...DEV_ARTIFACT_STAGES,
+  // The Development chain's stages are added here, not to a parallel
+  // job-type list, so `regenerate()` can enqueue them through the one
+  // generic mechanism every narrative stage already uses. `DEV_CHAIN_STAGES`
+  // (M7 PR2) rather than `DEV_ARTIFACT_STAGES` (M7 PR1) — "characters" and
+  // "world_building" need job types too, even though they aren't
+  // `dev_artifacts` rows. beat_sheet onward still has no `STAGE_HANDLERS`
+  // entry — PR3+ scope — so the worker refuses one if it is ever claimed, the
+  // same way it refuses any other unimplemented type.
+  ...DEV_CHAIN_STAGES,
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];
 
@@ -637,6 +790,7 @@ export const schema = {
   voiceStyles,
   imageStyles,
   captionStyles,
+  directionStyles,
   projects,
   characters,
   scenes,
@@ -645,6 +799,9 @@ export const schema = {
   subtitleCues,
   renders,
   devArtifacts,
+  worldBuilding,
+  locations,
+  props,
   assets,
   jobs,
   jobLogs,

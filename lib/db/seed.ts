@@ -4,6 +4,7 @@ import { runMigrations } from "./migrate";
 import { resolveConfig } from "../config";
 import {
   captionStyles,
+  directionStyles,
   imageStyles,
   narrativeStyles,
   preferences,
@@ -190,6 +191,37 @@ const IMAGE_STYLES = [
   },
 ];
 
+// M7 PR2. Text register only (ADR 0002) — genre/tone/pacing for the
+// Development chain's writer stages. See the field-level comment on
+// `directionStyles` in lib/db/schema.ts for why this must stay out of any
+// image-generation prompt path.
+const DIRECTION_STYLES = [
+  {
+    name: "Feature Drama",
+    description: "Character-led, patient pacing. A default that suits most single-story projects.",
+    genreGuidance:
+      "Contemporary character drama. Grounded stakes — relationships, ambition, consequence — " +
+      "rather than genre trappings like crime or fantasy machinery.",
+    toneGuidance:
+      "Sincere and specific. Earn emotion through concrete detail and behaviour, not stated feeling. " +
+      "Restraint over melodrama.",
+    pacingGuidance:
+      "Patient in the first act, tightening through the second. Let scenes breathe where the " +
+      "relationship is doing the work; cut faster once the plot is moving.",
+  },
+  {
+    name: "Genre Thriller",
+    description: "Plot-forward, escalating stakes. Suits crime, conspiracy and pursuit premises.",
+    genreGuidance:
+      "Thriller mechanics: a ticking clock, an information asymmetry, a protagonist working against " +
+      "both the antagonist and the truth.",
+    toneGuidance: "Tense, controlled, a little cold. Withhold rather than explain; let dread accumulate.",
+    pacingGuidance:
+      "Fast from the inciting incident. Short scenes, hard cuts at the peak of a beat rather than its " +
+      "resolution. Structure toward reversals, not toward comfort.",
+  },
+];
+
 const CAPTION_STYLES = [
   {
     name: "Standard",
@@ -338,6 +370,13 @@ export function seed(db: Db): { inserted: Record<string, number> } {
     .returning({ id: captionStyles.id })
     .all().length;
 
+  inserted.directionStyles = db
+    .insert(directionStyles)
+    .values(DIRECTION_STYLES.map((s) => ({ ...s, isBuiltin: true })))
+    .onConflictDoNothing()
+    .returning({ id: directionStyles.id })
+    .all().length;
+
   const config = resolveConfig();
   const existingProviders = db.select({ kind: providers.kind }).from(providers).all();
   const haveKinds = new Set(existingProviders.map((p) => p.kind));
@@ -361,6 +400,7 @@ export function seed(db: Db): { inserted: Record<string, number> } {
       { key: "defaultVoiceStyle", value: VOICE_STYLES[0]!.name },
       { key: "defaultImageStyle", value: IMAGE_STYLES[0]!.name },
       { key: "defaultCaptionStyle", value: CAPTION_STYLES[0]!.name },
+      { key: "defaultDirectionStyle", value: DIRECTION_STYLES[0]!.name },
       { key: "defaultMode", value: "auto" },
     ])
     .onConflictDoNothing()

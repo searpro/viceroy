@@ -2,26 +2,31 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTestDb } from "./db/testing";
 import { seed } from "./db/seed";
 import type { Db } from "./db/client";
-import { narrativeStyles, voiceStyles, imageStyles, captionStyles } from "./db/schema";
+import { narrativeStyles, voiceStyles, imageStyles, captionStyles, directionStyles } from "./db/schema";
 import { createProject } from "./projects";
 import {
   captionStyleSchema,
   createCaptionStyle,
+  createDirectionStyle,
   createImageStyle,
   createNarrativeStyle,
   createVoiceStyle,
   deleteCaptionStyle,
+  deleteDirectionStyle,
   deleteImageStyle,
   deleteNarrativeStyle,
   deleteVoiceStyle,
+  directionStyleSchema,
   imageStylePatchSchema,
   imageStyleSchema,
   listCaptionStyles,
+  listDirectionStyles,
   listImageStyles,
   listNarrativeStyles,
   listVoiceStyles,
   narrativeStyleSchema,
   updateCaptionStyle,
+  updateDirectionStyle,
   updateImageStyle,
   updateNarrativeStyle,
   updateVoiceStyle,
@@ -60,6 +65,14 @@ const IMAGE_INPUT = {
   description: "d",
   promptPrefix: "photo, ",
   promptSuffix: ", 35mm",
+};
+
+const DIRECTION_INPUT = {
+  name: "Custom direction",
+  description: "d",
+  genreGuidance: "grounded drama",
+  toneGuidance: "sincere",
+  pacingGuidance: "patient",
 };
 
 const CAPTION_INPUT = {
@@ -252,5 +265,55 @@ describe("caption styles", () => {
     const updated = updateCaptionStyle(db, created.id, patch);
     expect(updated.fontSize).toBe(CAPTION_INPUT.fontSize);
     expect(updated.bottomOffset).toBe(CAPTION_INPUT.bottomOffset);
+  });
+});
+
+describe("direction styles", () => {
+  it("creates, lists and updates a custom style", () => {
+    const created = createDirectionStyle(db, DIRECTION_INPUT);
+    expect(listDirectionStyles(db).map((s) => s.id)).toContain(created.id);
+
+    const updated = updateDirectionStyle(db, created.id, { toneGuidance: "wry" });
+    expect(updated.toneGuidance).toBe("wry");
+    expect(updated.genreGuidance).toBe(DIRECTION_INPUT.genreGuidance);
+  });
+
+  it("refuses to delete a built-in style", () => {
+    const builtin = db.select().from(directionStyles).all().find((s) => s.isBuiltin)!;
+    expect(() => deleteDirectionStyle(db, builtin.id)).toThrow(/built-in/);
+  });
+
+  it("deletes a custom style that nothing references", () => {
+    const created = createDirectionStyle(db, DIRECTION_INPUT);
+    deleteDirectionStyle(db, created.id);
+    expect(listDirectionStyles(db).map((s) => s.id)).not.toContain(created.id);
+  });
+
+  it("refuses to delete a style a project depends on", () => {
+    const created = createDirectionStyle(db, DIRECTION_INPUT);
+    createProject(db, {
+      idea: "a plumber became mayor by wits",
+      format: "short_movie",
+      directionStyleId: created.id,
+    });
+    expect(() => deleteDirectionStyle(db, created.id)).toThrow(/used by an existing project/);
+  });
+
+  it("does not have the .partial() schema inject defaults on an omitted patch field", () => {
+    const patch = directionStyleSchema.partial().parse({ description: "changed only" });
+    expect(patch).not.toHaveProperty("genreGuidance");
+    expect(patch).not.toHaveProperty("pacingGuidance");
+
+    const created = createDirectionStyle(db, DIRECTION_INPUT);
+    const updated = updateDirectionStyle(db, created.id, patch);
+    expect(updated.genreGuidance).toBe(DIRECTION_INPUT.genreGuidance);
+    expect(updated.pacingGuidance).toBe(DIRECTION_INPUT.pacingGuidance);
+  });
+
+  // A narrative-format project (the default) never resolves a direction
+  // style at all — only the Development chain reads one.
+  it("is not resolved for a short_video_narrative project", () => {
+    const project = createProject(db, { idea: "a plumber became mayor by wits" });
+    expect(project.directionStyleId).toBeNull();
   });
 });

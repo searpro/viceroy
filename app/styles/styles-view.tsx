@@ -37,6 +37,16 @@ type ImageStyle = {
   isBuiltin: boolean;
 };
 
+type DirectionStyle = {
+  id: string;
+  name: string;
+  description: string;
+  genreGuidance: string;
+  toneGuidance: string;
+  pacingGuidance: string;
+  isBuiltin: boolean;
+};
+
 type CaptionStyle = {
   id: string;
   name: string;
@@ -57,6 +67,7 @@ const TABS = [
   { key: "voice", label: "Voice" },
   { key: "image", label: "Image" },
   { key: "caption", label: "Caption" },
+  { key: "direction", label: "Direction" },
 ] as const;
 type Tab = (typeof TABS)[number]["key"];
 
@@ -65,17 +76,20 @@ export function StylesView({
   voiceStyles,
   imageStyles,
   captionStyles,
+  directionStyles,
 }: {
   narrativeStyles: NarrativeStyle[];
   voiceStyles: VoiceStyle[];
   imageStyles: ImageStyle[];
   captionStyles: CaptionStyle[];
+  directionStyles: DirectionStyle[];
 }) {
   const [tab, setTab] = useState<Tab>("narrative");
   const [narrative, setNarrative] = useState(narrativeStyles);
   const [voice, setVoice] = useState(voiceStyles);
   const [image, setImage] = useState(imageStyles);
   const [caption, setCaption] = useState(captionStyles);
+  const [direction, setDirection] = useState(directionStyles);
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-14">
@@ -85,8 +99,8 @@ export function StylesView({
 
       <h1 className="mt-4 text-2xl font-semibold tracking-tight">Styles</h1>
       <p className="mt-2 text-sm text-white/45">
-        Narrative, voice, image and caption styles a project can be built with. Built-in styles
-        can be edited but not deleted.
+        Narrative, voice, image, caption and direction styles a project can be built with.
+        Built-in styles can be edited but not deleted.
       </p>
 
       <nav className="mt-6 flex gap-1 border-b border-white/10">
@@ -110,6 +124,7 @@ export function StylesView({
         {tab === "voice" && <VoiceTab styles={voice} onChange={setVoice} />}
         {tab === "image" && <ImageTab styles={image} onChange={setImage} />}
         {tab === "caption" && <CaptionTab styles={caption} onChange={setCaption} />}
+        {tab === "direction" && <DirectionTab styles={direction} onChange={setDirection} />}
       </div>
     </main>
   );
@@ -1070,6 +1085,214 @@ function CaptionCard({
             </button>
           </div>
           <CaptionPreviewPlayer captionStyle={form} />
+        </div>
+      )}
+      {!editing && error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------- direction */
+
+const EMPTY_DIRECTION = {
+  name: "",
+  description: "",
+  genreGuidance: "",
+  toneGuidance: "",
+  pacingGuidance: "",
+};
+
+function DirectionTab({
+  styles,
+  onChange,
+}: {
+  styles: DirectionStyle[];
+  onChange: (styles: DirectionStyle[]) => void;
+}) {
+  const [form, setForm] = useState(EMPTY_DIRECTION);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function create() {
+    setBusy(true);
+    setError(null);
+    const response = await fetch("/api/styles/direction", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setError(body.error ?? "Could not create style");
+    } else {
+      onChange([...styles, body.style]);
+      setForm(EMPTY_DIRECTION);
+    }
+    setBusy(false);
+  }
+
+  async function save(id: string, patch: Partial<DirectionStyle>): Promise<string | null> {
+    const response = await fetch(`/api/styles/direction/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const body = await response.json();
+    if (!response.ok) return body.error ?? "Could not save";
+    onChange(styles.map((s) => (s.id === id ? body.style : s)));
+    return null;
+  }
+
+  async function remove(id: string): Promise<string | null> {
+    const response = await fetch(`/api/styles/direction/${id}`, { method: "DELETE" });
+    if (response.status === 204) {
+      onChange(styles.filter((s) => s.id !== id));
+      return null;
+    }
+    const body = await response.json().catch(() => ({}));
+    return body.error ?? "Could not delete";
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-white/40">
+        Genre, tone and pacing guidance for the Development chain's writer stages (concept
+        through story structure). Text register only — never reaches an image prompt.
+      </p>
+      {styles.map((style) => (
+        <DirectionCard key={style.id} style={style} onSave={save} onDelete={remove} />
+      ))}
+
+      <section className="rounded-lg border border-white/10 bg-white/[0.02] p-4">
+        <h2 className="text-sm font-medium uppercase tracking-wide text-white/40">
+          New direction style
+        </h2>
+        <div className="mt-3 space-y-2">
+          <Field label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
+          <Field
+            label="Description"
+            value={form.description}
+            onChange={(v) => setForm({ ...form, description: v })}
+          />
+          <Field
+            label="Genre guidance"
+            value={form.genreGuidance}
+            onChange={(v) => setForm({ ...form, genreGuidance: v })}
+            multiline
+          />
+          <Field
+            label="Tone guidance"
+            value={form.toneGuidance}
+            onChange={(v) => setForm({ ...form, toneGuidance: v })}
+            multiline
+          />
+          <Field
+            label="Pacing guidance"
+            value={form.pacingGuidance}
+            onChange={(v) => setForm({ ...form, pacingGuidance: v })}
+            multiline
+          />
+        </div>
+        {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+        <button
+          onClick={create}
+          disabled={busy || !form.name}
+          className="mt-3 rounded-md bg-amber-400 px-3 py-1.5 text-xs font-medium text-black transition hover:bg-amber-300 disabled:opacity-40"
+        >
+          Create
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function DirectionCard({
+  style,
+  onSave,
+  onDelete,
+}: {
+  style: DirectionStyle;
+  onSave: (id: string, patch: Partial<DirectionStyle>) => Promise<string | null>;
+  onDelete: (id: string) => Promise<string | null>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    name: style.name,
+    description: style.description,
+    genreGuidance: style.genreGuidance,
+    toneGuidance: style.toneGuidance,
+    pacingGuidance: style.pacingGuidance,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    const err = await onSave(style.id, form);
+    setError(err);
+    setBusy(false);
+    if (!err) setEditing(false);
+  }
+
+  async function remove() {
+    setBusy(true);
+    setError(await onDelete(style.id));
+    setBusy(false);
+  }
+
+  return (
+    <section className="rounded-lg border border-white/10 bg-white/[0.02] p-4">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-sm font-medium">
+          {style.name} {style.isBuiltin && <span className="text-xs text-white/35">built-in</span>}
+        </h3>
+        <div className="flex gap-3 text-xs text-white/40">
+          <button onClick={() => setEditing((v) => !v)} className="hover:text-amber-300">
+            {editing ? "cancel" : "edit"}
+          </button>
+          {!style.isBuiltin && (
+            <button onClick={remove} disabled={busy} className="hover:text-red-300">
+              delete
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="mt-1 text-xs text-white/50">{style.description}</p>
+
+      {editing && (
+        <div className="mt-3 space-y-2 border-t border-white/5 pt-3">
+          <Field label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
+          <Field
+            label="Description"
+            value={form.description}
+            onChange={(v) => setForm({ ...form, description: v })}
+          />
+          <Field
+            label="Genre guidance"
+            value={form.genreGuidance}
+            onChange={(v) => setForm({ ...form, genreGuidance: v })}
+            multiline
+          />
+          <Field
+            label="Tone guidance"
+            value={form.toneGuidance}
+            onChange={(v) => setForm({ ...form, toneGuidance: v })}
+            multiline
+          />
+          <Field
+            label="Pacing guidance"
+            value={form.pacingGuidance}
+            onChange={(v) => setForm({ ...form, pacingGuidance: v })}
+            multiline
+          />
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          <button
+            onClick={save}
+            disabled={busy}
+            className="rounded-md border border-white/15 px-3 py-1.5 text-xs transition hover:border-white/35 disabled:opacity-40"
+          >
+            Save
+          </button>
         </div>
       )}
       {!editing && error && <p className="mt-2 text-xs text-red-400">{error}</p>}

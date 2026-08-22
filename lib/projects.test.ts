@@ -476,11 +476,13 @@ describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", ()
     expect(targets).toEqual(chain);
   });
 
-  it("includes all eight dev-artifact stages in DEV_ARTIFACT_STAGES order", () => {
-    const devStages = INVALIDATION_CHAIN.slice(INVALIDATION_CHAIN.length - 8);
+  it("includes all ten Development-chain stages in DEV_CHAIN_STAGES order", () => {
+    const devStages = INVALIDATION_CHAIN.slice(INVALIDATION_CHAIN.length - 10);
     expect(devStages).toEqual([
       "concept",
       "logline",
+      "characters",
+      "world_building",
       "story_structure",
       "beat_sheet",
       "treatment",

@@ -5,19 +5,23 @@ import type { Db } from "./db/client";
 import {
   captionStyles,
   characters,
-  DEV_ARTIFACT_STAGES,
+  DEV_CHAIN_STAGES,
   devArtifacts,
+  directionStyles,
   evaluations,
   imageStyles,
+  locations,
   narrativeStyles,
   preferences,
   PROJECT_FORMATS,
   projects,
+  props,
   renders,
   scenes,
   subtitleCues,
   voiceovers,
   voiceStyles,
+  worldBuilding,
   type DevArtifactStage,
 } from "./db/schema";
 import { enqueue, listJobs } from "./queue";
@@ -42,6 +46,7 @@ export const createProjectSchema = z
     voiceStyleId: z.string().optional(),
     imageStyleId: z.string().optional(),
     captionStyleId: z.string().optional(),
+    directionStyleId: z.string().optional(),
     resolutionKey: z.enum(RESOLUTION_KEYS).optional(),
     mode: z.enum(["auto", "manual"]).default("auto"),
   })
@@ -129,6 +134,19 @@ export function createProject(db: Db, raw: CreateProjectInput) {
     preferenceValue(db, "defaultCaptionStyle"),
     "caption style",
   );
+  // Only the Development chain (M7 PR2) reads a direction style — the
+  // narrative pipeline never does, so a narrative-format project leaves this
+  // null rather than forcing every existing caller to resolve a style it has
+  // no use for.
+  const direction =
+    input.format === "short_video_narrative"
+      ? undefined
+      : resolveStyle(
+          db.select().from(directionStyles).all(),
+          input.directionStyleId,
+          preferenceValue(db, "defaultDirectionStyle"),
+          "direction style",
+        );
   const resolution = resolvePresetDimensions(resolveConfig(), input.resolutionKey);
 
   // `idea` stays NOT NULL either way — rather than a nullability change, a
@@ -150,6 +168,7 @@ export function createProject(db: Db, raw: CreateProjectInput) {
       voiceStyleId: voice.id,
       imageStyleId: image.id,
       captionStyleId: caption.id,
+      directionStyleId: direction?.id,
       width: resolution.width,
       height: resolution.height,
     })
@@ -260,11 +279,14 @@ export const regenerateSchema = z.object({
     "voiceover",
     "subtitle_align",
     "render",
-    // The Development chain's stages (M7 PR1), in `DEV_ARTIFACT_STAGES`
-    // order. Valid only for a project whose format is not
-    // `short_video_narrative` — enforced in `regenerate` below, not here,
-    // since the schema alone doesn't know which project it's parsing for.
-    ...DEV_ARTIFACT_STAGES,
+    // The Development chain's stages, in `DEV_CHAIN_STAGES` order (M7 PR1
+    // laid out `DEV_ARTIFACT_STAGES`; PR2 adds "characters" and
+    // "world_building" between "logline" and "story_structure" — see
+    // `DEV_CHAIN_STAGES` in lib/db/schema.ts). Valid only for a project whose
+    // format is not `short_video_narrative` — enforced in `regenerate` below,
+    // not here, since the schema alone doesn't know which project it's
+    // parsing for.
+    ...DEV_CHAIN_STAGES,
   ]),
   direction: z.string().trim().max(2000).optional(),
   /** Voice-design cues, when re-narrating with a different delivery. */
@@ -294,12 +316,13 @@ export const INVALIDATION_CHAIN = [
   "voiceover",
   "subtitle_align",
   "render",
-  // The Development chain's stages (M7 PR1), appended in `DEV_ARTIFACT_STAGES`
-  // order. A project is only ever one format or the other, so in practice a
-  // redo only ever walks the half of this list its own format populated —
-  // but the two chains still share one array on purpose, per the type-safety
-  // trick this file is built around (see the comment above).
-  ...DEV_ARTIFACT_STAGES,
+  // The Development chain's stages, appended in `DEV_CHAIN_STAGES` order —
+  // the chain's full ten-stage ordering (M7 PR2), not just the eight that own
+  // a `dev_artifacts` row. A project is only ever one format or the other, so
+  // in practice a redo only ever walks the half of this list its own format
+  // populated — but the two chains still share one array on purpose, per the
+  // type-safety trick this file is built around (see the comment above).
+  ...DEV_CHAIN_STAGES,
 ] as const;
 
 type InvalidationStage = (typeof INVALIDATION_CHAIN)[number];
@@ -359,10 +382,33 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
   },
   // Every dev-artifact stage discards the same way: cleared, not deleted, so
   // `directionHistory` survives a redo (unlike the narrative stages above,
-  // there's no downstream row shape to also clean up yet — PR2+ builds the
+  // there's no downstream row shape to also clean up yet — PR3+ builds the
   // stages that would derive from these).
   concept: devArtifactDiscard("concept"),
   logline: devArtifactDiscard("logline"),
+  // Mirrors `elements` above: the whole cast is this stage's own output, so a
+  // redo clears it wholesale rather than leaving arcs/characters extracted
+  // from a concept/logline that redoing "characters" itself is about to
+  // replace. `charactersDirectionHistory` survives (see the schema comment),
+  // the same way `dev_artifacts.directionHistory` survives its own discard.
+  characters: (db, projectId) => {
+    db.delete(characters).where(eq(characters.projectId, projectId)).run();
+    db.update(projects).set({ charactersApprovedAt: null }).where(eq(projects.id, projectId)).run();
+  },
+  // ADR 0003's "scenes and cast are one unit" reasoning extends here: a world
+  // and the locations/props derived from it are one stage's output.
+  // Redoing "world_building" cascade-deletes `locations`/`props` along with
+  // the `world_building` row itself, consistent with `elements` clearing
+  // `scenes`+`characters` together above, rather than leaving locations that
+  // named a world this redo is about to replace.
+  world_building: (db, projectId) => {
+    db.delete(locations).where(eq(locations.projectId, projectId)).run();
+    db.delete(props).where(eq(props.projectId, projectId)).run();
+    db.update(worldBuilding)
+      .set({ content: "", approvedAt: null })
+      .where(eq(worldBuilding.projectId, projectId))
+      .run();
+  },
   story_structure: devArtifactDiscard("story_structure"),
   beat_sheet: devArtifactDiscard("beat_sheet"),
   treatment: devArtifactDiscard("treatment"),
@@ -413,7 +459,7 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
   // would enqueue a job type nothing in the narrative pipeline expects, and
   // clear a `dev_artifacts` row that project will never populate.
   if (
-    (DEV_ARTIFACT_STAGES as readonly string[]).includes(input.target) &&
+    (DEV_CHAIN_STAGES as readonly string[]).includes(input.target) &&
     project.format === "short_video_narrative"
   ) {
     throw new Error(

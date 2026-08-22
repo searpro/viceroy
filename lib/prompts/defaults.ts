@@ -56,6 +56,22 @@ const STORY_VARS = [
       "The source context text, pre-formatted with a heading, shown to the evaluator " +
       "only in Context mode; empty string otherwise",
   },
+  // Development chain (M7 PR2). Direction Style's fields — genre/tone/pacing
+  // guidance for the writer — never appear on any image-prompt template's
+  // variable list, only these text-register ones (ADR 0002).
+  { name: "genreGuidance", description: "The direction style's genre guidance" },
+  { name: "toneGuidance", description: "The direction style's tone guidance" },
+  { name: "pacingGuidance", description: "The direction style's pacing guidance" },
+  { name: "concept", description: "The Development chain's approved concept" },
+  { name: "logline", description: "The Development chain's approved logline" },
+  {
+    name: "castSummary",
+    description: "The Development chain's cast so far, as name + description + arc lines",
+  },
+  {
+    name: "worldSummary",
+    description: "The Development chain's world-building notes plus its locations and props",
+  },
 ];
 
 function pick(...names: string[]) {
@@ -460,5 +476,178 @@ what the array is for — the prompt itself describes them without naming them.`
     template: `{{characterDescription}}, centred head-and-shoulders portrait,
 neutral expression, facing camera, plain uncluttered background, evenly lit,
 full face clearly visible and unobstructed, no text or watermark`,
+  },
+  /* ------------------------------------------------------- Development (M7) */
+  // Each of these five is deliberately scoped to one stage's own output plus
+  // what immediately precedes it, not the whole chain's history — finding
+  // F10 measured the writer model's context preset at a fixed 4096 tokens, so
+  // a mega-prompt carrying concept+logline+cast+world in full would silently
+  // truncate the same way one whole-story `elements` call did.
+  {
+    key: "dev.concept",
+    section: "Development",
+    label: "Generate concept",
+    description: "Turns the user's one-line idea (or source material) into a one-paragraph concept.",
+    variables: pick("idea", "genreGuidance", "toneGuidance", "direction", "groundingInstruction"),
+    template: `You are developing a concept for a film or series in this direction:
+
+Genre: {{genreGuidance}}
+Tone: {{toneGuidance}}
+{{groundingInstruction}}
+{{direction}}
+
+Starting point:
+{{idea}}
+
+Write a one-paragraph concept (80-120 words) that:
+- names the central figure and their situation
+- states the premise's central tension or question
+- is specific enough to pitch, not a genre description
+
+No headings, no bullet points, no preamble. Output only the concept.`,
+  },
+  {
+    key: "dev.logline",
+    section: "Development",
+    label: "Generate logline",
+    description: "Compresses the approved concept into a single-sentence logline.",
+    variables: pick("concept", "genreGuidance", "toneGuidance", "direction"),
+    template: `You are writing a logline for this concept:
+
+{{concept}}
+
+Style guidance:
+Genre: {{genreGuidance}}
+Tone: {{toneGuidance}}
+{{direction}}
+
+Write ONE sentence (25-40 words) that names the protagonist, their goal, the
+obstacle, and what is at stake. No title, no genre label, no commentary.
+Output only the logline.`,
+  },
+  {
+    key: "dev.characters",
+    section: "Development",
+    label: "Extract characters and arcs",
+    description: "Invents the principal cast from the concept and logline, each with an arc.",
+    variables: pick("concept", "logline", "genreGuidance", "toneGuidance", "direction", "groundingInstruction"),
+    template: `Invent the principal cast for this project.
+
+Concept:
+{{concept}}
+
+Logline:
+{{logline}}
+
+Style guidance:
+Genre: {{genreGuidance}}
+Tone: {{toneGuidance}}
+{{groundingInstruction}}
+{{direction}}
+
+For each principal character, give:
+- a name
+- "description": who they are and what they want, one or two sentences
+- "arc": how they change from the start of the story to the end, one or two
+  sentences — not what happens to them, but how it changes them
+
+Respond with a single JSON object, no prose around it:
+
+{
+  "characters": [
+    { "name": "<name>", "description": "<who they are>", "arc": "<how they change>" }
+  ]
+}
+
+At most five characters. Every character must have all three fields.`,
+  },
+  {
+    key: "dev.world_building",
+    section: "Development",
+    label: "Build the world",
+    description:
+      "Writes the project's rules/tone/theme prose plus its locations and props, from the " +
+      "concept, logline and cast so far.",
+    variables: pick(
+      "concept",
+      "logline",
+      "castSummary",
+      "genreGuidance",
+      "toneGuidance",
+      "direction",
+      "groundingInstruction",
+    ),
+    template: `Build the world this project takes place in.
+
+Concept:
+{{concept}}
+
+Logline:
+{{logline}}
+
+Cast so far:
+{{castSummary}}
+
+Style guidance:
+Genre: {{genreGuidance}}
+Tone: {{toneGuidance}}
+{{groundingInstruction}}
+{{direction}}
+
+Respond with a single JSON object, no prose around it:
+
+{
+  "rules": "<the world's rules, tone and themes, in prose — NOT locations or props, 80-150 words>",
+  "locations": [
+    { "name": "<location>", "description": "<what it looks and feels like, one or two sentences>" }
+  ],
+  "props": [
+    { "name": "<prop>", "description": "<what it looks like and why it matters, one or two sentences>" }
+  ]
+}
+
+"rules" is prose about the world's internal logic, mood and themes — not a
+list of places or objects; those belong in "locations"/"props" instead. Up to
+six locations and six props, only ones that actually matter to this story.`,
+  },
+  {
+    key: "dev.story_structure",
+    section: "Development",
+    label: "Write story structure",
+    description: "Lays out the project's structure as a sequence of numbered story beats.",
+    variables: pick(
+      "concept",
+      "logline",
+      "castSummary",
+      "worldSummary",
+      "genreGuidance",
+      "pacingGuidance",
+      "direction",
+      "groundingInstruction",
+    ),
+    template: `Lay out the story structure for this project.
+
+Concept:
+{{concept}}
+
+Logline:
+{{logline}}
+
+Cast:
+{{castSummary}}
+
+World:
+{{worldSummary}}
+
+Style guidance:
+Genre: {{genreGuidance}}
+Pacing: {{pacingGuidance}}
+{{groundingInstruction}}
+{{direction}}
+
+Write the structure as 6-10 numbered beats, one line each, in the form
+"<n>. <what happens, and whose turn it is>". Cover setup through resolution;
+each beat must follow causally from the one before it. No headings, no
+commentary before or after the numbered list. Output only the numbered beats.`,
   },
 ];

@@ -14,6 +14,17 @@ export const PREFERENCE_KEYS = [
   "defaultImageStyle",
   "defaultCaptionStyle",
   "defaultMode",
+  // M7 PR2.
+  "defaultDirectionStyle",
+  // A provider *id*, not a name — unlike the style defaults above, "which
+  // provider" is not unique by name (two "llm" rows can share one), and this
+  // has to pick one specific row rather than resolve one by kind the way
+  // `resolveProvider` already does. Distinct from any per-kind default: the
+  // Development chain's ten stages (M7) all point at one designated
+  // high-quality provider, deliberately not the fast/cheap one the narrative
+  // pipeline's own LLM stages use. See `resolveDevProvider` in
+  // lib/pipeline/context.ts.
+  "defaultDevLlmProvider",
 ] as const;
 export type PreferenceKey = (typeof PREFERENCE_KEYS)[number];
 

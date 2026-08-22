@@ -3,8 +3,10 @@ import type { Config } from "../config";
 import type { Db } from "../db/client";
 import {
   captionStyles,
+  directionStyles,
   imageStyles,
   narrativeStyles,
+  preferences,
   projects,
   providers,
   voiceStyles,
@@ -61,6 +63,10 @@ export type ProjectBundle = {
   // before captionStyleId existed has no way to have one set. render.ts
   // falls back to DEFAULT_CAPTION_STYLE when this is undefined.
   captionStyle: typeof captionStyles.$inferSelect | undefined;
+  // Optional for the same reason: only the Development chain's stages (M7
+  // PR2) read this, and a narrative-format project has no reason to have one
+  // set. A dev-chain stage that needs it checks for `undefined` itself.
+  directionStyle: typeof directionStyles.$inferSelect | undefined;
 };
 
 /**
@@ -87,6 +93,9 @@ export function loadProject(db: Db, projectId: string): ProjectBundle {
   const captionStyle = project.captionStyleId
     ? db.select().from(captionStyles).where(eq(captionStyles.id, project.captionStyleId)).get()
     : undefined;
+  const directionStyle = project.directionStyleId
+    ? db.select().from(directionStyles).where(eq(directionStyles.id, project.directionStyleId)).get()
+    : undefined;
 
   const missing = [
     !narrativeStyle && "narrative style",
@@ -103,7 +112,19 @@ export function loadProject(db: Db, projectId: string): ProjectBundle {
     voiceStyle: voiceStyle!,
     imageStyle: imageStyle!,
     captionStyle,
+    directionStyle,
   };
+}
+
+/**
+ * `loadProject`'s Development-chain counterpart: requires a direction style,
+ * the way `loadProject` requires the narrative/voice/image triple.
+ */
+export function requireDirectionStyle(bundle: ProjectBundle): typeof directionStyles.$inferSelect {
+  if (!bundle.directionStyle) {
+    throw new Error(`Project ${bundle.project.id} has no direction style`);
+  }
+  return bundle.directionStyle;
 }
 
 export function requireProjectId(job: Job): string {
@@ -121,6 +142,32 @@ export function resolveProvider(db: Db, kind: ProviderKind) {
 
   if (!provider) throw new Error(`No ${kind} provider configured`);
   return provider;
+}
+
+/**
+ * The Development chain's own provider (M7 PR2).
+ *
+ * All ten dev-chain stages point at one designated high-quality provider —
+ * deliberately not per-stage model selection, and deliberately not the
+ * fast/cheap "llm" default the narrative pipeline's synopsis/story/elements
+ * stages use (see the M7 detail page's Model strategy section). Reuses the
+ * existing provider registry rather than inventing a second one: the
+ * preference just names which "llm" row to prefer.
+ *
+ * Falls back to the ordinary default "llm" provider when the preference is
+ * unset, or when it names a provider that no longer exists (deleted, or never
+ * configured) — a dev-tier project must not be unable to run at all just
+ * because nobody has visited the Preferences screen yet.
+ */
+export function resolveDevProvider(db: Db) {
+  const row = db.select().from(preferences).where(eq(preferences.key, "defaultDevLlmProvider")).get();
+  const providerId = typeof row?.value === "string" ? row.value : undefined;
+
+  const preferred = providerId
+    ? db.select().from(providers).where(and(eq(providers.id, providerId), eq(providers.kind, "llm"))).get()
+    : undefined;
+
+  return preferred ?? resolveProvider(db, "llm");
 }
 
 export function setStage(db: Db, projectId: string, stage: ProjectStage): void {

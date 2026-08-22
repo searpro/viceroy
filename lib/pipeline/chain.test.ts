@@ -13,6 +13,7 @@ import {
   scenes,
   subtitleCues,
   voiceovers,
+  worldBuilding,
 } from "../db/schema";
 import { claim, enqueue, listJobs, succeed } from "../queue";
 import { createProject } from "../projects";
@@ -311,9 +312,15 @@ describe("nextStep — Development chain", () => {
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept" });
   });
 
+  // M7 PR2: "characters" and "world_building" now sit between "logline" and
+  // "story_structure" in the chain (see `DEV_CHAIN_STAGES`) but aren't
+  // `dev_artifacts` rows — they're approved via `charactersApprovedAt` and
+  // `world_building.approvedAt` respectively, so this test approves those two
+  // stages by their own mechanism rather than inserting a `dev_artifacts` row
+  // for them.
   it("reports complete once every stage has an approved row", () => {
     const project = newDevProject();
-    const stages = [
+    const artifactStages = [
       "concept",
       "logline",
       "story_structure",
@@ -323,11 +330,16 @@ describe("nextStep — Development chain", () => {
       "screenplay_revision",
       "story_bible",
     ] as const;
-    for (const stage of stages) {
+    for (const stage of artifactStages) {
       db.insert(devArtifacts)
         .values({ projectId: project.id, stage, content: "c", approvedAt: new Date() })
         .run();
     }
+    db.insert(characters).values({ projectId: project.id, name: "Hal", description: "d" }).run();
+    db.update(projects).set({ charactersApprovedAt: new Date() }).where(eq(projects.id, project.id)).run();
+    db.insert(worldBuilding)
+      .values({ projectId: project.id, content: "w", approvedAt: new Date() })
+      .run();
 
     expect(nextStep(db, project.id)).toMatchObject({
       kind: "complete",

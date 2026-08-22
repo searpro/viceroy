@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "./db/client";
-import { captionStyles, imageStyles, narrativeStyles, voiceStyles } from "./db/schema";
+import { captionStyles, directionStyles, imageStyles, narrativeStyles, voiceStyles } from "./db/schema";
 
 export const narrativeStyleSchema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -29,6 +29,21 @@ export const voiceStyleSchema = z.object({
   deliveryCues: z.string().trim().min(1),
 });
 export type VoiceStyleInput = z.infer<typeof voiceStyleSchema>;
+
+// Text register only (ADR 0002): genre/tone/pacing prose for the Development
+// chain's writer, in place of a narrative style's `sceneGuidance`/checklist —
+// Direction Style has no world-of-the-story or evaluation concept of its own,
+// only guidance about how the writing itself should read. See the field-level
+// comment on `directionStyles` in lib/db/schema.ts for why this must never be
+// referenced from an image-generation prompt path.
+export const directionStyleSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  description: z.string().trim().min(1),
+  genreGuidance: z.string().trim().min(1),
+  toneGuidance: z.string().trim().min(1),
+  pacingGuidance: z.string().trim().min(1),
+});
+export type DirectionStyleInput = z.infer<typeof directionStyleSchema>;
 
 /**
  * A diffusion prompt has no "not".
@@ -184,6 +199,33 @@ export function deleteImageStyle(db: Db, id: string): void {
   }
   try {
     db.delete(imageStyles).where(eq(imageStyles.id, id)).run();
+  } catch (error) {
+    if (isForeignKeyError(error)) {
+      throw new Error(`Cannot delete "${existing.name}" — it is used by an existing project`);
+    }
+    throw error;
+  }
+}
+
+export function listDirectionStyles(db: Db) {
+  return db.select().from(directionStyles).all();
+}
+export function createDirectionStyle(db: Db, input: DirectionStyleInput) {
+  return db.insert(directionStyles).values(input).returning().get();
+}
+export function updateDirectionStyle(db: Db, id: string, input: Partial<DirectionStyleInput>) {
+  const existing = db.select().from(directionStyles).where(eq(directionStyles.id, id)).get();
+  if (!existing) throw new Error("No such direction style");
+  return db.update(directionStyles).set(input).where(eq(directionStyles.id, id)).returning().get();
+}
+export function deleteDirectionStyle(db: Db, id: string): void {
+  const existing = db.select().from(directionStyles).where(eq(directionStyles.id, id)).get();
+  if (!existing) throw new Error("No such direction style");
+  if (existing.isBuiltin) {
+    throw new Error(`Cannot delete the built-in direction style "${existing.name}"`);
+  }
+  try {
+    db.delete(directionStyles).where(eq(directionStyles.id, id)).run();
   } catch (error) {
     if (isForeignKeyError(error)) {
       throw new Error(`Cannot delete "${existing.name}" — it is used by an existing project`);

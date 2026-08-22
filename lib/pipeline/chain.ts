@@ -1,8 +1,8 @@
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client";
 import {
   characters,
-  DEV_ARTIFACT_STAGES,
+  DEV_CHAIN_STAGES,
   devArtifacts,
   evaluations,
   projects,
@@ -10,14 +10,19 @@ import {
   scenes,
   subtitleCues,
   voiceovers,
-  type DevArtifactStage,
+  worldBuilding,
+  type DevChainStage,
   type JobType,
 } from "../db/schema";
 import { enqueue, listJobs } from "../queue";
 
 export type NextStep =
   | { kind: "run"; type: JobType; reason: string }
-  | { kind: "dev"; stage: DevArtifactStage; reason: string }
+  // `needsApproval` distinguishes "nothing generated for this stage yet" from
+  // "a draft exists but hasn't been approved" — `advance` needs to tell those
+  // apart to decide whether the right move is to enqueue generation or to
+  // approve what's already there and move on. See `advance` below.
+  | { kind: "dev"; stage: DevChainStage; needsApproval: boolean; reason: string }
   | { kind: "complete"; reason: string };
 
 /**
@@ -102,32 +107,68 @@ export function nextStep(db: Db, projectId: string): NextStep {
   return { kind: "complete", reason: "the video is rendered" };
 }
 
+type DevStageStatus = "empty" | "pending" | "approved";
+
 /**
- * `nextStep`'s Development-chain counterpart, walking `DEV_ARTIFACT_STAGES`
- * in order exactly the way `nextStep` walks its own stage sequence: the
- * first stage with no approved `dev_artifacts` row is next. A stage can have
- * several versions (each redo is a new one, per ADR 0003's "leave the redone
- * stage's own output alone" — see `invalidateDownstreamOf`), so "approved"
- * means *some* version of it is, not the latest one specifically.
+ * Where one dev-chain stage stands.
  *
- * PR1 only builds this far: no stage has generation logic yet, so a fresh
- * dev-format project always lands on "concept". PR5 is what makes the
- * terminal `complete` below reachable.
+ * "empty" (nothing generated), "pending" (a draft exists but hasn't been
+ * approved) and "approved" collapse three different row shapes — a
+ * `dev_artifacts` row, a `characters`+`charactersApprovedAt` pair, or a
+ * `world_building` row — into the one three-way answer `devNextStep` and
+ * `advance` both need, without either of them caring which of the three a
+ * given stage actually is.
+ */
+function devStageStatus(db: Db, projectId: string, stage: DevChainStage): DevStageStatus {
+  if (stage === "characters") {
+    // A cast with no characters is legitimate for the narrative pipeline
+    // (some narration depicts nobody) but not here: this stage's whole job is
+    // to invent the cast, so no rows at all means it hasn't run yet.
+    const cast = db.select().from(characters).where(eq(characters.projectId, projectId)).all();
+    if (cast.length === 0) return "empty";
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+    return project?.charactersApprovedAt ? "approved" : "pending";
+  }
+
+  if (stage === "world_building") {
+    const row = db.select().from(worldBuilding).where(eq(worldBuilding.projectId, projectId)).get();
+    if (!row || !row.content) return "empty";
+    return row.approvedAt ? "approved" : "pending";
+  }
+
+  const latest = db
+    .select()
+    .from(devArtifacts)
+    .where(and(eq(devArtifacts.projectId, projectId), eq(devArtifacts.stage, stage)))
+    .orderBy(desc(devArtifacts.version))
+    .get();
+  if (!latest || !latest.content) return "empty";
+  return latest.approvedAt ? "approved" : "pending";
+}
+
+/**
+ * `nextStep`'s Development-chain counterpart, walking `DEV_CHAIN_STAGES` in
+ * order exactly the way `nextStep` walks its own stage sequence: the first
+ * stage that isn't approved is next, whichever of the three row shapes
+ * `devStageStatus` finds it in. A `dev_artifacts` stage can have several
+ * versions (each redo is a new one, per ADR 0003's "leave the redone stage's
+ * own output alone" — see `invalidateDownstreamOf`), so "approved" means the
+ * *latest* version is, which is what `devStageStatus` checks.
+ *
+ * Only PR2's five stages (concept through story_structure) have generation
+ * logic; PR3+ is what makes the terminal `complete` below reachable.
  */
 function devNextStep(db: Db, projectId: string): NextStep {
-  for (const stage of DEV_ARTIFACT_STAGES) {
-    const approved = db
-      .select()
-      .from(devArtifacts)
-      .where(
-        and(
-          eq(devArtifacts.projectId, projectId),
-          eq(devArtifacts.stage, stage),
-          isNotNull(devArtifacts.approvedAt),
-        ),
-      )
-      .get();
-    if (!approved) return { kind: "dev", stage, reason: `${stage} has not been approved yet` };
+  for (const stage of DEV_CHAIN_STAGES) {
+    const status = devStageStatus(db, projectId, stage);
+    if (status === "approved") continue;
+    return {
+      kind: "dev",
+      stage,
+      needsApproval: status === "pending",
+      reason:
+        status === "pending" ? `${stage} is waiting for review` : `${stage} has not been generated yet`,
+    };
   }
   return { kind: "complete", reason: "Development approved, ready for Preproduction" };
 }
@@ -158,6 +199,44 @@ export function isStalled(db: Db, projectId: string): boolean {
  * stalled project. It never guesses past a missing artifact — `nextStep` only
  * ever names work that is genuinely outstanding.
  */
+/**
+ * Mark a dev-chain stage's current draft approved, without touching its
+ * content — mirrors `dev_artifacts.approvedAt` for the two stages that aren't
+ * `dev_artifacts` rows (see `devStageStatus`). Idempotent: called only when
+ * `devStageStatus` has already reported "pending", but safe to call twice.
+ */
+function approveDevStage(db: Db, projectId: string, stage: DevChainStage): void {
+  if (stage === "characters") {
+    db.update(projects).set({ charactersApprovedAt: new Date() }).where(eq(projects.id, projectId)).run();
+    return;
+  }
+  if (stage === "world_building") {
+    db.update(worldBuilding)
+      .set({ approvedAt: new Date() })
+      .where(eq(worldBuilding.projectId, projectId))
+      .run();
+    return;
+  }
+  db.update(devArtifacts)
+    .set({ approvedAt: new Date() })
+    .where(and(eq(devArtifacts.projectId, projectId), eq(devArtifacts.stage, stage)))
+    .run();
+}
+
+/**
+ * Queue whatever comes next, and take the project off the review shelf.
+ *
+ * This is what "approve and continue" does in manual mode, and what rescues a
+ * stalled project. It never guesses past a missing artifact — `nextStep` only
+ * ever names work that is genuinely outstanding.
+ *
+ * For the Development chain (M7 PR2) "continue" does double duty, per the
+ * API route's own doc comment: if the next stage already has a draft waiting
+ * on review, this approves it first — that's the "approve" half — and only
+ * then re-derives what comes after and dispatches it, the same as any other
+ * outstanding work. A manual-mode dev project therefore advances one stage
+ * per click, exactly like the narrative pipeline's own manual mode.
+ */
 export function advance(db: Db, projectId: string): NextStep {
   const step = nextStep(db, projectId);
   if (step.kind === "complete") return step;
@@ -167,8 +246,16 @@ export function advance(db: Db, projectId: string): NextStep {
     .where(eq(projects.id, projectId))
     .run();
 
-  // A "dev" step has no generation logic to queue yet (PR2+ scope) — PR1
-  // only has to route to the right stage, not dispatch work for it.
-  if (step.kind === "run") enqueue(db, { type: step.type, projectId });
+  if (step.kind === "run") {
+    enqueue(db, { type: step.type, projectId });
+    return step;
+  }
+
+  if (step.needsApproval) {
+    approveDevStage(db, projectId, step.stage);
+    return advance(db, projectId);
+  }
+
+  enqueue(db, { type: step.stage, projectId });
   return step;
 }

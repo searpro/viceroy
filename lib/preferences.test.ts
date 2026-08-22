@@ -4,7 +4,7 @@ import { seed } from "./db/seed";
 import type { Db } from "./db/client";
 import { listPreferences, setPreference } from "./preferences";
 import { createProject } from "./projects";
-import { narrativeStyles } from "./db/schema";
+import { directionStyles, narrativeStyles } from "./db/schema";
 
 let db: Db;
 let close: () => void;
@@ -42,5 +42,22 @@ describe("setPreference", () => {
 
     const project = createProject(db, { idea: "a plumber became mayor by wits" });
     expect(project.narrativeStyleId).toBe(other.id);
+  });
+
+  // M7 PR2.
+  it("changes which direction style a new dev-format project resolves to by default", () => {
+    const other = db.select().from(directionStyles).all()[1]!;
+    setPreference(db, "defaultDirectionStyle", other.name);
+
+    const project = createProject(db, {
+      idea: "a plumber became mayor by wits",
+      format: "short_movie",
+    });
+    expect(project.directionStyleId).toBe(other.id);
+  });
+
+  it("accepts a defaultDevLlmProvider value (a provider id, not a name)", () => {
+    setPreference(db, "defaultDevLlmProvider", "some-provider-id");
+    expect(listPreferences(db).defaultDevLlmProvider).toBe("some-provider-id");
   });
 });

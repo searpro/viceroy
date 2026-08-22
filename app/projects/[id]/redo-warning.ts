@@ -17,13 +17,17 @@ export const REDO_CHAIN = [
   "voiceover",
   "subtitle_align",
   "render",
-  // The Development chain's stages (M7 PR1). No step component calls
-  // `describeRedoLoss`/`redoConfirmation` with one of these yet — PR1's
-  // `DevChainCard` has no redo affordance at all — but they're listed here
-  // anyway so this mirror of `INVALIDATION_CHAIN` stays exact rather than
-  // silently falling out of step the day a later PR does add one.
+  // The Development chain's stages, in `DEV_CHAIN_STAGES` order (M7 PR1 laid
+  // out the eight `dev_artifacts` ones; PR2 adds "characters" and
+  // "world_building" between "logline" and "story_structure"). No step
+  // component calls `describeRedoLoss`/`redoConfirmation` with one of these
+  // yet — `DevChainCard` has no redo affordance at all — but they're listed
+  // here anyway so this mirror of `INVALIDATION_CHAIN` stays exact rather
+  // than silently falling out of step the day a later PR does add one.
   "concept",
   "logline",
+  "characters",
+  "world_building",
   "story_structure",
   "beat_sheet",
   "treatment",
