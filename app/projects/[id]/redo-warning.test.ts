@@ -11,6 +11,7 @@ function detail(overrides: Partial<Detail> = {}): Detail {
       synopsis: "a synopsis",
       story: "a story",
       stage: "render",
+      format: "short_video_narrative",
       mode: "manual",
       awaitingReview: true,
       failureReason: null,

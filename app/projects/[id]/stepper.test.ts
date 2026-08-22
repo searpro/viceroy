@@ -10,6 +10,7 @@ function baseDetail(overrides: Partial<Detail> = {}): Detail {
       synopsis: null,
       story: null,
       stage: "draft",
+      format: "short_video_narrative",
       mode: "auto",
       awaitingReview: false,
       failureReason: null,

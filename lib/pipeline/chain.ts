@@ -1,19 +1,23 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import type { Db } from "../db/client";
 import {
   characters,
+  DEV_ARTIFACT_STAGES,
+  devArtifacts,
   evaluations,
   projects,
   renders,
   scenes,
   subtitleCues,
   voiceovers,
+  type DevArtifactStage,
   type JobType,
 } from "../db/schema";
 import { enqueue, listJobs } from "../queue";
 
 export type NextStep =
   | { kind: "run"; type: JobType; reason: string }
+  | { kind: "dev"; stage: DevArtifactStage; reason: string }
   | { kind: "complete"; reason: string };
 
 /**
@@ -32,6 +36,12 @@ export type NextStep =
 export function nextStep(db: Db, projectId: string): NextStep {
   const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
   if (!project) throw new Error(`No such project: ${projectId}`);
+
+  // `short_video_narrative` (and any row that predates this column) runs the
+  // body below completely unchanged — same code path, same jobs. Every other
+  // format is the Development chain's project, worked out from a different
+  // set of artifacts entirely.
+  if (project.format !== "short_video_narrative") return devNextStep(db, projectId);
 
   if (!project.synopsis) return { kind: "run", type: "synopsis", reason: "no synopsis yet" };
   if (!project.story) return { kind: "run", type: "story", reason: "no story yet" };
@@ -93,6 +103,36 @@ export function nextStep(db: Db, projectId: string): NextStep {
 }
 
 /**
+ * `nextStep`'s Development-chain counterpart, walking `DEV_ARTIFACT_STAGES`
+ * in order exactly the way `nextStep` walks its own stage sequence: the
+ * first stage with no approved `dev_artifacts` row is next. A stage can have
+ * several versions (each redo is a new one, per ADR 0003's "leave the redone
+ * stage's own output alone" — see `invalidateDownstreamOf`), so "approved"
+ * means *some* version of it is, not the latest one specifically.
+ *
+ * PR1 only builds this far: no stage has generation logic yet, so a fresh
+ * dev-format project always lands on "concept". PR5 is what makes the
+ * terminal `complete` below reachable.
+ */
+function devNextStep(db: Db, projectId: string): NextStep {
+  for (const stage of DEV_ARTIFACT_STAGES) {
+    const approved = db
+      .select()
+      .from(devArtifacts)
+      .where(
+        and(
+          eq(devArtifacts.projectId, projectId),
+          eq(devArtifacts.stage, stage),
+          isNotNull(devArtifacts.approvedAt),
+        ),
+      )
+      .get();
+    if (!approved) return { kind: "dev", stage, reason: `${stage} has not been approved yet` };
+  }
+  return { kind: "complete", reason: "Development approved, ready for Preproduction" };
+}
+
+/**
  * A project that will never move on its own.
  *
  * Nothing is queued or running for it, it is not parked for review, and it is
@@ -127,6 +167,8 @@ export function advance(db: Db, projectId: string): NextStep {
     .where(eq(projects.id, projectId))
     .run();
 
-  enqueue(db, { type: step.type, projectId });
+  // A "dev" step has no generation logic to queue yet (PR2+ scope) — PR1
+  // only has to route to the right stage, not dispatch work for it.
+  if (step.kind === "run") enqueue(db, { type: step.type, projectId });
   return step;
 }

@@ -3,9 +3,16 @@ import { eq } from "drizzle-orm";
 import { createTestDb } from "./db/testing";
 import { seed } from "./db/seed";
 import type { Db } from "./db/client";
-import { assets, characters, projects, renders, scenes, voiceovers } from "./db/schema";
+import { assets, characters, devArtifacts, projects, renders, scenes, voiceovers } from "./db/schema";
 import { listJobs } from "./queue";
-import { createProject, createProjectSchema, listAllJobs, regenerate } from "./projects";
+import {
+  createProject,
+  createProjectSchema,
+  INVALIDATION_CHAIN,
+  listAllJobs,
+  regenerate,
+  regenerateSchema,
+} from "./projects";
 
 let db: Db;
 let close: () => void;
@@ -324,6 +331,163 @@ describe("createProject — input modes", () => {
     expect(project.inputMode).toBe("idea");
     expect(project.context).toBeNull();
     expect(project.idea).toBe("a plumber became mayor by wits");
+  });
+});
+
+// M7 PR1: a project now says what kind of thing it's making.
+describe("createProjectSchema — format", () => {
+  it("defaults format to 'short_video_narrative' when omitted", () => {
+    const result = createProjectSchema.safeParse({ idea: "a plumber became mayor by wits" });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.format).toBe("short_video_narrative");
+  });
+
+  it("accepts an explicit dev-chain format", () => {
+    const result = createProjectSchema.safeParse({
+      idea: "a plumber became mayor by wits",
+      format: "short_movie",
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.format).toBe("short_movie");
+  });
+
+  it("rejects a format outside the six-value enum", () => {
+    const result = createProjectSchema.safeParse({
+      idea: "a plumber became mayor by wits",
+      format: "feature_length_epic",
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("createProject — format", () => {
+  // Acceptance criterion 2: the most important one. A project created with no
+  // `format` field, or an explicit `short_video_narrative`, must be
+  // byte-for-byte today's existing behaviour — the same synopsis job queued,
+  // same as every test above this one already assumes.
+  it("writes 'short_video_narrative' and queues a synopsis job when format is omitted", () => {
+    const project = createProject(db, { idea: "a plumber became mayor by wits" });
+
+    expect(project.format).toBe("short_video_narrative");
+    expect(listJobs(db, { projectId: project.id }).some((j) => j.type === "synopsis")).toBe(true);
+  });
+
+  it("writes the given format and queues nothing for a dev-chain format", () => {
+    const project = createProject(db, {
+      idea: "a plumber became mayor by wits",
+      format: "short_movie",
+    });
+
+    expect(project.format).toBe("short_movie");
+    expect(listJobs(db, { projectId: project.id })).toHaveLength(0);
+  });
+});
+
+// Acceptance criterion 3.
+describe("regenerate — dev-artifact target validation", () => {
+  it("rejects a dev-artifact target on a short_video_narrative project", () => {
+    const project = createProject(db, { idea: "a plumber became mayor by wits" });
+
+    expect(() => regenerate(db, project.id, { target: "concept" })).toThrow(
+      /not valid for a short_video_narrative project/,
+    );
+  });
+
+  it("accepts a dev-artifact target on a project running the Development chain", () => {
+    const project = createProject(db, {
+      idea: "a plumber became mayor by wits",
+      format: "short_movie",
+    });
+
+    expect(() => regenerate(db, project.id, { target: "concept" })).not.toThrow();
+    const job = listJobs(db, { projectId: project.id }).find((j) => j.type === "concept");
+    expect(job).toBeDefined();
+  });
+
+  it("clears approvedAt/content but keeps directionHistory when a dev stage is redone", () => {
+    const project = createProject(db, {
+      idea: "a plumber became mayor by wits",
+      format: "short_movie",
+    });
+    db.insert(devArtifacts)
+      .values({
+        projectId: project.id,
+        stage: "concept",
+        content: "an idea about a plumber",
+        approvedAt: new Date(),
+        directionHistory: ["make it funnier"],
+      })
+      .run();
+
+    regenerate(db, project.id, { target: "logline", direction: "sharpen the hook" });
+
+    const after = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()[0]!;
+    // "concept" precedes "logline" in DEV_ARTIFACT_STAGES/INVALIDATION_CHAIN,
+    // so redoing "logline" must leave "concept"'s own output alone — the same
+    // "does not reach back past the redone stage" rule the narrative chain
+    // tests above already cover.
+    expect(after.approvedAt).not.toBeNull();
+    expect(after.content).toBe("an idea about a plumber");
+  });
+
+  it("clears a downstream dev stage's approvedAt/content while keeping directionHistory", () => {
+    const project = createProject(db, {
+      idea: "a plumber became mayor by wits",
+      format: "short_movie",
+    });
+    db.insert(devArtifacts)
+      .values({
+        projectId: project.id,
+        stage: "logline",
+        content: "a plumber runs for mayor",
+        approvedAt: new Date(),
+        directionHistory: ["make it funnier"],
+      })
+      .run();
+
+    regenerate(db, project.id, { target: "concept", direction: "start over" });
+
+    const after = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()[0]!;
+    expect(after.approvedAt).toBeNull();
+    expect(after.content).toBe("");
+    expect(after.directionHistory).toEqual(["make it funnier"]);
+  });
+});
+
+// Acceptance criterion 4: adding a stage to `regenerateSchema` without an
+// `INVALIDATION_CHAIN` entry is a compile error (ADR 0003) — `DISCARD`'s type
+// forces every `INVALIDATION_CHAIN` entry to have a handler, and every value
+// passed to `invalidateDownstreamOf` has to be assignable to that same union.
+// This test can't observe a compile error at runtime, so it pins the
+// structural invariant that makes it one: the two lists name exactly the
+// same set of stages, dev-artifact stages included.
+describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", () => {
+  it("has one INVALIDATION_CHAIN entry per regenerateSchema target, and vice versa", () => {
+    const targets = [...regenerateSchema.shape.target.options].sort();
+    const chain = [...INVALIDATION_CHAIN].sort();
+    expect(targets).toEqual(chain);
+  });
+
+  it("includes all eight dev-artifact stages in DEV_ARTIFACT_STAGES order", () => {
+    const devStages = INVALIDATION_CHAIN.slice(INVALIDATION_CHAIN.length - 8);
+    expect(devStages).toEqual([
+      "concept",
+      "logline",
+      "story_structure",
+      "beat_sheet",
+      "treatment",
+      "screenplay",
+      "screenplay_revision",
+      "story_bible",
+    ]);
   });
 });
 

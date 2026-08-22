@@ -6,6 +6,18 @@ import { useState, useTransition } from "react";
 type Style = { id: string; name: string; description: string };
 type ResolutionPreset = { key: string; label: string };
 
+// Mirrors PROJECT_FORMATS in lib/db/schema.ts. `short_video_narrative` stays
+// first and is the <select>'s default, so a user who never touches this
+// control keeps starting today's narrative flow exactly as before.
+const PROJECT_FORMATS: { value: string; label: string }[] = [
+  { value: "short_video_narrative", label: "Short video (narrative slideshow)" },
+  { value: "short_movie", label: "Short movie" },
+  { value: "short_film", label: "Short film" },
+  { value: "short_series", label: "Short series" },
+  { value: "series", label: "Series" },
+  { value: "feature_film", label: "Feature film" },
+];
+
 // Mirrors CONTEXT_MAX in lib/projects.ts — a sane UX ceiling, not a measured
 // model token-budget limit. Enforced again server-side, since a client check
 // alone is not validation.
@@ -53,6 +65,7 @@ export function NewProjectForm({
         ...(inputMode === "context"
           ? { context: formData.get("context") }
           : { idea: formData.get("idea") }),
+        format: formData.get("format"),
         narrativeStyleId: formData.get("narrativeStyleId"),
         voiceStyleId: formData.get("voiceStyleId"),
         imageStyleId: formData.get("imageStyleId"),
@@ -152,6 +165,28 @@ export function NewProjectForm({
           </div>
         </div>
       )}
+
+      <div>
+        <label htmlFor="format" className="block text-sm font-medium">
+          Format
+        </label>
+        <select
+          id="format"
+          name="format"
+          defaultValue="short_video_narrative"
+          className="mt-2 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none focus:border-white/25 sm:w-72"
+        >
+          {PROJECT_FORMATS.map((format) => (
+            <option key={format.value} value={format.value} className="bg-neutral-900">
+              {format.label}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1.5 text-xs text-white/40">
+          Anything other than a short video runs the newer Development chain, which does not
+          generate anything yet.
+        </p>
+      </div>
 
       <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
         <Select

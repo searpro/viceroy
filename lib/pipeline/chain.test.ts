@@ -6,6 +6,7 @@ import type { Db } from "../db/client";
 import {
   assets,
   characters,
+  devArtifacts,
   evaluations,
   projects,
   renders,
@@ -272,5 +273,74 @@ describe("advance", () => {
 
     expect(advance(db, project.id).kind).toBe("complete");
     expect(listJobs(db, { projectId: project.id })).toHaveLength(before);
+  });
+});
+
+// M7 PR1 acceptance criterion 1: a fresh dev-format project's Development
+// chain is empty, so its first stage — "concept" — is what's next.
+describe("nextStep — Development chain", () => {
+  function newDevProject() {
+    const project = createProject(db, {
+      idea: "a plumber became mayor by wits",
+      format: "short_movie",
+    });
+    // A dev-format project queues nothing on creation (no generation logic
+    // exists yet); confirm the queue really is empty before asserting on it.
+    expect(listJobs(db, { projectId: project.id })).toHaveLength(0);
+    return project;
+  }
+
+  it("reports 'concept' for a freshly created project with no dev_artifacts rows", () => {
+    const project = newDevProject();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept" });
+  });
+
+  it("walks past approved stages to the first one without an approved row", () => {
+    const project = newDevProject();
+    db.insert(devArtifacts)
+      .values({ projectId: project.id, stage: "concept", content: "c", approvedAt: new Date() })
+      .run();
+
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "logline" });
+  });
+
+  it("does not treat an unapproved row as done", () => {
+    const project = newDevProject();
+    db.insert(devArtifacts).values({ projectId: project.id, stage: "concept", content: "c" }).run();
+
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept" });
+  });
+
+  it("reports complete once every stage has an approved row", () => {
+    const project = newDevProject();
+    const stages = [
+      "concept",
+      "logline",
+      "story_structure",
+      "beat_sheet",
+      "treatment",
+      "screenplay",
+      "screenplay_revision",
+      "story_bible",
+    ] as const;
+    for (const stage of stages) {
+      db.insert(devArtifacts)
+        .values({ projectId: project.id, stage, content: "c", approvedAt: new Date() })
+        .run();
+    }
+
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "complete",
+      reason: "Development approved, ready for Preproduction",
+    });
+  });
+
+  // Acceptance criterion 2 — the single most important one: a project with no
+  // `format` field (or an explicit `short_video_narrative`) is byte-for-byte
+  // today's existing behaviour. `newProject()`/`buildUpTo` above already
+  // cover this for every narrative stage; this just pins the format itself.
+  it("runs the narrative chain unchanged for a project with no format specified", () => {
+    const project = newProject();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "run", type: "synopsis" });
   });
 });

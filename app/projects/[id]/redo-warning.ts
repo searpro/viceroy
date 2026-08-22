@@ -17,6 +17,19 @@ export const REDO_CHAIN = [
   "voiceover",
   "subtitle_align",
   "render",
+  // The Development chain's stages (M7 PR1). No step component calls
+  // `describeRedoLoss`/`redoConfirmation` with one of these yet — PR1's
+  // `DevChainCard` has no redo affordance at all — but they're listed here
+  // anyway so this mirror of `INVALIDATION_CHAIN` stays exact rather than
+  // silently falling out of step the day a later PR does add one.
+  "concept",
+  "logline",
+  "story_structure",
+  "beat_sheet",
+  "treatment",
+  "screenplay",
+  "screenplay_revision",
+  "story_bible",
 ] as const;
 
 export type RedoTarget = (typeof REDO_CHAIN)[number];

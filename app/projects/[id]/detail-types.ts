@@ -59,6 +59,10 @@ export type Detail = {
     synopsis: string | null;
     story: string | null;
     stage: string;
+    // What kind of thing this project is making (M7 PR1). Anything other
+    // than "short_video_narrative" runs the Development chain instead of
+    // the narrative pipeline every other field/step here still describes.
+    format: string;
     mode: string;
     awaitingReview: boolean;
     failureReason: string | null;
@@ -66,7 +70,10 @@ export type Detail = {
   narrativeStyle?: { name: string };
   voiceStyle?: { name: string };
   evaluations: Evaluation[];
-  nextStep: { kind: "run" | "complete"; type?: string; reason: string };
+  // "dev" is the Development chain's counterpart to "run" — it names a
+  // dev_artifacts stage instead of a job type, because that chain has no
+  // generation logic yet (PR2+ scope).
+  nextStep: { kind: "run" | "dev" | "complete"; type?: string; stage?: string; reason: string };
   stalled: boolean;
   scenes: Scene[];
   characters: Character[];

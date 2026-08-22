@@ -19,6 +19,7 @@ import { CharactersStep } from "./steps/characters-step";
 import { ScenesStep } from "./steps/scenes-step";
 import { NarrationStep } from "./steps/narration-step";
 import { VideoStep } from "./steps/video-step";
+import { DevChainCard } from "./dev-chain-card";
 import { redoConfirmation } from "./redo-warning";
 
 const LAYOUT_KEY = "viceroy.layout";
@@ -286,7 +287,17 @@ export function ProjectView({ initial }: { initial: Detail }) {
         </p>
       )}
 
-      {layout === "stepper" ? (
+      {project.format !== "short_video_narrative" ? (
+        // The narrative Stepper below is built entirely around
+        // PROJECT_STAGES/JOB_TYPES — reusing it for the Development chain
+        // would mean teaching it a second, unrelated stage vocabulary for no
+        // benefit yet, since PR1 has nothing to show per stage but "not yet
+        // generated" anyway. PR2+ can grow this into its own stepper once
+        // there's per-stage content worth stepping between.
+        <div className="mt-6">
+          <DevChainCard detail={detail} />
+        </div>
+      ) : layout === "stepper" ? (
         <>
           <Stepper activeStep={activeStep} onSelect={selectStep} detail={detail} />
           <div className="mt-6">{stepContent[activeStep]}</div>

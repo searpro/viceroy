@@ -1,20 +1,24 @@
-import { asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { resolveConfig } from "./config";
 import type { Db } from "./db/client";
 import {
   captionStyles,
   characters,
+  DEV_ARTIFACT_STAGES,
+  devArtifacts,
   evaluations,
   imageStyles,
   narrativeStyles,
   preferences,
+  PROJECT_FORMATS,
   projects,
   renders,
   scenes,
   subtitleCues,
   voiceovers,
   voiceStyles,
+  type DevArtifactStage,
 } from "./db/schema";
 import { enqueue, listJobs } from "./queue";
 import { advance, isStalled, nextStep } from "./pipeline/chain";
@@ -31,6 +35,9 @@ export const createProjectSchema = z
     inputMode: z.enum(["idea", "context"]).default("idea"),
     idea: z.string().trim().max(2000).optional(),
     context: z.string().trim().max(CONTEXT_MAX).optional(),
+    // Defaulted to today's only format, so every existing caller/test that
+    // never mentions this field keeps starting the narrative pipeline.
+    format: z.enum(PROJECT_FORMATS).default("short_video_narrative"),
     narrativeStyleId: z.string().optional(),
     voiceStyleId: z.string().optional(),
     imageStyleId: z.string().optional(),
@@ -137,6 +144,7 @@ export function createProject(db: Db, raw: CreateProjectInput) {
       title: isContext ? label : null,
       inputMode: input.inputMode,
       context: isContext ? input.context : null,
+      format: input.format,
       mode: input.mode,
       narrativeStyleId: narrative.id,
       voiceStyleId: voice.id,
@@ -148,7 +156,13 @@ export function createProject(db: Db, raw: CreateProjectInput) {
     .returning()
     .all();
 
-  enqueue(db, { type: "synopsis", projectId: project!.id });
+  // The narrative pipeline starts itself off with a synopsis job; the
+  // Development chain has no generation logic yet (PR2+), so a dev-format
+  // project is created with an empty chain and nothing queued — `nextStep`
+  // reports its first stage, "concept", with no job behind it yet.
+  if (input.format === "short_video_narrative") {
+    enqueue(db, { type: "synopsis", projectId: project!.id });
+  }
   return project!;
 }
 
@@ -246,6 +260,11 @@ export const regenerateSchema = z.object({
     "voiceover",
     "subtitle_align",
     "render",
+    // The Development chain's stages (M7 PR1), in `DEV_ARTIFACT_STAGES`
+    // order. Valid only for a project whose format is not
+    // `short_video_narrative` — enforced in `regenerate` below, not here,
+    // since the schema alone doesn't know which project it's parsing for.
+    ...DEV_ARTIFACT_STAGES,
   ]),
   direction: z.string().trim().max(2000).optional(),
   /** Voice-design cues, when re-narrating with a different delivery. */
@@ -275,6 +294,12 @@ export const INVALIDATION_CHAIN = [
   "voiceover",
   "subtitle_align",
   "render",
+  // The Development chain's stages (M7 PR1), appended in `DEV_ARTIFACT_STAGES`
+  // order. A project is only ever one format or the other, so in practice a
+  // redo only ever walks the half of this list its own format populated —
+  // but the two chains still share one array on purpose, per the type-safety
+  // trick this file is built around (see the comment above).
+  ...DEV_ARTIFACT_STAGES,
 ] as const;
 
 type InvalidationStage = (typeof INVALIDATION_CHAIN)[number];
@@ -332,7 +357,29 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
   render: (db, projectId) => {
     db.delete(renders).where(eq(renders.projectId, projectId)).run();
   },
+  // Every dev-artifact stage discards the same way: cleared, not deleted, so
+  // `directionHistory` survives a redo (unlike the narrative stages above,
+  // there's no downstream row shape to also clean up yet — PR2+ builds the
+  // stages that would derive from these).
+  concept: devArtifactDiscard("concept"),
+  logline: devArtifactDiscard("logline"),
+  story_structure: devArtifactDiscard("story_structure"),
+  beat_sheet: devArtifactDiscard("beat_sheet"),
+  treatment: devArtifactDiscard("treatment"),
+  screenplay: devArtifactDiscard("screenplay"),
+  screenplay_revision: devArtifactDiscard("screenplay_revision"),
+  story_bible: devArtifactDiscard("story_bible"),
 };
+
+/** `DISCARD`'s handler for one dev-artifact stage, covering every version. */
+function devArtifactDiscard(stage: DevArtifactStage) {
+  return (db: Db, projectId: string) => {
+    db.update(devArtifacts)
+      .set({ approvedAt: null, content: "" })
+      .where(and(eq(devArtifacts.projectId, projectId), eq(devArtifacts.stage, stage)))
+      .run();
+  };
+}
 
 /**
  * Clear every artifact derived from `target`'s output, leaving `target`'s own
@@ -360,6 +407,19 @@ export function invalidateDownstreamOf(db: Db, projectId: string, target: Invali
 export function regenerate(db: Db, projectId: string, input: z.infer<typeof regenerateSchema>) {
   const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
   if (!project) throw new Error(`No such project: ${projectId}`);
+
+  // A dev-artifact target only means anything for a project that is actually
+  // running the Development chain — accepting it for a narrative project
+  // would enqueue a job type nothing in the narrative pipeline expects, and
+  // clear a `dev_artifacts` row that project will never populate.
+  if (
+    (DEV_ARTIFACT_STAGES as readonly string[]).includes(input.target) &&
+    project.format === "short_video_narrative"
+  ) {
+    throw new Error(
+      `"${input.target}" is a Development-chain stage — not valid for a short_video_narrative project`,
+    );
+  }
 
   const scoped = input.sceneId ?? input.characterId;
 

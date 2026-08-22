@@ -15,14 +15,15 @@ reads it directly, and it can't live only in Notion.
 | ---- | --- | ------- |
 | Story Video Generator (root) | https://app.notion.com/p/3b90755fb9988023b924f171e52a5afb | Original requirements doc |
 | **Build Plan** | https://app.notion.com/p/3bb0755fb998817484efc2d57f2cf092 | Decisions, stack, data model, pipeline, sd-api integration, risks, working agreement. Replaces `docs/PLAN.md` |
-| **Current State** | https://app.notion.com/p/3bb0755fb99881908ba9d533d5c9fdfc | Point-in-time status snapshot. Replaces `docs/status.md`'s "where things stand" section |
+| **Current State** | https://app.notion.com/p/3c30755fb998819c951fd9fce06bcfa5 | Point-in-time status snapshot (2026-08-21 baseline). Replaces `docs/status.md`'s "where things stand" section |
 | **Phases & Milestones** | https://app.notion.com/p/3bb0755fb99881d9a9a2ea9e2b5ce87e | M0–M6 status, PR-level summary tables. Has 5 child pages (below) carrying the full PR-by-PR narrative |
 | ↳ M0 detail | https://app.notion.com/p/3bb0755fb99881b787aef2cc4cef6cd8 | Environment gate — full detail |
 | ↳ M1 detail | https://app.notion.com/p/3bb0755fb9988142b304c11dd314a7a7 | Thin end-to-end slice — full detail |
 | ↳ M2 detail | https://app.notion.com/p/3bb0755fb99881788b6af2684c76cf8f | Manual mode and review surfaces — full detail |
 | ↳ M3 detail | https://app.notion.com/p/3bb0755fb99881b8b4eccecf1507b5d3 | Management screens — full detail |
 | ↳ M4 detail | https://app.notion.com/p/3bb0755fb99881198dc5d8ed8a733f97 | Output control — full detail |
-| ↳ M7 detail | https://app.notion.com/p/3c20755fb99881f7a46ac1b013a8c538 | Film pipeline (LTX shots) — planned, not started. Data model, stage chain, pod lifecycle, PR sequence |
+| ↳ M7 detail | https://app.notion.com/p/3c30755fb998810a9f93fe753a5a8e87 | Development & Preproduction (Movie Engine) — the first major version, currently documentation/research. Format taxonomy, 21-artifact stage chain, data model, style/provider strategy, PR sequence |
+| ↳ M8 detail | https://app.notion.com/p/3c20755fb99881f7a46ac1b013a8c538 | Production (Film pipeline / LTX shots), renumbered from M7 — planned, not started. Data model, stage chain, pod lifecycle, PR sequence |
 | **Findings** (database) | https://app.notion.com/p/3567948e711844818d55765a3bb18a73 | F1–F22, measured local-stack behaviour that contradicts its own docs. Replaces `docs/findings.md` |
 | **Architecture Decisions** (database) | https://app.notion.com/p/3a83993f25f94730bc13594332565a81 | ADRs — decisions whose reasoning is worth more than a line. Replaces `docs/adr/` |
 | **Bug Tracker** (database) | https://app.notion.com/p/7aa66b802429405e834ad7953f9acd12 | M5 beta-hardening tracker. Replaces `docs/bugs.md` |

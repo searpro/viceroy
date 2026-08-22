@@ -126,6 +126,22 @@ export const PROJECT_STAGES = [
 ] as const;
 export type ProjectStage = (typeof PROJECT_STAGES)[number];
 
+// What kind of thing a project is making. `short_video_narrative` is today's
+// only format and the whole of the pipeline above — idea, synopsis, story,
+// scenes, one continuous voiceover, captions, a vertical render — is built
+// for it alone. Every other value routes through the Development +
+// Preproduction chain (M7) instead; see `DEV_ARTIFACT_STAGES` and
+// `devNextStep` in `lib/pipeline/chain.ts`.
+export const PROJECT_FORMATS = [
+  "short_video_narrative",
+  "short_movie",
+  "short_film",
+  "short_series",
+  "series",
+  "feature_film",
+] as const;
+export type ProjectFormat = (typeof PROJECT_FORMATS)[number];
+
 export const projects = sqliteTable(
   "projects",
   {
@@ -144,6 +160,9 @@ export const projects = sqliteTable(
     synopsis: text("synopsis"),
     story: text("story"),
     stage: text("stage", { enum: PROJECT_STAGES }).notNull().default("draft"),
+    // Defaulted to today's only format so every project that predates M7 keeps
+    // running the narrative pipeline exactly as it always has.
+    format: text("format", { enum: PROJECT_FORMATS }).notNull().default("short_video_narrative"),
     mode: text("mode", { enum: ["auto", "manual"] }).notNull().default("auto"),
     // Set when a stage finished and is waiting on the user in manual mode.
     awaitingReview: integer("awaiting_review", { mode: "boolean" }).notNull().default(false),
@@ -322,6 +341,54 @@ export const renders = sqliteTable(
   (t) => [index("renders_project_idx").on(t.projectId)],
 );
 
+// The Development chain's own artifacts (M7). Deliberately not `scenes` or
+// `characters` — those are the narrative pipeline's, and mixing the two
+// would make a dev-format project's `elements` redo touch rows that mean
+// something completely different in Preproduction. Characters and
+// world-building get their own tables in a later PR, same reasoning as
+// `scenes` already being separate from `characters` above.
+export const DEV_ARTIFACT_STAGES = [
+  "concept",
+  "logline",
+  "story_structure",
+  "beat_sheet",
+  "treatment",
+  "screenplay",
+  "screenplay_revision",
+  "story_bible",
+] as const;
+export type DevArtifactStage = (typeof DEV_ARTIFACT_STAGES)[number];
+
+export const devArtifacts = sqliteTable(
+  "dev_artifacts",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    stage: text("stage", { enum: DEV_ARTIFACT_STAGES }).notNull(),
+    // A stage can be redone more than once before it's approved; each redo is
+    // a new version rather than an overwrite, so `directionHistory` has
+    // something to record against.
+    version: integer("version").notNull().default(1),
+    content: text("content").notNull(),
+    approvedAt: integer("approved_at", { mode: "timestamp_ms" }),
+    // What the user asked for on each redo of this stage, oldest first. Kept
+    // even when a redo clears `approvedAt`/`content` (see `DISCARD` in
+    // lib/projects.ts) — the row survives so this history isn't lost with it.
+    directionHistory: text("direction_history", { mode: "json" })
+      .notNull()
+      .$type<string[]>()
+      .default([]),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("dev_artifacts_project_idx").on(t.projectId),
+    unique("dev_artifacts_project_stage_version_idx").on(t.projectId, t.stage, t.version),
+  ],
+);
+
 export const assets = sqliteTable("assets", {
   id: id(),
   kind: text("kind", { enum: ["image", "audio", "video"] }).notNull(),
@@ -345,6 +412,12 @@ export const JOB_TYPES = [
   "voiceover",
   "subtitle_align",
   "render",
+  // The Development chain's stages (M7 PR1) are added here, not to a
+  // parallel job-type list, so `regenerate()` can enqueue them through the
+  // one generic mechanism every narrative stage already uses. Each has no
+  // `STAGE_HANDLERS` entry yet — PR2+ scope — so the worker refuses one if
+  // it is ever claimed, the same way it refuses any other unimplemented type.
+  ...DEV_ARTIFACT_STAGES,
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];
 
@@ -571,6 +644,7 @@ export const schema = {
   voiceovers,
   subtitleCues,
   renders,
+  devArtifacts,
   assets,
   jobs,
   jobLogs,

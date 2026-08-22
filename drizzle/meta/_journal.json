@@ -92,6 +92,13 @@
       "when": 1786939400000,
       "tag": "0012_comfyui_providers",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1787025600000,
+      "tag": "0013_dev_artifacts",
+      "breakpoints": true
     }
   ]
 }
