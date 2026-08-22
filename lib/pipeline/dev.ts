@@ -1,4 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
+import { Fountain, type Script } from "fountain-js";
 import {
   characters,
   devArtifacts,
@@ -535,4 +536,99 @@ export async function runTreatment(ctx: StageContext): Promise<void> {
   ctx.log("Treatment written");
 
   continueDevChain(ctx, projectId, project.mode, "screenplay");
+}
+
+/**
+ * Parse a Fountain document and reject anything that doesn't look like one.
+ *
+ * `fountain-js` never throws on malformed input — unrecognized text just
+ * becomes `action` tokens (verified against the library directly: a plain
+ * prose paragraph parses cleanly into a single `action` token, no error, no
+ * failure flag). So "did this parse as Fountain" has to be judged from the
+ * token shape rather than a caught exception: a screenplay with no scene
+ * headings and no character cues is prose wearing a Fountain-parser's
+ * output, not a screenplay, however cleanly `parse()` returned. Both this
+ * function and the PDF export route share it, so "valid Fountain" means the
+ * same thing in both places.
+ */
+export function parseScreenplay(content: string): Script {
+  const script = new Fountain().parse(content, true);
+  const tokens = script.tokens ?? [];
+  const hasScene = tokens.some((t) => t.type === "scene_heading");
+  const hasDialogue = tokens.some((t) => t.type === "character");
+  if (!hasScene || !hasDialogue) {
+    throw new Error(
+      "Screenplay generation did not produce valid Fountain — no scene headings or no dialogue " +
+        "found after parsing. Refusing to store it as an approved screenplay.",
+    );
+  }
+  return script;
+}
+
+/**
+ * Stage 8 — the approved treatment becomes a full Fountain-syntax screenplay.
+ *
+ * Unlike every dev-chain stage above, this one validates its own output
+ * before writing it: `parseScreenplay` throws if the LLM's response doesn't
+ * parse into a real screenplay (no scene headings, no dialogue), which
+ * propagates out of this handler exactly the way `runDevCharacters`'s "no
+ * usable characters" and `runWorldBuilding`'s "no rules prose" throws do —
+ * caught by the worker (worker/index.ts), which calls `fail()` and leaves no
+ * `dev_artifacts` row behind for this stage. A malformed generation is
+ * therefore a failed job awaiting retry/review, never a silently-broken
+ * screenplay sitting in the chain for stage 9 (revision) or 11-12 (script/
+ * scene breakdown) to choke on later.
+ *
+ * "screenplay" hands off to "screenplay_revision" next per `DEV_CHAIN_STAGES`,
+ * which has no `STAGE_HANDLERS` entry yet (PR5+ scope) — the same graceful
+ * landing `runTreatment`'s own doc comment describes for "screenplay" before
+ * this PR.
+ */
+export async function runScreenplay(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project } = bundle;
+  const directionStyle = requireDirectionStyle(bundle);
+  const provider = resolveDevProvider(ctx.db);
+
+  const concept = requireDevArtifactContent(ctx.db, projectId, "concept");
+  const treatment = requireDevArtifactContent(ctx.db, projectId, "treatment");
+  const direction = pendingDirection(ctx);
+
+  ctx.log(`Writing screenplay with ${provider.model}`);
+  ctx.progress(0.2);
+  checkAbort(ctx);
+
+  const { content } = await ctx.sdApi.llm.chat({
+    model: provider.model,
+    messages: [
+      {
+        role: "user",
+        content: renderPrompt(ctx.db, "dev.screenplay", {
+          concept,
+          treatment,
+          castSummary: castSummary(ctx.db, projectId),
+          genreGuidance: directionStyle.genreGuidance,
+          toneGuidance: directionStyle.toneGuidance,
+          direction: directionBlock(direction),
+          groundingInstruction: groundingInstruction(project),
+        }),
+      },
+    ],
+    temperature: 0.7,
+  });
+
+  const trimmed = content.trim();
+  ctx.progress(0.8);
+  checkAbort(ctx);
+
+  // Validate before writing — see `parseScreenplay`'s doc comment for why
+  // this stage, alone among the dev-chain stages so far, can't just store
+  // whatever the model returned.
+  parseScreenplay(trimmed);
+
+  writeDevArtifact(ctx.db, projectId, "screenplay", trimmed, direction, project.mode === "auto");
+  ctx.log("Screenplay written");
+
+  continueDevChain(ctx, projectId, project.mode, "screenplay_revision");
 }

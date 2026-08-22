@@ -9,6 +9,7 @@ import {
   runConcept,
   runDevCharacters,
   runLogline,
+  runScreenplay,
   runStoryStructure,
   runTreatment,
   runWorldBuilding,
@@ -37,9 +38,9 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   voiceover: runVoiceover,
   subtitle_align: runSubtitleAlign,
   render: runRender,
-  // Development chain (M7 PR2+PR3) — concept through treatment. The
-  // remaining three stages (screenplay onward) have no handler yet: PR4+
-  // scope, per `DEV_CHAIN_STAGES` in lib/db/schema.ts.
+  // Development chain (M7 PR2-PR4) — concept through screenplay. The
+  // remaining two stages (screenplay_revision, story_bible) have no handler
+  // yet: PR5+ scope, per `DEV_CHAIN_STAGES` in lib/db/schema.ts.
   concept: runConcept,
   logline: runLogline,
   characters: runDevCharacters,
@@ -47,4 +48,5 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   story_structure: runStoryStructure,
   beat_sheet: runBeatSheet,
   treatment: runTreatment,
+  screenplay: runScreenplay,
 };

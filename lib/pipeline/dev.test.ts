@@ -19,10 +19,12 @@ import { setPreference } from "../preferences";
 import { advance, nextStep } from "./chain";
 import { resolveProvider } from "./context";
 import {
+  parseScreenplay,
   runBeatSheet,
   runConcept,
   runDevCharacters,
   runLogline,
+  runScreenplay,
   runStoryStructure,
   runTreatment,
   runWorldBuilding,
@@ -399,6 +401,172 @@ describe("Development chain stages (M7 PR3 — beat sheet & treatment)", () => {
     expect(treatmentPrompt).toContain(direction.genreGuidance);
     expect(treatmentPrompt).toContain(direction.toneGuidance);
     expect(treatmentPrompt).toContain(BEAT_SHEET.content);
+  });
+});
+
+const SCREENPLAY = {
+  content: `INT. REYNA'S SHOP - DAY
+
+Reyna bends over a half-fixed lock, her father's pick set open beside her.
+
+REYNA
+(quietly)
+Almost.
+
+The bank's deadline notice sits unopened on the counter.
+
+INT. BROTHER'S HOUSE - NIGHT
+
+Reyna kneels at a door she doesn't recognize, working a lock her father
+never taught her.
+
+REYNA
+This one's new.
+
+She lets it click open, and the house exhales around her.`,
+};
+
+// Deliberately not Fountain at all — free prose, no sluglines, no cast in
+// caps, no dialogue — the malformed-generation case `parseScreenplay` exists
+// to catch. `fountain-js` does not throw on this (verified directly against
+// the library: it just becomes a single `action` token), so this exercises
+// the token-shape check, not a parser exception.
+const MALFORMED_SCREENPLAY = {
+  content:
+    "Here is a summary of what happens: Reyna fixes the lock, worries about " +
+    "the deadline, and eventually breaks into her brother's house to find " +
+    "something she wasn't expecting. It's a story about trust.",
+};
+
+/** Drives a fresh project through concept..treatment (PR2/PR3's seven stages), auto mode. */
+async function runThroughTreatment(): Promise<Awaited<ReturnType<typeof newDevProject>>> {
+  const project = await runThroughStoryStructure();
+  await runBeatSheet(
+    stubContext(db, enqueue(db, { type: "beat_sheet", projectId: project.id }), { llm: [BEAT_SHEET] }),
+  );
+  await runTreatment(
+    stubContext(db, enqueue(db, { type: "treatment", projectId: project.id }), { llm: [TREATMENT] }),
+  );
+  return project;
+}
+
+describe("Development chain stages (M7 PR4 — screenplay)", () => {
+  it("generates a screenplay as a dev_artifacts row, advancing devNextStep to screenplay_revision", async () => {
+    const project = await runThroughTreatment();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "screenplay" });
+
+    await runScreenplay(
+      stubContext(db, enqueue(db, { type: "screenplay", projectId: project.id }), { llm: [SCREENPLAY] }),
+    );
+
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "screenplay")!;
+    expect(row.content).toBe(SCREENPLAY.content);
+    expect(row.approvedAt).not.toBeNull(); // auto mode approves its own draft
+
+    // "screenplay_revision" has no STAGE_HANDLERS entry yet (PR5+) — landing
+    // there, not generated, is the same interim state "screenplay" was in
+    // before this PR.
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "screenplay_revision",
+      needsApproval: false,
+    });
+  });
+
+  it("stores a screenplay that re-parses cleanly with fountain-js — non-empty scenes and dialogue, no parse failure", async () => {
+    const project = await runThroughTreatment();
+    await runScreenplay(
+      stubContext(db, enqueue(db, { type: "screenplay", projectId: project.id }), { llm: [SCREENPLAY] }),
+    );
+
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "screenplay")!;
+
+    const reparsed = parseScreenplay(row.content);
+    const sceneHeadings = reparsed.tokens.filter((t) => t.type === "scene_heading");
+    const dialogue = reparsed.tokens.filter((t) => t.type === "dialogue");
+    expect(sceneHeadings.length).toBeGreaterThan(0);
+    expect(dialogue.length).toBeGreaterThan(0);
+  });
+
+  it("rejects a malformed (non-Fountain) LLM response rather than storing it as an approved screenplay", async () => {
+    const project = await runThroughTreatment();
+
+    await expect(
+      runScreenplay(
+        stubContext(db, enqueue(db, { type: "screenplay", projectId: project.id }), {
+          llm: [MALFORMED_SCREENPLAY],
+        }),
+      ),
+    ).rejects.toThrow(/valid Fountain/);
+
+    // No dev_artifacts row for "screenplay" was created — the malformed draft
+    // never got as far as `writeDevArtifact`.
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "screenplay");
+    expect(row).toBeUndefined();
+
+    // devNextStep still reports "screenplay" as outstanding — the failed job
+    // left nothing behind for the chain to advance past.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "screenplay", needsApproval: false });
+  });
+
+  it("threads Direction Style guidance and the approved treatment into the screenplay prompt", async () => {
+    const project = await runThroughTreatment();
+    const direction = db
+      .select()
+      .from(directionStyles)
+      .where(eq(directionStyles.id, project.directionStyleId!))
+      .get()!;
+
+    let seenPrompt = "";
+    await runScreenplay(
+      stubContext(db, enqueue(db, { type: "screenplay", projectId: project.id }), {
+        llm: [SCREENPLAY],
+        onChatRequest: (request) => {
+          seenPrompt = (request.messages as { content: string }[])[0]!.content;
+        },
+      }),
+    );
+
+    expect(seenPrompt).toContain(direction.genreGuidance);
+    expect(seenPrompt).toContain(direction.toneGuidance);
+    expect(seenPrompt).toContain(TREATMENT.content);
+  });
+
+  it("resolves the screenplay stage's provider via resolveDevProvider, not the ordinary default llm provider", async () => {
+    const project = await runThroughTreatment();
+
+    const [devProvider] = db
+      .insert(providers)
+      .values({ kind: "llm", name: "dev-tier", baseUrl: "http://dev-tier.example", model: "dev-tier-model" })
+      .returning()
+      .all();
+    setPreference(db, "defaultDevLlmProvider", devProvider!.id);
+
+    let seenModel: unknown;
+    await runScreenplay(
+      stubContext(db, enqueue(db, { type: "screenplay", projectId: project.id }), {
+        llm: [SCREENPLAY],
+        onChatRequest: (request) => {
+          seenModel = request.model;
+        },
+      }),
+    );
+    expect(seenModel).toBe(devProvider!.model);
   });
 });
 

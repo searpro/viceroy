@@ -74,6 +74,7 @@ const STORY_VARS = [
   },
   { name: "storyStructure", description: "The Development chain's approved numbered story structure" },
   { name: "beatSheet", description: "The Development chain's approved beat sheet" },
+  { name: "treatment", description: "The Development chain's approved prose treatment" },
 ];
 
 function pick(...names: string[]) {
@@ -725,5 +726,57 @@ story from setup through resolution in scene order. This is a treatment for
 a reader to judge the story by, not a script — no dialogue, no scene
 headings, no shot list. No preamble, no commentary before or after the
 prose. Output only the treatment.`,
+  },
+  {
+    key: "dev.screenplay",
+    section: "Development",
+    label: "Generate screenplay",
+    description: "Writes a Fountain-syntax screenplay from the approved treatment.",
+    variables: pick(
+      "concept",
+      "treatment",
+      "castSummary",
+      "genreGuidance",
+      "toneGuidance",
+      "direction",
+      "groundingInstruction",
+    ),
+    template: `Write a full screenplay for this project, from the treatment below, in
+valid Fountain syntax and nothing else.
+
+Concept:
+{{concept}}
+
+Treatment:
+{{treatment}}
+
+Cast:
+{{castSummary}}
+
+Style guidance:
+Genre: {{genreGuidance}}
+Tone: {{toneGuidance}}
+{{groundingInstruction}}
+{{direction}}
+
+Output strict Fountain syntax only — this is parsed by a Fountain parser, not
+read as prose. Follow these rules exactly:
+- Scene headings (sluglines) on their own line, in caps, starting with INT.
+  or EXT., e.g. "INT. REYNA'S SHOP - DAY".
+- Action lines in plain sentence case, left-aligned, no markdown.
+- Character cues on their own line, in caps, immediately before their
+  dialogue, e.g. "REYNA".
+- Dialogue on the line(s) directly under its character cue.
+- Parentheticals, when needed, on their own line between a character cue and
+  its dialogue, in parentheses, e.g. "(quietly)".
+- A blank line between every element (scene heading, action, character cue,
+  dialogue, and the next scene heading).
+- Cover the whole story from setup through resolution, in scene order,
+  dramatizing the treatment's beats as scenes with dialogue rather than
+  summarizing them.
+
+No title page, no prose commentary, no markdown formatting, no code fences,
+nothing before the first scene heading or after the last line of the last
+scene. Output only the screenplay itself.`,
   },
 ];
