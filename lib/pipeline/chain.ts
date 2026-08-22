@@ -275,20 +275,29 @@ function devNextStep(db: Db, projectId: string): NextStep {
   }
   // "Development approved, ready for Preproduction" was accurate while
   // `DEV_CHAIN_STAGES` ended at `story_bible` (PR1-5) — once Preproduction
-  // PRs started appending their own stage names after it (PR6+), reaching
+  // PRs started appending their own stage names after it (PR6-PR12), reaching
   // the end of the (growing) list stopped meaning "Development is done" and
   // started meaning "everything currently built is done," which are
-  // different claims once any Preproduction stage exists. `story_bible` is
-  // still the one fixed point that always means Development specifically
-  // finished; the message names it as long as it's the last stage this
-  // project actually walked, and stays generic once later stages exist too.
+  // different claims once any Preproduction stage exists. `story_bible` was
+  // the fixed point that meant Development specifically finished; now that
+  // `production_plan` (M7 PR13) closes out Preproduction's own 11-stage
+  // range — the last stage the M7 detail page's PR sequence names at all —
+  // it is the new, permanent fixed point: unlike `story_bible`, there is
+  // nothing left to append after it within this milestone, so this branch
+  // does not need the same "stays generic once later stages exist" hedge
+  // `story_bible`'s branch needed. The `story_bible` case is kept only for a
+  // project whose chain somehow stops there (there is none in practice once
+  // `DEV_CHAIN_STAGES` includes Preproduction, but keeping the check honest
+  // costs nothing).
   const lastStage = DEV_CHAIN_STAGES[DEV_CHAIN_STAGES.length - 1];
   return {
     kind: "complete",
     reason:
-      lastStage === "story_bible"
-        ? "Development approved, ready for Preproduction"
-        : "every Development/Preproduction stage built so far is approved",
+      lastStage === "production_plan"
+        ? "Preproduction approved, ready for Production"
+        : lastStage === "story_bible"
+          ? "Development approved, ready for Preproduction"
+          : "every Development/Preproduction stage built so far is approved",
   };
 }
 

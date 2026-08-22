@@ -2185,3 +2185,106 @@ export async function runCasting(ctx: StageContext): Promise<void> {
   if (jobCharacterId) return;
   ctx.log("Casting locked");
 }
+
+/** A count of storyboard panels or shot list items, grouped by `sceneId`, sorted by scene. */
+function countsBySceneId(rows: { sceneId: string }[]): string {
+  if (rows.length === 0) return "(none)";
+  const bySceneId = new Map<string, number>();
+  for (const row of rows) {
+    bySceneId.set(row.sceneId, (bySceneId.get(row.sceneId) ?? 0) + 1);
+  }
+  return [...bySceneId.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+    .map(([sceneId, count]) => `- Scene ${sceneId}: ${count}`)
+    .join("\n");
+}
+
+/**
+ * Stage 21, Preproduction's own capstone (M7 PR13) — exactly the same shape
+ * as `runStoryBible` closing out Development: assembles one document from
+ * every already-approved Preproduction artifact (script/scene breakdown,
+ * continuity, visual bible, production design, the locked cast, locations/
+ * props, storyboard/shot-list counts, and the previs animatic if one
+ * exists), formatting rather than writing new prose. No provider is
+ * resolved and no `sd-api` call is made.
+ *
+ * Only reports what actually exists for this project — a project that never
+ * ran "previs" gets no "previs exists" claim, the same restraint
+ * `runVisualBible`'s locations/props sections already show when a project
+ * has none. Left unapproved on write, like every other capstone here — the
+ * ordinary "approve and continue" mechanism (chain.ts's `advance`) is what
+ * gates `devNextStep`'s terminal "Preproduction approved, ready for
+ * Production" state on a human's sign-off.
+ */
+export async function runProductionPlan(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project } = bundle;
+
+  const storyBible = requireDevArtifactContent(ctx.db, projectId, "story_bible");
+  const scriptBreakdown = requireDevArtifactContent(ctx.db, projectId, "script_breakdown");
+  const sceneBreakdown = requireDevArtifactContent(ctx.db, projectId, "scene_breakdown");
+  const visualBible = requireDevArtifactContent(ctx.db, projectId, "visual_bible");
+  const productionDesign = requireDevArtifactContent(ctx.db, projectId, "production_design");
+
+  const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
+  const locs = ctx.db.select().from(locations).where(eq(locations.projectId, projectId)).all();
+  const items = ctx.db.select().from(props).where(eq(props.projectId, projectId)).all();
+  const panels = ctx.db.select().from(storyboardPanels).where(eq(storyboardPanels.projectId, projectId)).all();
+  const shots = ctx.db.select().from(shotListItems).where(eq(shotListItems.projectId, projectId)).all();
+
+  const castSection =
+    cast.length > 0
+      ? cast
+          .map((c) => {
+            const lockStatus = c.castingLockedAt ? "locked" : "not locked";
+            const voiceNotes = c.voiceDesignNotes ? ` — Voice: ${c.voiceDesignNotes}` : "";
+            return `- ${c.name} (${lockStatus})${voiceNotes}`;
+          })
+          .join("\n")
+      : "(no cast)";
+
+  const locationsSection =
+    locs.length > 0
+      ? locs
+          .map((l) => `- ${l.name}: ${l.description}${l.imageAssetId ? " (concept art on file)" : ""}`)
+          .join("\n")
+      : "(none)";
+  const propsSection =
+    items.length > 0
+      ? items.map((p) => `- ${p.name}: ${p.description}${p.imageAssetId ? " (concept art on file)" : ""}`).join("\n")
+      : "(none)";
+
+  const shotCountSection = [
+    `Storyboard panels: ${panels.length} total`,
+    panels.length > 0 ? countsBySceneId(panels) : undefined,
+    `Shot list items: ${shots.length} total`,
+    shots.length > 0 ? countsBySceneId(shots) : undefined,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+
+  // Only reported when a previs render genuinely exists — `previsAssetId` is
+  // the one signal that stage ran at all (see its own comment, schema.ts).
+  const previsSection = project.previsAssetId
+    ? `A previs animatic exists for this project (asset ${project.previsAssetId}).`
+    : "No previs animatic was generated for this project.";
+
+  const content = [
+    `# What's Locked\n\n${storyBible}`,
+    `# Script Breakdown\n\n${scriptBreakdown}`,
+    `# Scene Breakdown\n\n${sceneBreakdown}`,
+    `# Visual Bible\n\n${visualBible}`,
+    `# Production Design\n\n${productionDesign}`,
+    `# Cast\n\n${castSection}`,
+    `# Locations\n\n${locationsSection}`,
+    `# Props\n\n${propsSection}`,
+    `# Shot Count Summary\n\n${shotCountSection}`,
+    `# Previs\n\n${previsSection}`,
+  ].join("\n\n");
+
+  ctx.progress(0.5);
+  writeDevArtifact(ctx.db, projectId, "production_plan", content, "", false);
+  ctx.log("Production plan assembled");
+  ctx.progress(1);
+}

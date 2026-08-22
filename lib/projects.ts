@@ -604,6 +604,12 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
       .where(eq(characters.projectId, projectId))
       .run();
   },
+  // Stage 21 (M7 PR13) — same "cleared, not deleted" discipline as every
+  // other `dev_artifacts` stage above. Nothing sits downstream of
+  // "production_plan" in `INVALIDATION_CHAIN` (it's the last entry), so this
+  // never fires as part of a cascade — it exists so a direct redo of
+  // "production_plan" itself clears the stale assembly.
+  production_plan: devArtifactDiscard("production_plan"),
 };
 
 /** `DISCARD`'s handler for one dev-artifact stage, covering every version. */

@@ -92,6 +92,7 @@ const DEV_STAGE_LABELS: Record<string, string> = {
   shot_list: "Shot list",
   previs: "Previs",
   casting: "Casting",
+  production_plan: "Production plan",
 };
 const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
 

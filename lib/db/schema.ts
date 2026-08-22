@@ -515,6 +515,11 @@ export const DEV_ARTIFACT_STAGES = [
   // document per project.
   "visual_bible",
   "production_design",
+  // Preproduction (M7 PR13), stage 21 — the Preproduction capstone, same
+  // shape as "visual_bible"/"story_bible": an assembly of every approved
+  // Preproduction artifact into one document, no LLM call. One `dev_artifacts`
+  // row per project, like every other capstone here.
+  "production_plan",
 ] as const;
 export type DevArtifactStage = (typeof DEV_ARTIFACT_STAGES)[number];
 
@@ -591,6 +596,17 @@ export const DEV_CHAIN_STAGES = [
   // the stage completing for them (see `devStageStatus`'s own comment), so
   // there is no "pending" state, the same shape "previs" already has.
   "casting",
+  // Stage 21 (M7 PR13), Preproduction's own capstone — the last stage this
+  // milestone's PR sequence names. Assembles one document from every
+  // approved Preproduction artifact (script/scene breakdown, continuity,
+  // visual bible, production design, cast, locations/props, storyboards/
+  // shot list, previs) — same shape as "story_bible" closing out
+  // Development. Once this is the last entry in this array AND it's
+  // approved, `devNextStep` (chain.ts) returns its permanent terminal
+  // message, "Preproduction approved, ready for Production" — see that
+  // function's own comment for why "story_bible" was the prior fixed point
+  // and this is the new one.
+  "production_plan",
 ] as const;
 export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 

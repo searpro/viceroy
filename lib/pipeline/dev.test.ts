@@ -35,6 +35,7 @@ import {
   runDevCharacters,
   runLogline,
   runProductionDesign,
+  runProductionPlan,
   runSceneBreakdown,
   runScreenplay,
   runScreenplayRevision,
@@ -2293,7 +2294,9 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
     expect(reyna.refInputName).toBe(`uploaded-${reyna.id}.png`);
     expect(reyna.castingLockedAt).not.toBeNull();
 
-    expect(nextStep(db, project.id)).toMatchObject({ kind: "complete" });
+    // "casting" hands off to "production_plan" next (M7 PR13), not
+    // "complete" — casting is no longer the chain's last stage.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_plan" });
   });
 
   it("is resumable — a character that already has a portrait is skipped on a second run", async () => {
@@ -2322,8 +2325,7 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
   });
 
   // Acceptance criterion 2: devNextStep advances previs -> casting -> the
-  // next unhandled interim state ("complete", since nothing is scoped past
-  // casting yet).
+  // next unhandled interim state ("production_plan", per M7 PR13).
   it("devNextStep advances previs -> casting -> the next unhandled interim state", async () => {
     const project = await runThroughApprovedPrevis();
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting", needsApproval: false });
@@ -2334,7 +2336,7 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
       }),
     );
 
-    expect(nextStep(db, project.id)).toMatchObject({ kind: "complete" });
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_plan", needsApproval: false });
   });
 
   // Acceptance criterion 5: "casting"'s own INVALIDATION_CHAIN entry must
@@ -2355,7 +2357,7 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
     );
     const locked = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
     expect(locked.castingLockedAt).not.toBeNull();
-    expect(nextStep(db, project.id)).toMatchObject({ kind: "complete" });
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_plan" });
 
     const job = regenerate(db, project.id, { target: "previs" });
     expect(job.type).toBe("previs");
@@ -2391,6 +2393,293 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
     const cleared = db.select().from(characters).where(eq(characters.id, reyna.id)).get()!;
     expect(cleared.imageAssetId).toBeNull();
     expect(cleared.castingLockedAt).toBeNull();
+  });
+});
+
+describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
+  // Same shape as "Preproduction stage 20"'s own `runThroughApprovedStoryboardsForCasting`/
+  // `runThroughApprovedPrevis` helpers — re-derived here rather than reused
+  // across describe blocks (those are scoped to their own closures, matching
+  // this file's own convention of each block re-deriving its own "through
+  // stage N" helper), extended one stage further to leave casting locked.
+  async function runThroughApprovedCasting() {
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id); // approve visual_bible, enqueue production_design
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+      }),
+    );
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [
+          {
+            json: {
+              beats: [
+                {
+                  sceneId: "1",
+                  description: "Reyna kneels at the workbench, examining her father's pick set closely.",
+                  shotType: "close-up",
+                  cameraAngle: "high",
+                  cameraMovement: "static",
+                  lens: "telephoto",
+                },
+                {
+                  sceneId: "2",
+                  description: "Reyna kneels at a new door, her father's pick set glinting in low light.",
+                  shotType: "wide",
+                  cameraAngle: "eye-level",
+                  cameraMovement: "dolly",
+                  lens: "wide",
+                },
+              ],
+            },
+          },
+        ],
+        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+      }),
+    );
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } },
+          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 3000 } },
+        ],
+      }),
+    );
+    const [asset] = db
+      .insert(assets)
+      .values({ kind: "video", path: "/tmp/previs.mp4", mimeType: "video/mp4", bytes: 1 })
+      .returning()
+      .all();
+    db.update(projects).set({ previsAssetId: asset!.id }).where(eq(projects.id, project.id)).run();
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+      }),
+    );
+    return project;
+  }
+
+  it("assembles a production plan from every approved Preproduction artifact, without calling the LLM provider", async () => {
+    const project = await runThroughApprovedCasting();
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "production_plan",
+      needsApproval: false,
+    });
+
+    await runProductionPlan(
+      stubContext(db, enqueue(db, { type: "production_plan", projectId: project.id }), {
+        // No `llm`/`images` entries configured — the "never calls the
+        // provider" assertion this test needs, same shape as
+        // `story_bible`/`visual_bible`'s own tests above.
+        onChatRequest: () => {
+          throw new Error("production_plan must never call the LLM provider (chat)");
+        },
+        onChatJsonRequest: () => {
+          throw new Error("production_plan must never call the LLM provider (chatJson)");
+        },
+        onImageRequest: () => {
+          throw new Error("production_plan must never call the image provider");
+        },
+      }),
+    );
+
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "production_plan")!;
+
+    const reyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    expect(reyna.castingLockedAt).not.toBeNull();
+
+    // A real character name, with locked status noted.
+    expect(row.content).toContain("Reyna");
+    expect(row.content).toContain("locked");
+    // A real location name, from the `locations` table.
+    expect(row.content).toContain("Reyna's shop");
+    // A real storyboard/shot count.
+    expect(row.content).toContain("Storyboard panels: 2 total");
+    expect(row.content).toContain("Shot list items: 2 total");
+    // The previs animatic note, since this project ran that stage.
+    expect(row.content).toContain("previs animatic exists");
+
+    // Left unapproved — the generic "approve and continue" mechanism gates
+    // this, same as every other capstone in this chain.
+    expect(row.approvedAt).toBeNull();
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "production_plan",
+      needsApproval: true,
+    });
+  });
+
+  it("does not claim a previs animatic exists when the project never ran that stage", async () => {
+    // Same walk as `runThroughApprovedCasting`, minus the previs step —
+    // proves the assembly doesn't fabricate a section for data that isn't
+    // there, per this PR's own "don't fabricate placeholder sections" brief.
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id);
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+      }),
+    );
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [
+          {
+            json: {
+              beats: [
+                {
+                  sceneId: "1",
+                  description: "Reyna kneels at the workbench, examining her father's pick set closely.",
+                  shotType: "close-up",
+                  cameraAngle: "high",
+                  cameraMovement: "static",
+                  lens: "telephoto",
+                },
+              ],
+            },
+          },
+        ],
+        images: [Buffer.from("panel-1")],
+      }),
+    );
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [{ json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } }],
+      }),
+    );
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+      }),
+    );
+
+    await runProductionPlan(stubContext(db, enqueue(db, { type: "production_plan", projectId: project.id }), {}));
+
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "production_plan")!;
+    expect(row.content).toContain("No previs animatic was generated");
+    expect(row.content).not.toContain("previs animatic exists");
+  });
+
+  // Acceptance criterion 4: "production_plan"'s own `INVALIDATION_CHAIN`
+  // entry must exist and sit in the right place, even though nothing follows
+  // it — exercised the same way "casting"'s own last-stage test is: by
+  // redoing the stage immediately *before* it and checking the cascade
+  // reaches production_plan's own row. `invalidateDownstreamOf` leaves a
+  // target's own output alone (the redo job just enqueued is what overwrites
+  // it), so a direct redo of "production_plan" itself is exercised by the
+  // "assembles a production plan..." test above instead, via `regenerate`.
+  it("redoing casting invalidates production_plan, per ADR 0003 / INVALIDATION_CHAIN", async () => {
+    const project = await runThroughApprovedCasting();
+    await runProductionPlan(stubContext(db, enqueue(db, { type: "production_plan", projectId: project.id }), {}));
+    advance(db, project.id); // approve production_plan
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "Preproduction approved, ready for Production",
+    });
+
+    const job = regenerate(db, project.id, { target: "casting" });
+    expect(job.type).toBe("casting");
+
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "production_plan")!;
+    expect(row.content).toBe("");
+    expect(row.approvedAt).toBeNull();
+    // "casting" is the redo target — its own row is left alone by
+    // `invalidateDownstreamOf` (the enqueued job above is what will
+    // overwrite it), so it is still locked/approved; "production_plan",
+    // downstream of it, is what the cascade actually cleared.
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "production_plan",
+      needsApproval: false,
+    });
+  });
+
+  it("regenerate refuses a redo of a direct dev_artifacts stage after it's already been cleared, resuming cleanly via the enqueued job", async () => {
+    const project = await runThroughApprovedCasting();
+    await runProductionPlan(stubContext(db, enqueue(db, { type: "production_plan", projectId: project.id }), {}));
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_plan", needsApproval: true });
+
+    // A direct (unscoped) redo of "production_plan" itself: `regenerate`
+    // leaves its own row alone (the enqueued job overwrites it), so
+    // `needsApproval` stays true until that job actually runs — this is the
+    // same "target's own output is left alone" contract every other
+    // capstone redo already has.
+    const job = regenerate(db, project.id, { target: "production_plan" });
+    expect(job.type).toBe("production_plan");
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "production_plan",
+      needsApproval: true,
+    });
+
+    await runProductionPlan(stubContext(db, enqueue(db, { type: "production_plan", projectId: project.id }), {}));
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "production_plan",
+      needsApproval: true,
+    });
+  });
+
+  // The capstone proof for the entire M7 milestone (Development +
+  // Preproduction, all 21 stages): a full end-to-end walk from `concept`
+  // through the approved `production_plan`, ending at `devNextStep`'s
+  // permanent terminal state. Mirrors PR5's own ten-stage Development
+  // capstone test, one level up.
+  it("walks a project through the entire 21-stage Development/Preproduction chain to devNextStep's terminal 'Preproduction approved' state", async () => {
+    const project = await runThroughApprovedCasting();
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "production_plan",
+      needsApproval: false,
+    });
+
+    await runProductionPlan(stubContext(db, enqueue(db, { type: "production_plan", projectId: project.id }), {}));
+
+    // production_plan is left unapproved even in auto mode (it is an
+    // assembly stage, not a generation one) — "continue" is what a human
+    // uses to sign off on Preproduction and reach the milestone's terminal
+    // state.
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "production_plan",
+      needsApproval: true,
+    });
+
+    const finalStep = advance(db, project.id);
+    expect(finalStep).toEqual({ kind: "complete", reason: "Preproduction approved, ready for Production" });
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "Preproduction approved, ready for Production",
+    });
   });
 });
 

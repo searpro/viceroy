@@ -14,6 +14,7 @@ import {
   runDevCharacters,
   runLogline,
   runProductionDesign,
+  runProductionPlan,
   runSceneBreakdown,
   runScreenplay,
   runScreenplayRevision,
@@ -62,9 +63,8 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   screenplay: runScreenplay,
   screenplay_revision: runScreenplayRevision,
   story_bible: runStoryBible,
-  // Preproduction (M7 PR6-PR10) — stages 11-17 of the full 11-21 range. Stage
-  // 18+ has no entry yet; the worker refuses those job types the same way it
-  // refuses any other unimplemented one, until a later PR adds them.
+  // Preproduction (M7 PR6-PR13) — the full 11-stage 11-21 range, closing out
+  // the milestone. Stages 1-10 (above) are Development.
   script_breakdown: runScriptBreakdown,
   scene_breakdown: runSceneBreakdown,
   continuity: runContinuity,
@@ -78,4 +78,7 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   // Preproduction (M7 PR12) — stage 20, the second-to-last of the 11-21
   // range this milestone's own PR sequence scoped for Preproduction.
   casting: runCasting,
+  // Preproduction (M7 PR13) — stage 21, the capstone that closes out the
+  // full 11-21 range and, with it, this entire milestone.
+  production_plan: runProductionPlan,
 };

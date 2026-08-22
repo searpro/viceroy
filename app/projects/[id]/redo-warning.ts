@@ -54,6 +54,9 @@ export const REDO_CHAIN = [
   // PR does add (not a generic entry in `describeRedoLoss`, since a lock
   // isn't a loss-to-weigh, it's a hard refusal).
   "casting",
+  // Preproduction (M7 PR13) — same "listed but nothing calls it yet" story;
+  // the chain's own permanent last stage now.
+  "production_plan",
 ] as const;
 
 export type RedoTarget = (typeof REDO_CHAIN)[number];

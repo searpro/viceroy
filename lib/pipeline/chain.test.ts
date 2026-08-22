@@ -339,6 +339,10 @@ describe("nextStep — Development chain", () => {
       "scene_breakdown",
       "visual_bible",
       "production_design",
+      // Preproduction (M7 PR13) — the chain's own permanent last stage now;
+      // approved the ordinary `dev_artifacts` way, like the other capstone
+      // ("story_bible") above.
+      "production_plan",
     ] as const;
     for (const stage of artifactStages) {
       db.insert(devArtifacts)
@@ -390,7 +394,7 @@ describe("nextStep — Development chain", () => {
 
     expect(nextStep(db, project.id)).toMatchObject({
       kind: "complete",
-      reason: "every Development/Preproduction stage built so far is approved",
+      reason: "Preproduction approved, ready for Production",
     });
   });
 
