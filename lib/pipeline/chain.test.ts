@@ -330,10 +330,13 @@ describe("nextStep — Development chain", () => {
       "screenplay",
       "screenplay_revision",
       "story_bible",
-      // Preproduction (M7 PR6) — the two stages `DEV_CHAIN_STAGES` currently
-      // ends on.
+      // Preproduction (M7 PR6/PR8) — the stages `DEV_CHAIN_STAGES` currently
+      // ends on ("continuity" is its own table, approved below like
+      // "characters"/"world_building").
       "script_breakdown",
       "scene_breakdown",
+      "visual_bible",
+      "production_design",
     ] as const;
     for (const stage of artifactStages) {
       db.insert(devArtifacts)

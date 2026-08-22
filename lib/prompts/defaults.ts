@@ -93,6 +93,21 @@ const STORY_VARS = [
     name: "existingFacts",
     description: "Continuity facts already on record from an earlier pass, pre-formatted",
   },
+  // Preproduction (M7 PR8). Production Design Style's fields — visual
+  // language / palette / texture guidance for the production department —
+  // like `genreGuidance`/`toneGuidance`/`pacingGuidance` above, confined to
+  // these two text-register templates only (ADR 0002); PR9's image-prompt
+  // templates resolve this style's guidance into their own variable fold,
+  // not this one.
+  { name: "visualLanguageGuidance", description: "The production design style's visual-language guidance" },
+  { name: "paletteGuidance", description: "The production design style's colour/lighting-philosophy guidance" },
+  { name: "textureGuidance", description: "The production design style's materials/texture/period-detail guidance" },
+  {
+    name: "visualBible",
+    description:
+      "The Preproduction chain's approved visual bible — production design style guidance plus every " +
+      "approved location/prop and continuity fact, assembled",
+  },
 ];
 
 function pick(...names: string[]) {
@@ -997,5 +1012,51 @@ aspect of it). Leave "conflict" false otherwise; do not resolve a
 contradiction yourself by picking one side or blending the two — flagging it
 is your whole job here, not correcting it. Output only the JSON object, no
 commentary before or after it.`,
+  },
+  {
+    key: "dev.production_design",
+    section: "Preproduction",
+    label: "Generate production design",
+    description:
+      "Turns the approved visual bible and the production design style's guidance into a production-" +
+      "design document: what needs building vs. finding, key texture/material choices, and a lighting " +
+      "approach per location type — the brief a production designer would hand an art department.",
+    // The visual bible, not the raw locations/props/continuity facts a
+    // second time — it is already Preproduction's own condensed capstone for
+    // this register (see `runVisualBible`'s doc comment, dev.ts, for the
+    // sizing reasoning against finding F10's cap).
+    variables: pick(
+      "visualBible",
+      "visualLanguageGuidance",
+      "paletteGuidance",
+      "textureGuidance",
+      "direction",
+      "groundingInstruction",
+    ),
+    template: `You are a production designer preparing a brief for the art department, working from the visual bible below and this project's production design style.
+
+Production design style:
+Visual language: {{visualLanguageGuidance}}
+Palette: {{paletteGuidance}}
+Texture: {{textureGuidance}}
+
+Visual bible:
+{{visualBible}}
+{{groundingInstruction}}
+{{direction}}
+
+Write a production-design document that translates the style's aesthetic
+intent into concrete production decisions. For each location and prop the
+visual bible names, cover:
+- what needs to be built versus what can be found/sourced as-is
+- key texture and material choices, consistent with the style's texture
+  guidance
+- a lighting approach appropriate to that location type, consistent with the
+  style's palette guidance
+
+Ground every decision in the visual bible's own content — invent no new
+locations, props or continuity facts beyond what it names. Write flowing
+prose organized by location/prop, not a rigid form. No preamble, no closing
+commentary. Output only the production-design document.`,
   },
 ];

@@ -10,6 +10,7 @@ import {
   directionStyles,
   evaluations,
   locations,
+  productionDesignStyles,
   projects,
   props,
   providers,
@@ -27,6 +28,7 @@ import {
   runContinuity,
   runDevCharacters,
   runLogline,
+  runProductionDesign,
   runSceneBreakdown,
   runScreenplay,
   runScreenplayRevision,
@@ -34,6 +36,7 @@ import {
   runStoryBible,
   runStoryStructure,
   runTreatment,
+  runVisualBible,
   runWorldBuilding,
 } from "./dev";
 import { filterLiveRefs } from "./images";
@@ -956,12 +959,13 @@ describe("Preproduction stages (M7 PR6 — script & scene breakdown)", () => {
       }),
     );
 
-    // Nothing is defined past "continuity" in `DEV_CHAIN_STAGES` yet — the
-    // same "no handler yet" interim landing every earlier PR's own terminal
-    // stage sat in before the next PR extended the chain further.
-    expect(nextStep(db, project.id)).toEqual({
-      kind: "complete",
-      reason: "every Development/Preproduction stage built so far is approved",
+    // "visual_bible" is next per `DEV_CHAIN_STAGES` (M7 PR8) — the same
+    // "landed on the next PR's first stage" interim state every earlier PR's
+    // own terminal assertion sat in before the chain grew past it.
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "visual_bible",
+      needsApproval: false,
     });
   });
 
@@ -1049,9 +1053,10 @@ describe("Preproduction stages (M7 PR6 — script & scene breakdown)", () => {
         llm: [CONTINUITY_FACTS],
       }),
     );
-    expect(nextStep(db, project.id)).toEqual({
-      kind: "complete",
-      reason: "every Development/Preproduction stage built so far is approved",
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "visual_bible",
+      needsApproval: false,
     });
 
     // `regenerate` returns the job it enqueues — used directly rather than
@@ -1124,9 +1129,10 @@ describe("Preproduction stages (M7 PR7 — continuity)", () => {
     expect(rows[0]!.resolvedAt).toBeNull();
 
     expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.continuityApprovedAt).not.toBeNull();
-    expect(nextStep(db, project.id)).toEqual({
-      kind: "complete",
-      reason: "every Development/Preproduction stage built so far is approved",
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "visual_bible",
+      needsApproval: false,
     });
   });
 
@@ -1266,6 +1272,181 @@ describe("Preproduction stages (M7 PR7 — continuity)", () => {
     const otherProject = await newDevProject();
 
     expect(() => resolveContinuityFact(db, otherProject.id, fact.id)).toThrow(/no such continuity fact/i);
+  });
+});
+
+describe("Preproduction stages (M7 PR8 — visual bible & production design)", () => {
+  /** Drives a fresh project through an approved continuity pass. */
+  async function runThroughApprovedContinuity() {
+    const project = await runThroughApprovedStoryBible();
+    await runScriptBreakdown(
+      stubContext(db, enqueue(db, { type: "script_breakdown", projectId: project.id }), {
+        llm: [SCRIPT_BREAKDOWN],
+      }),
+    );
+    await runSceneBreakdown(
+      stubContext(db, enqueue(db, { type: "scene_breakdown", projectId: project.id }), {
+        llm: [SCENE_BREAKDOWN],
+      }),
+    );
+    await runContinuity(
+      stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), { llm: [CONTINUITY_FACTS] }),
+    );
+    return project;
+  }
+
+  it("assembles a visual bible from production design style guidance, real locations/props and continuity facts, without calling the LLM provider", async () => {
+    const project = await runThroughApprovedContinuity();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "visual_bible", needsApproval: false });
+
+    const style = db
+      .select()
+      .from(productionDesignStyles)
+      .where(eq(productionDesignStyles.id, project.productionDesignStyleId!))
+      .get()!;
+
+    await runVisualBible(
+      stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {
+        // No `llm` entries configured — either path being reached is exactly
+        // the "never calls the LLM provider" assertion this test needs, the
+        // same shape as `story_bible`'s own test above.
+        onChatRequest: () => {
+          throw new Error("visual_bible must never call the LLM provider (chat)");
+        },
+        onChatJsonRequest: () => {
+          throw new Error("visual_bible must never call the LLM provider (chatJson)");
+        },
+      }),
+    );
+
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "visual_bible")!;
+
+    expect(row.content).toContain(style.visualLanguageGuidance);
+    expect(row.content).toContain("Reyna's shop"); // a real location, from the `locations` table
+    expect(row.content).toContain("Her father's pick set"); // a real prop, from the `props` table
+    // A continuity fact's own text, from the `continuity_facts` table.
+    expect(row.content).toContain("Reyna always keeps her father's pick set in her jacket pocket");
+    // Left unapproved — same "generic continue mechanism gates this" story
+    // as `story_bible`.
+    expect(row.approvedAt).toBeNull();
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "visual_bible",
+      needsApproval: true,
+    });
+  });
+
+  it("generates production design against the approved visual bible, threading production design style guidance into the prompt, via resolveDevProvider", async () => {
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id); // approve visual_bible, enqueue production_design
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_design", needsApproval: false });
+
+    const style = db
+      .select()
+      .from(productionDesignStyles)
+      .where(eq(productionDesignStyles.id, project.productionDesignStyleId!))
+      .get()!;
+
+    // A dev-tier provider distinct from the ordinary default "llm" one — same
+    // shape as the beat_sheet/treatment/screenplay resolution tests above —
+    // so a model match proves resolution went through `resolveDevProvider`,
+    // not `resolveProvider(db, "llm")`.
+    const [devProvider] = db
+      .insert(providers)
+      .values({ kind: "llm", name: "dev-tier", baseUrl: "http://dev-tier.example", model: "dev-tier-model" })
+      .returning()
+      .all();
+    setPreference(db, "defaultDevLlmProvider", devProvider!.id);
+
+    let prompt = "";
+    let seenModel: unknown;
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+        onChatRequest: (request) => {
+          prompt = (request.messages as { content: string }[])[0]!.content;
+          seenModel = request.model;
+        },
+      }),
+    );
+
+    expect(seenModel).toBe(devProvider!.model);
+    expect(prompt).toContain(style.visualLanguageGuidance);
+    expect(prompt).toContain(style.paletteGuidance);
+    expect(prompt).toContain(style.textureGuidance);
+
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "production_design")!;
+    expect(row.content).toBe("A production-design document.");
+    expect(row.approvedAt).not.toBeNull(); // auto mode auto-approves
+  });
+
+  it("devNextStep advances visual_bible -> production_design -> the next unhandled interim state", async () => {
+    const project = await runThroughApprovedContinuity();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "visual_bible", needsApproval: false });
+
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "visual_bible", needsApproval: true });
+
+    advance(db, project.id); // approve visual_bible, enqueue production_design
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_design", needsApproval: false });
+
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+
+    // Nothing is defined past "production_design" in `DEV_CHAIN_STAGES" yet
+    // — the same "landed on the next PR's own terminal stage" interim state
+    // "continuity" sat in before this PR extended the chain further.
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "every Development/Preproduction stage built so far is approved",
+    });
+  });
+
+  it("redoing visual_bible invalidates production_design, per ADR 0003 / INVALIDATION_CHAIN", async () => {
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id);
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "every Development/Preproduction stage built so far is approved",
+    });
+
+    const job = regenerate(db, project.id, { target: "visual_bible" });
+    expect(job.type).toBe("visual_bible");
+
+    const productionDesignRow = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "production_design")!;
+    // Cleared, not deleted — same `devArtifactDiscard` discipline every other
+    // dev-artifact stage's own redo already gets. `invalidateDownstreamOf`
+    // leaves "visual_bible"'s own (still-approved) row alone — the redo job
+    // just enqueued is what overwrites it — so `nextStep` already lands on
+    // the now-empty "production_design" rather than back on "visual_bible".
+    expect(productionDesignRow.content).toBe("");
+    expect(productionDesignRow.approvedAt).toBeNull();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_design", needsApproval: false });
   });
 });
 

@@ -40,6 +40,9 @@ export const REDO_CHAIN = [
   "script_breakdown",
   "scene_breakdown",
   "continuity",
+  // Preproduction (M7 PR8) — same "listed but nothing calls it yet" story.
+  "visual_bible",
+  "production_design",
 ] as const;
 
 export type RedoTarget = (typeof REDO_CHAIN)[number];

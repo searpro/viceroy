@@ -22,6 +22,7 @@ import {
   groundingInstruction,
   loadProject,
   requireDirectionStyle,
+  requireProductionDesignStyle,
   requireProjectId,
   resolveDevProvider,
   type StageContext,
@@ -1243,5 +1244,166 @@ export async function runContinuity(ctx: StageContext): Promise<void> {
     ctx.log("Stopping for review (manual mode)");
     return;
   }
-  ctx.log("Continuity is the last Preproduction stage defined so far — nothing further to enqueue");
+  // "Continuity" does not hand off to "visual_bible" itself, even in auto
+  // mode: it is a table stage, not a `dev_artifacts` one, and — like
+  // "characters"/"world_building" before it — its own auto-approval only
+  // ever meant "a human doesn't have to click through this specific stage,"
+  // never "the chain keeps moving on its own past it." The generic
+  // "continue" mechanism (chain.ts's `advance`) is what starts "visual_bible"
+  // once a human (or auto-mode's own review loop) reaches it via `nextStep`.
+  ctx.log("Continuity extracted — advance to Preproduction's visual bible next");
+}
+
+/** The Production Design Style's three guidance fields, formatted as one block. */
+function productionDesignSummary(style: {
+  visualLanguageGuidance: string;
+  paletteGuidance: string;
+  textureGuidance: string;
+}): string {
+  return [
+    `Visual language: ${style.visualLanguageGuidance}`,
+    `Palette: ${style.paletteGuidance}`,
+    `Texture: ${style.textureGuidance}`,
+  ].join("\n\n");
+}
+
+/**
+ * Every continuity fact on record, grouped by the subject it's about — so a
+ * location's, prop's or character's established facts sit together in the
+ * bible, rather than in whatever order extraction happened to record them.
+ */
+function continuityFactsBySubject(db: Db, projectId: string): string {
+  const facts = db.select().from(continuityFacts).where(eq(continuityFacts.projectId, projectId)).all();
+  if (facts.length === 0) return "(no continuity facts recorded yet)";
+
+  const bySubject = new Map<string, { subjectType: ContinuitySubjectType; subjectName: string; fact: string }[]>();
+  for (const f of facts) {
+    const key = `[${f.subjectType}] ${f.subjectName}`;
+    const group = bySubject.get(key) ?? [];
+    group.push(f);
+    bySubject.set(key, group);
+  }
+
+  return [...bySubject.entries()]
+    .map(([subject, group]) => `${subject}:\n${group.map((f) => `  - ${f.fact}`).join("\n")}`)
+    .join("\n\n");
+}
+
+/**
+ * Stage 14 — the capstone for Preproduction's aesthetic register. Assembles
+ * one document from Production Design Style's guidance plus every approved
+ * location/prop and continuity fact — exactly the same shape as
+ * `runStoryBible` above: formatting already-approved material, not writing
+ * new prose, so no provider is resolved and no `sd-api` call is made.
+ *
+ * Deliberately does not re-read `world_building`'s locations/props by way of
+ * `worldSummary` (that helper condenses for a *text* prompt); this stage
+ * wants the full name+description of each, since the visual bible is the one
+ * place Preproduction's aesthetic guidance and the concrete inventory of
+ * what has to be built/found/lit sit side by side. Continuity facts are
+ * included and grouped by subject per the M7 detail page's own PR8 scope —
+ * a production designer needs to know a prop's established look or a
+ * location's established geography before deciding how to build or dress it.
+ *
+ * Left unapproved on write, like `story_bible` — the ordinary "approve and
+ * continue" mechanism (chain.ts's `advance`) gates this, not a second
+ * approval path invented just for an assembly stage.
+ */
+export async function runVisualBible(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const productionDesignStyle = requireProductionDesignStyle(bundle);
+
+  const world = ctx.db.select().from(worldBuilding).where(eq(worldBuilding.projectId, projectId)).get();
+  const locs = ctx.db.select().from(locations).where(eq(locations.projectId, projectId)).all();
+  const items = ctx.db.select().from(props).where(eq(props.projectId, projectId)).all();
+
+  const locationsSection =
+    locs.length > 0 ? locs.map((l) => `- ${l.name}: ${l.description}`).join("\n") : "(none)";
+  const propsSection = items.length > 0 ? items.map((p) => `- ${p.name}: ${p.description}`).join("\n") : "(none)";
+
+  const content = [
+    `# Production Design Style\n\n${productionDesignSummary(productionDesignStyle)}`,
+    `# World Building\n\n${world?.content ?? "(no world-building notes yet)"}`,
+    `# Locations\n\n${locationsSection}`,
+    `# Props\n\n${propsSection}`,
+    `# Continuity Facts\n\n${continuityFactsBySubject(ctx.db, projectId)}`,
+  ].join("\n\n");
+
+  ctx.progress(0.5);
+  writeDevArtifact(ctx.db, projectId, "visual_bible", content, "", false);
+  ctx.log("Visual bible assembled");
+  ctx.progress(1);
+}
+
+/**
+ * Stage 15 — the approved visual bible becomes a production-design document:
+ * what needs building vs. finding, key texture/material choices, and a
+ * lighting approach per location type — the brief a production designer
+ * would hand an art department.
+ *
+ * Reads only the approved visual bible, not the raw locations/props/
+ * continuity facts a second time — the bible (stage 14) is already
+ * Preproduction's own condensed capstone for this register, so re-deriving
+ * from its sources here would defeat the point of having assembled it.
+ * Per finding F10's 4096-token cap: the bible is passed in full rather than
+ * further condensed, a deliberate judgment call, not an oversight —
+ * `runScriptBreakdown` already establishes that passing one condensed
+ * capstone document whole is safe (it is `story_bible` alone, not
+ * `story_bible` plus both breakdowns stacked on top of it, that blew the cap
+ * in PR7's real run). The visual bible is built from Production Design
+ * Style's three short guidance fields, `world_building`'s prose, and
+ * locations/props/continuity facts — the same order of magnitude as
+ * `worldSummary` plus `existingFactsSummary` combined, both already proven
+ * safe elsewhere in this file — not the full concept-through-screenplay
+ * stack `story_bible` itself carries. If a real run measures otherwise, the
+ * fix is condensing the bible's own assembly (e.g. dropping continuity
+ * facts with no bearing on a location/prop), not re-deriving from raw
+ * sources here.
+ *
+ * "production_design" is currently the last stage `DEV_CHAIN_STAGES` names,
+ * so — like `runContinuity` above — this stage does not hand off further in
+ * auto mode.
+ */
+export async function runProductionDesign(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project } = bundle;
+  const productionDesignStyle = requireProductionDesignStyle(bundle);
+  const provider = resolveDevProvider(ctx.db);
+
+  const visualBible = requireDevArtifactContent(ctx.db, projectId, "visual_bible");
+  const direction = pendingDirection(ctx);
+
+  ctx.log(`Writing production design with ${provider.model}`);
+  ctx.progress(0.2);
+  checkAbort(ctx);
+
+  const { content } = await ctx.sdApi.llm.chat({
+    model: provider.model,
+    messages: [
+      {
+        role: "user",
+        content: renderPrompt(ctx.db, "dev.production_design", {
+          visualBible,
+          visualLanguageGuidance: productionDesignStyle.visualLanguageGuidance,
+          paletteGuidance: productionDesignStyle.paletteGuidance,
+          textureGuidance: productionDesignStyle.textureGuidance,
+          direction: directionBlock(direction),
+          groundingInstruction: groundingInstruction(project),
+        }),
+      },
+    ],
+    temperature: 0.6,
+  });
+
+  writeDevArtifact(ctx.db, projectId, "production_design", content.trim(), direction, project.mode === "auto");
+  ctx.log("Production design written");
+
+  if (project.mode === "manual") {
+    awaitReview(ctx.db, projectId);
+    ctx.log("Stopping for review (manual mode)");
+    return;
+  }
+  ctx.log("Production design is the last Preproduction stage defined so far — nothing further to enqueue");
 }

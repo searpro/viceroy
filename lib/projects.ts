@@ -515,6 +515,12 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
   continuity: (db, projectId) => {
     db.update(projects).set({ continuityApprovedAt: null }).where(eq(projects.id, projectId)).run();
   },
+  // Stages 14-15 (M7 PR8) — same "cleared, not deleted" discipline as every
+  // other `dev_artifacts` stage above; "production_design" sits one entry
+  // further down `INVALIDATION_CHAIN` than "visual_bible", so redoing the
+  // latter still cascades into clearing the former (ADR 0003).
+  visual_bible: devArtifactDiscard("visual_bible"),
+  production_design: devArtifactDiscard("production_design"),
 };
 
 /** `DISCARD`'s handler for one dev-artifact stage, covering every version. */

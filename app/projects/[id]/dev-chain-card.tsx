@@ -74,6 +74,8 @@ const DEV_STAGE_LABELS: Record<string, string> = {
   script_breakdown: "Script breakdown",
   scene_breakdown: "Scene breakdown",
   continuity: "Continuity",
+  visual_bible: "Visual bible",
+  production_design: "Production design",
 };
 const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
 

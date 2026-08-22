@@ -456,6 +456,15 @@ export const DEV_ARTIFACT_STAGES = [
   // coarse/fine split each was scoped to.
   "script_breakdown",
   "scene_breakdown",
+  // Preproduction (M7 PR8), stages 14-15. "visual_bible" is an assembly
+  // stage, same shape as "story_bible" — it pulls Production Design Style's
+  // guidance plus every approved location/prop and continuity fact into one
+  // document, no LLM call. "production_design" is the first stage to
+  // generate against it (see dev.ts's `runVisualBible`/`runProductionDesign`
+  // for both). Neither needs its own table — like "story_bible", each is one
+  // document per project.
+  "visual_bible",
+  "production_design",
 ] as const;
 export type DevArtifactStage = (typeof DEV_ARTIFACT_STAGES)[number];
 
@@ -491,6 +500,10 @@ export const DEV_CHAIN_STAGES = [
   // "characters"/"world_building" this is a `DEV_TABLE_STAGES` entry, not a
   // `DEV_ARTIFACT_STAGES` one.
   "continuity",
+  // Stages 14-15 (M7 PR8) — both `dev_artifacts` rows, per
+  // `DEV_ARTIFACT_STAGES` above.
+  "visual_bible",
+  "production_design",
 ] as const;
 export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 

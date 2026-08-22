@@ -7,6 +7,7 @@ import {
   imageStyles,
   narrativeStyles,
   preferences,
+  productionDesignStyles,
   projects,
   providers,
   voiceStyles,
@@ -67,6 +68,11 @@ export type ProjectBundle = {
   // PR2) read this, and a narrative-format project has no reason to have one
   // set. A dev-chain stage that needs it checks for `undefined` itself.
   directionStyle: typeof directionStyles.$inferSelect | undefined;
+  // M7 PR8's first consumer (`visual_bible`/`production_design`) — optional
+  // for the same reason `directionStyle` is: unread by anything before this
+  // PR, so a project created before this column existed has no way to have
+  // one set.
+  productionDesignStyle: typeof productionDesignStyles.$inferSelect | undefined;
 };
 
 /**
@@ -96,6 +102,13 @@ export function loadProject(db: Db, projectId: string): ProjectBundle {
   const directionStyle = project.directionStyleId
     ? db.select().from(directionStyles).where(eq(directionStyles.id, project.directionStyleId)).get()
     : undefined;
+  const productionDesignStyle = project.productionDesignStyleId
+    ? db
+        .select()
+        .from(productionDesignStyles)
+        .where(eq(productionDesignStyles.id, project.productionDesignStyleId))
+        .get()
+    : undefined;
 
   const missing = [
     !narrativeStyle && "narrative style",
@@ -113,6 +126,7 @@ export function loadProject(db: Db, projectId: string): ProjectBundle {
     imageStyle: imageStyle!,
     captionStyle,
     directionStyle,
+    productionDesignStyle,
   };
 }
 
@@ -125,6 +139,20 @@ export function requireDirectionStyle(bundle: ProjectBundle): typeof directionSt
     throw new Error(`Project ${bundle.project.id} has no direction style`);
   }
   return bundle.directionStyle;
+}
+
+/**
+ * `requireDirectionStyle`'s Preproduction counterpart (M7 PR8) — required by
+ * `visual_bible`/`production_design`, the only two stages ADR 0002 allows to
+ * read Production Design Style's guidance.
+ */
+export function requireProductionDesignStyle(
+  bundle: ProjectBundle,
+): typeof productionDesignStyles.$inferSelect {
+  if (!bundle.productionDesignStyle) {
+    throw new Error(`Project ${bundle.project.id} has no production design style`);
+  }
+  return bundle.productionDesignStyle;
 }
 
 export function requireProjectId(job: Job): string {
