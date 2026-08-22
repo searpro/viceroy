@@ -16,6 +16,8 @@ export const PREFERENCE_KEYS = [
   "defaultMode",
   // M7 PR2.
   "defaultDirectionStyle",
+  // M7 PR6.
+  "defaultProductionDesignStyle",
   // A provider *id*, not a name — unlike the style defaults above, "which
   // provider" is not unique by name (two "llm" rows can share one), and this
   // has to pick one specific row rather than resolve one by kind the way

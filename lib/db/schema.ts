@@ -129,6 +129,31 @@ export const directionStyles = sqliteTable("direction_styles", {
   updatedAt: updatedAt(),
 });
 
+// M7 PR6. Production Design Style's own register — Preproduction's
+// aesthetic/production-design text guidance, exact same shape as Direction
+// Style but for a different concern (ADR 0002 again: a style type's fields
+// belong to one register only). Nothing consumes this yet in PR6 — the
+// production-design text stage that reads it is PR8's scope — but the table
+// and CRUD are built now because they're foundational, the same way
+// Direction Style's own table shipped a PR ahead of anything reading it.
+export const productionDesignStyles = sqliteTable("production_design_styles", {
+  id: id(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull(),
+  // Overall aesthetic approach: naturalistic vs. heightened, practical vs.
+  // stylised.
+  visualLanguageGuidance: text("visual_language_guidance").notNull(),
+  // Colour/lighting philosophy — deliberately not `renderGuidance`'s job
+  // (that's Image Style's rendering register); this is the production
+  // department's intent, for a later text prompt to translate.
+  paletteGuidance: text("palette_guidance").notNull(),
+  // Materials/texture/period-detail approach.
+  textureGuidance: text("texture_guidance").notNull(),
+  isBuiltin: integer("is_builtin", { mode: "boolean" }).notNull().default(false),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
 /* ----------------------------------------------------------------- project */
 
 export const PROJECT_STAGES = [
@@ -197,6 +222,13 @@ export const projects = sqliteTable(
     // before this column existed — a project created before Direction Style
     // shipped has no way to have one set.
     directionStyleId: text("direction_style_id").references(() => directionStyles.id),
+    // M7 PR6. Same "only a Development-chain project resolves one" story as
+    // `directionStyleId` above — nullable for the same reason (predates this
+    // column), and unread by anything until PR8's production-design text
+    // stage exists to consume it.
+    productionDesignStyleId: text("production_design_style_id").references(
+      () => productionDesignStyles.id,
+    ),
     // The "characters+arcs" dev-chain stage writes/extends `characters` rows
     // directly rather than a `dev_artifacts` row (see `DEV_CHAIN_STAGES`), so
     // it has no artifact row of its own to carry an `approvedAt`. This is
@@ -410,6 +442,12 @@ export const DEV_ARTIFACT_STAGES = [
   "screenplay",
   "screenplay_revision",
   "story_bible",
+  // Preproduction (M7 PR6), stages 11-12. Development's capstone artifact
+  // (story_bible) is what "script_breakdown" reads; "scene_breakdown" is a
+  // finer-grained second pass over "script_breakdown" — see dev.ts for the
+  // coarse/fine split each was scoped to.
+  "script_breakdown",
+  "scene_breakdown",
 ] as const;
 export type DevArtifactStage = (typeof DEV_ARTIFACT_STAGES)[number];
 
@@ -434,6 +472,12 @@ export const DEV_CHAIN_STAGES = [
   "screenplay",
   "screenplay_revision",
   "story_bible",
+  // Preproduction begins here (M7 PR6) — the first two of stages 11-21, once
+  // Development's "story_bible" is approved. `devNextStep` walks this array
+  // in order, so Preproduction stages only ever become "next" after every
+  // Development stage above them is approved.
+  "script_breakdown",
+  "scene_breakdown",
 ] as const;
 export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 
@@ -803,6 +847,7 @@ export const schema = {
   imageStyles,
   captionStyles,
   directionStyles,
+  productionDesignStyles,
   projects,
   characters,
   scenes,

@@ -47,6 +47,16 @@ type DirectionStyle = {
   isBuiltin: boolean;
 };
 
+type ProductionDesignStyle = {
+  id: string;
+  name: string;
+  description: string;
+  visualLanguageGuidance: string;
+  paletteGuidance: string;
+  textureGuidance: string;
+  isBuiltin: boolean;
+};
+
 type CaptionStyle = {
   id: string;
   name: string;
@@ -68,6 +78,7 @@ const TABS = [
   { key: "image", label: "Image" },
   { key: "caption", label: "Caption" },
   { key: "direction", label: "Direction" },
+  { key: "production-design", label: "Production Design" },
 ] as const;
 type Tab = (typeof TABS)[number]["key"];
 
@@ -77,12 +88,14 @@ export function StylesView({
   imageStyles,
   captionStyles,
   directionStyles,
+  productionDesignStyles,
 }: {
   narrativeStyles: NarrativeStyle[];
   voiceStyles: VoiceStyle[];
   imageStyles: ImageStyle[];
   captionStyles: CaptionStyle[];
   directionStyles: DirectionStyle[];
+  productionDesignStyles: ProductionDesignStyle[];
 }) {
   const [tab, setTab] = useState<Tab>("narrative");
   const [narrative, setNarrative] = useState(narrativeStyles);
@@ -90,6 +103,7 @@ export function StylesView({
   const [image, setImage] = useState(imageStyles);
   const [caption, setCaption] = useState(captionStyles);
   const [direction, setDirection] = useState(directionStyles);
+  const [productionDesign, setProductionDesign] = useState(productionDesignStyles);
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-14">
@@ -125,6 +139,9 @@ export function StylesView({
         {tab === "image" && <ImageTab styles={image} onChange={setImage} />}
         {tab === "caption" && <CaptionTab styles={caption} onChange={setCaption} />}
         {tab === "direction" && <DirectionTab styles={direction} onChange={setDirection} />}
+        {tab === "production-design" && (
+          <ProductionDesignTab styles={productionDesign} onChange={setProductionDesign} />
+        )}
       </div>
     </main>
   );
@@ -1283,6 +1300,214 @@ function DirectionCard({
             label="Pacing guidance"
             value={form.pacingGuidance}
             onChange={(v) => setForm({ ...form, pacingGuidance: v })}
+            multiline
+          />
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          <button
+            onClick={save}
+            disabled={busy}
+            className="rounded-md border border-white/15 px-3 py-1.5 text-xs transition hover:border-white/35 disabled:opacity-40"
+          >
+            Save
+          </button>
+        </div>
+      )}
+      {!editing && error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </section>
+  );
+}
+
+/* -------------------------------------------------------- production design */
+
+const EMPTY_PRODUCTION_DESIGN = {
+  name: "",
+  description: "",
+  visualLanguageGuidance: "",
+  paletteGuidance: "",
+  textureGuidance: "",
+};
+
+function ProductionDesignTab({
+  styles,
+  onChange,
+}: {
+  styles: ProductionDesignStyle[];
+  onChange: (styles: ProductionDesignStyle[]) => void;
+}) {
+  const [form, setForm] = useState(EMPTY_PRODUCTION_DESIGN);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function create() {
+    setBusy(true);
+    setError(null);
+    const response = await fetch("/api/styles/production-design", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setError(body.error ?? "Could not create style");
+    } else {
+      onChange([...styles, body.style]);
+      setForm(EMPTY_PRODUCTION_DESIGN);
+    }
+    setBusy(false);
+  }
+
+  async function save(id: string, patch: Partial<ProductionDesignStyle>): Promise<string | null> {
+    const response = await fetch(`/api/styles/production-design/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const body = await response.json();
+    if (!response.ok) return body.error ?? "Could not save";
+    onChange(styles.map((s) => (s.id === id ? body.style : s)));
+    return null;
+  }
+
+  async function remove(id: string): Promise<string | null> {
+    const response = await fetch(`/api/styles/production-design/${id}`, { method: "DELETE" });
+    if (response.status === 204) {
+      onChange(styles.filter((s) => s.id !== id));
+      return null;
+    }
+    const body = await response.json().catch(() => ({}));
+    return body.error ?? "Could not delete";
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-white/40">
+        Visual language, palette and texture guidance for Preproduction's production-design text
+        stages. Nothing generates from this yet — the stage that reads it ships in a later PR.
+      </p>
+      {styles.map((style) => (
+        <ProductionDesignCard key={style.id} style={style} onSave={save} onDelete={remove} />
+      ))}
+
+      <section className="rounded-lg border border-white/10 bg-white/[0.02] p-4">
+        <h2 className="text-sm font-medium uppercase tracking-wide text-white/40">
+          New production design style
+        </h2>
+        <div className="mt-3 space-y-2">
+          <Field label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
+          <Field
+            label="Description"
+            value={form.description}
+            onChange={(v) => setForm({ ...form, description: v })}
+          />
+          <Field
+            label="Visual language guidance"
+            value={form.visualLanguageGuidance}
+            onChange={(v) => setForm({ ...form, visualLanguageGuidance: v })}
+            multiline
+          />
+          <Field
+            label="Palette guidance"
+            value={form.paletteGuidance}
+            onChange={(v) => setForm({ ...form, paletteGuidance: v })}
+            multiline
+          />
+          <Field
+            label="Texture guidance"
+            value={form.textureGuidance}
+            onChange={(v) => setForm({ ...form, textureGuidance: v })}
+            multiline
+          />
+        </div>
+        {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+        <button
+          onClick={create}
+          disabled={busy || !form.name}
+          className="mt-3 rounded-md bg-amber-400 px-3 py-1.5 text-xs font-medium text-black transition hover:bg-amber-300 disabled:opacity-40"
+        >
+          Create
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function ProductionDesignCard({
+  style,
+  onSave,
+  onDelete,
+}: {
+  style: ProductionDesignStyle;
+  onSave: (id: string, patch: Partial<ProductionDesignStyle>) => Promise<string | null>;
+  onDelete: (id: string) => Promise<string | null>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    name: style.name,
+    description: style.description,
+    visualLanguageGuidance: style.visualLanguageGuidance,
+    paletteGuidance: style.paletteGuidance,
+    textureGuidance: style.textureGuidance,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    const err = await onSave(style.id, form);
+    setError(err);
+    setBusy(false);
+    if (!err) setEditing(false);
+  }
+
+  async function remove() {
+    setBusy(true);
+    setError(await onDelete(style.id));
+    setBusy(false);
+  }
+
+  return (
+    <section className="rounded-lg border border-white/10 bg-white/[0.02] p-4">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-sm font-medium">
+          {style.name} {style.isBuiltin && <span className="text-xs text-white/35">built-in</span>}
+        </h3>
+        <div className="flex gap-3 text-xs text-white/40">
+          <button onClick={() => setEditing((v) => !v)} className="hover:text-amber-300">
+            {editing ? "cancel" : "edit"}
+          </button>
+          {!style.isBuiltin && (
+            <button onClick={remove} disabled={busy} className="hover:text-red-300">
+              delete
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="mt-1 text-xs text-white/50">{style.description}</p>
+
+      {editing && (
+        <div className="mt-3 space-y-2 border-t border-white/5 pt-3">
+          <Field label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
+          <Field
+            label="Description"
+            value={form.description}
+            onChange={(v) => setForm({ ...form, description: v })}
+          />
+          <Field
+            label="Visual language guidance"
+            value={form.visualLanguageGuidance}
+            onChange={(v) => setForm({ ...form, visualLanguageGuidance: v })}
+            multiline
+          />
+          <Field
+            label="Palette guidance"
+            value={form.paletteGuidance}
+            onChange={(v) => setForm({ ...form, paletteGuidance: v })}
+            multiline
+          />
+          <Field
+            label="Texture guidance"
+            value={form.textureGuidance}
+            onChange={(v) => setForm({ ...form, textureGuidance: v })}
             multiline
           />
           {error && <p className="text-xs text-red-400">{error}</p>}

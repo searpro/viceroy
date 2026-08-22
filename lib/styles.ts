@@ -1,7 +1,14 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "./db/client";
-import { captionStyles, directionStyles, imageStyles, narrativeStyles, voiceStyles } from "./db/schema";
+import {
+  captionStyles,
+  directionStyles,
+  imageStyles,
+  narrativeStyles,
+  productionDesignStyles,
+  voiceStyles,
+} from "./db/schema";
 
 export const narrativeStyleSchema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -44,6 +51,19 @@ export const directionStyleSchema = z.object({
   pacingGuidance: z.string().trim().min(1),
 });
 export type DirectionStyleInput = z.infer<typeof directionStyleSchema>;
+
+// M7 PR6. Production design's own register (ADR 0002) — visual language,
+// palette and texture guidance for Preproduction's aesthetic text prompts.
+// Nothing reads this yet (PR8 wires the consuming stage); see the field-level
+// comment on `productionDesignStyles` in lib/db/schema.ts.
+export const productionDesignStyleSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  description: z.string().trim().min(1),
+  visualLanguageGuidance: z.string().trim().min(1),
+  paletteGuidance: z.string().trim().min(1),
+  textureGuidance: z.string().trim().min(1),
+});
+export type ProductionDesignStyleInput = z.infer<typeof productionDesignStyleSchema>;
 
 /**
  * A diffusion prompt has no "not".
@@ -226,6 +246,42 @@ export function deleteDirectionStyle(db: Db, id: string): void {
   }
   try {
     db.delete(directionStyles).where(eq(directionStyles.id, id)).run();
+  } catch (error) {
+    if (isForeignKeyError(error)) {
+      throw new Error(`Cannot delete "${existing.name}" — it is used by an existing project`);
+    }
+    throw error;
+  }
+}
+
+export function listProductionDesignStyles(db: Db) {
+  return db.select().from(productionDesignStyles).all();
+}
+export function createProductionDesignStyle(db: Db, input: ProductionDesignStyleInput) {
+  return db.insert(productionDesignStyles).values(input).returning().get();
+}
+export function updateProductionDesignStyle(
+  db: Db,
+  id: string,
+  input: Partial<ProductionDesignStyleInput>,
+) {
+  const existing = db.select().from(productionDesignStyles).where(eq(productionDesignStyles.id, id)).get();
+  if (!existing) throw new Error("No such production design style");
+  return db
+    .update(productionDesignStyles)
+    .set(input)
+    .where(eq(productionDesignStyles.id, id))
+    .returning()
+    .get();
+}
+export function deleteProductionDesignStyle(db: Db, id: string): void {
+  const existing = db.select().from(productionDesignStyles).where(eq(productionDesignStyles.id, id)).get();
+  if (!existing) throw new Error("No such production design style");
+  if (existing.isBuiltin) {
+    throw new Error(`Cannot delete the built-in production design style "${existing.name}"`);
+  }
+  try {
+    db.delete(productionDesignStyles).where(eq(productionDesignStyles.id, id)).run();
   } catch (error) {
     if (isForeignKeyError(error)) {
       throw new Error(`Cannot delete "${existing.name}" — it is used by an existing project`);

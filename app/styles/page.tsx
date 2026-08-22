@@ -4,6 +4,7 @@ import {
   listDirectionStyles,
   listImageStyles,
   listNarrativeStyles,
+  listProductionDesignStyles,
   listVoiceStyles,
 } from "@/lib/styles";
 import { StylesView } from "./styles-view";
@@ -20,6 +21,7 @@ export default async function StylesPage() {
       imageStyles={listImageStyles(db)}
       captionStyles={listCaptionStyles(db)}
       directionStyles={listDirectionStyles(db)}
+      productionDesignStyles={listProductionDesignStyles(db)}
     />
   );
 }

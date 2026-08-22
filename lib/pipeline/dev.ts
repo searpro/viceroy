@@ -865,3 +865,140 @@ export async function runStoryBible(ctx: StageContext): Promise<void> {
   ctx.log("Story bible assembled");
   ctx.progress(1);
 }
+
+/**
+ * Stage 11 (Preproduction's first) — the approved story bible becomes a
+ * coarse script breakdown: what each scene needs to shoot, not how it reads.
+ *
+ * Deliberately reads only the story bible, not a stack of individual
+ * upstream artifacts the way the Development stages above do — the bible is
+ * already Development's own condensed capstone (concept through the final
+ * screenplay, per `runStoryBible`), so handing this stage that one document
+ * is the scoped choice per finding F10's 4096-token cap, not a violation of
+ * it. No Direction Style guidance here: a breakdown is a logistics document
+ * (cast present, key props, key locations, day/night, interior/exterior),
+ * not prose the writer's genre/tone/pacing register has anything to say
+ * about — see the M7 detail page's own note that Production Design Style
+ * guidance stays unconsumed until PR8's aesthetic stage exists.
+ *
+ * "script_breakdown" hands off to "scene_breakdown" next per
+ * `DEV_CHAIN_STAGES` — `runSceneBreakdown`, below, this same PR's stage 12.
+ */
+export async function runScriptBreakdown(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project } = bundle;
+  const provider = resolveDevProvider(ctx.db);
+
+  const storyBible = requireDevArtifactContent(ctx.db, projectId, "story_bible");
+  const direction = pendingDirection(ctx);
+
+  ctx.log(`Writing script breakdown with ${provider.model}`);
+  ctx.progress(0.2);
+  checkAbort(ctx);
+
+  const { content } = await ctx.sdApi.llm.chat({
+    model: provider.model,
+    messages: [
+      {
+        role: "user",
+        content: renderPrompt(ctx.db, "dev.script_breakdown", {
+          storyBible,
+          direction: directionBlock(direction),
+          groundingInstruction: groundingInstruction(project),
+        }),
+      },
+    ],
+    temperature: 0.4,
+  });
+
+  writeDevArtifact(
+    ctx.db,
+    projectId,
+    "script_breakdown",
+    content.trim(),
+    direction,
+    project.mode === "auto",
+  );
+  ctx.log("Script breakdown written");
+
+  continueDevChain(ctx, projectId, project.mode, "scene_breakdown");
+}
+
+/**
+ * Stage 12 — the approved script breakdown, elaborated into a finer-grained
+ * per-scene document.
+ *
+ * The coarse/fine split between this stage and `runScriptBreakdown` above:
+ * "script_breakdown" names what a scene needs at the scene level (cast, key
+ * props, key locations, day/night, INT/EXT) — the level an AD blocks a
+ * shooting schedule from. "scene_breakdown" elaborates each of those entries
+ * down to what a specific take needs — exact prop instances and who's
+ * carrying them, blocking/entrances/exits, continuity notes against
+ * neighbouring scenes, and any special equipment, stunts or effects a scene
+ * calls for. Two artifacts rather than one longer one because they serve two
+ * different readers at two different moments of prep, the same reasoning
+ * `runStoryStructure`/`runBeatSheet` already split structure from beat sheet.
+ *
+ * Reads the immediately-prior artifact plus the cast/world summaries the
+ * story bible itself was built from — not the whole bible a second time —
+ * same scoping discipline as `runBeatSheet`/`runTreatment` above (finding
+ * F10).
+ *
+ * Preproduction has no further `STAGE_HANDLERS` entry yet past this stage
+ * (PR7+ scope) — rather than enqueue a stage name that does not exist,
+ * this stage simply does not hand off in auto mode: `devNextStep` walking
+ * `DEV_CHAIN_STAGES` self-heals once a later PR appends the next stage's
+ * name, the same "derive, don't record" reasoning `nextStep`'s own doc
+ * comment gives for reading artifacts instead of a stage column. Manual
+ * mode still parks for review, exactly as every stage above does.
+ */
+export async function runSceneBreakdown(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project } = bundle;
+  const provider = resolveDevProvider(ctx.db);
+
+  const scriptBreakdown = requireDevArtifactContent(ctx.db, projectId, "script_breakdown");
+  const direction = pendingDirection(ctx);
+
+  ctx.log(`Writing scene breakdown with ${provider.model}`);
+  ctx.progress(0.2);
+  checkAbort(ctx);
+
+  const { content } = await ctx.sdApi.llm.chat({
+    model: provider.model,
+    messages: [
+      {
+        role: "user",
+        content: renderPrompt(ctx.db, "dev.scene_breakdown", {
+          scriptBreakdown,
+          castSummary: castSummary(ctx.db, projectId),
+          worldSummary: worldSummary(ctx.db, projectId),
+          direction: directionBlock(direction),
+          groundingInstruction: groundingInstruction(project),
+        }),
+      },
+    ],
+    temperature: 0.4,
+  });
+
+  writeDevArtifact(
+    ctx.db,
+    projectId,
+    "scene_breakdown",
+    content.trim(),
+    direction,
+    project.mode === "auto",
+  );
+  ctx.log("Scene breakdown written");
+
+  if (project.mode === "manual") {
+    awaitReview(ctx.db, projectId);
+    ctx.log("Stopping for review (manual mode)");
+    return;
+  }
+  // No next stage exists in `DEV_CHAIN_STAGES` yet — see this function's doc
+  // comment above.
+  ctx.log("Scene breakdown is the last Preproduction stage defined so far — nothing further to enqueue");
+}

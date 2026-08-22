@@ -8,6 +8,7 @@ import {
   imageStyles,
   narrativeStyles,
   preferences,
+  productionDesignStyles,
   promptTemplates,
   providers,
   voiceStyles,
@@ -222,6 +223,38 @@ const DIRECTION_STYLES = [
   },
 ];
 
+// M7 PR6. Production design's own register (ADR 0002) — nothing consumes
+// this yet (PR8 wires the consuming stage), but the two built-ins ship now
+// the same way Direction Style's did a PR ahead of anything reading them.
+const PRODUCTION_DESIGN_STYLES = [
+  {
+    name: "Naturalistic",
+    description: "Muted, observed, practical-light sensibility. A default that suits most grounded material.",
+    visualLanguageGuidance:
+      "Observed rather than composed — spaces and objects look lived-in and unstaged, as they would if a " +
+      "documentary crew had simply arrived. Nothing is dressed for the camera's benefit alone.",
+    paletteGuidance:
+      "Muted, desaturated, true-to-source. Light reads as motivated by what is actually in the room or " +
+      "location — window light, practical lamps, overcast sky — not a designed grade sitting on top of it.",
+    textureGuidance:
+      "Worn, imperfect, specific: chipped paint, mismatched furniture, clothing that shows wear. Period and " +
+      "class detail is exact rather than suggested, and nothing looks new unless the story needs it to.",
+  },
+  {
+    name: "Heightened",
+    description: "Bold palette, stylised and formal. Suits genre, fable and anything larger-than-life.",
+    visualLanguageGuidance:
+      "Composed and deliberate — symmetry, saturated blocks of colour, and framing that announces itself " +
+      "as a choice rather than an observation. Spaces are designed for the frame, not merely inhabited.",
+    paletteGuidance:
+      "Bold, high-saturation, a limited and controlled palette per location or faction. Lighting is a " +
+      "design element in its own right, not a neutral rendering of what is already there.",
+    textureGuidance:
+      "Clean, considered, exaggerated where it serves the world — surfaces read as chosen rather than " +
+      "found. Period and class detail is stylised into a motif rather than reproduced literally.",
+  },
+];
+
 const CAPTION_STYLES = [
   {
     name: "Standard",
@@ -377,6 +410,13 @@ export function seed(db: Db): { inserted: Record<string, number> } {
     .returning({ id: directionStyles.id })
     .all().length;
 
+  inserted.productionDesignStyles = db
+    .insert(productionDesignStyles)
+    .values(PRODUCTION_DESIGN_STYLES.map((s) => ({ ...s, isBuiltin: true })))
+    .onConflictDoNothing()
+    .returning({ id: productionDesignStyles.id })
+    .all().length;
+
   const config = resolveConfig();
   const existingProviders = db.select({ kind: providers.kind }).from(providers).all();
   const haveKinds = new Set(existingProviders.map((p) => p.kind));
@@ -401,6 +441,7 @@ export function seed(db: Db): { inserted: Record<string, number> } {
       { key: "defaultImageStyle", value: IMAGE_STYLES[0]!.name },
       { key: "defaultCaptionStyle", value: CAPTION_STYLES[0]!.name },
       { key: "defaultDirectionStyle", value: DIRECTION_STYLES[0]!.name },
+      { key: "defaultProductionDesignStyle", value: PRODUCTION_DESIGN_STYLES[0]!.name },
       { key: "defaultMode", value: "auto" },
     ])
     .onConflictDoNothing()

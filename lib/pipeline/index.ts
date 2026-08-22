@@ -9,8 +9,10 @@ import {
   runConcept,
   runDevCharacters,
   runLogline,
+  runSceneBreakdown,
   runScreenplay,
   runScreenplayRevision,
+  runScriptBreakdown,
   runStoryBible,
   runStoryStructure,
   runTreatment,
@@ -52,4 +54,9 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   screenplay: runScreenplay,
   screenplay_revision: runScreenplayRevision,
   story_bible: runStoryBible,
+  // Preproduction (M7 PR6) — stages 11-12 of the full 11-21 range. Stage 13+
+  // has no entry yet; the worker refuses those job types the same way it
+  // refuses any other unimplemented one, until a later PR adds them.
+  script_breakdown: runScriptBreakdown,
+  scene_breakdown: runSceneBreakdown,
 };

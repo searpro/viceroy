@@ -76,6 +76,15 @@ const STORY_VARS = [
   { name: "beatSheet", description: "The Development chain's approved beat sheet" },
   { name: "treatment", description: "The Development chain's approved prose treatment" },
   { name: "screenplay", description: "The Development chain's screenplay, in Fountain syntax" },
+  // Preproduction (M7 PR6).
+  {
+    name: "storyBible",
+    description: "The Development chain's approved story bible — the capstone document Preproduction reads from",
+  },
+  {
+    name: "scriptBreakdown",
+    description: "The Preproduction chain's approved coarse script breakdown",
+  },
 ];
 
 function pick(...names: string[]) {
@@ -857,5 +866,74 @@ dialogue when needed, and a blank line between every element.
 No title page, no prose commentary, no markdown formatting, no code fences,
 nothing before the first scene heading or after the last line of the last
 scene. Output only the revised screenplay.`,
+  },
+  {
+    key: "dev.script_breakdown",
+    section: "Preproduction",
+    label: "Generate script breakdown",
+    description:
+      "Breaks the approved story bible down into a coarse, scene-by-scene production breakdown.",
+    variables: pick("storyBible", "direction", "groundingInstruction"),
+    template: `You are an assistant director preparing a script breakdown from the story
+bible below. A script breakdown is a physical-production document, not a
+piece of writing to judge for style — its only job is to tell the production
+what each scene needs to shoot.
+
+Story bible:
+{{storyBible}}
+{{groundingInstruction}}
+{{direction}}
+
+For every scene the screenplay contains, output one entry in this exact
+form, in scene order, with a blank line between entries:
+
+SCENE <n> — INT./EXT. <LOCATION> — DAY/NIGHT
+Cast: <characters present in this scene, comma-separated, or "none">
+Key props: <the specific props this scene needs, comma-separated, or "none">
+Notes: <one line on anything else physical production needs to know — a
+stunt, an effect, a crowd, a vehicle, a special location requirement>
+
+Use INT. or EXT. and DAY or NIGHT exactly as shown, derived from the
+screenplay's own scene headings. Cover every scene the screenplay contains,
+in order, and invent nothing the story bible does not support. No preamble,
+no commentary before or after the list. Output only the scene entries.`,
+  },
+  {
+    key: "dev.scene_breakdown",
+    section: "Preproduction",
+    label: "Generate scene breakdown",
+    description:
+      "Elaborates the approved script breakdown into a finer-grained, per-scene production document.",
+    variables: pick("scriptBreakdown", "castSummary", "worldSummary", "direction", "groundingInstruction"),
+    template: `You are an assistant director elaborating a script breakdown into a
+finer-grained scene breakdown. The script breakdown named what each scene
+needs at the scene level; this document goes one level deeper, to what a
+specific take needs.
+
+Script breakdown:
+{{scriptBreakdown}}
+
+Cast:
+{{castSummary}}
+
+World (locations and props):
+{{worldSummary}}
+{{groundingInstruction}}
+{{direction}}
+
+For every scene in the script breakdown, output one entry in this exact
+form, in the same scene order, with a blank line between entries:
+
+SCENE <n>
+Props (specific instances and who carries/uses each): <list, or "none">
+Blocking (entrances, exits, key positions/movement): <one or two lines>
+Continuity (anything that must match the scene before or after it): <one
+line, or "none">
+Special requirements (stunts, effects, vehicles, crowd, animals, weather):
+<one line, or "none">
+
+Cover every scene number the script breakdown lists, in order, and invent
+nothing the script breakdown, cast or world do not support. No preamble, no
+commentary before or after the list. Output only the scene entries.`,
   },
 ];

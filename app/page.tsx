@@ -1,7 +1,14 @@
 import Link from "next/link";
 import { resolveConfig } from "@/lib/config";
 import { getDb } from "@/lib/db/client";
-import { captionStyles, directionStyles, imageStyles, narrativeStyles, voiceStyles } from "@/lib/db/schema";
+import {
+  captionStyles,
+  directionStyles,
+  imageStyles,
+  narrativeStyles,
+  productionDesignStyles,
+  voiceStyles,
+} from "@/lib/db/schema";
 import { listPreferences } from "@/lib/preferences";
 import { listProjects } from "@/lib/projects";
 import { resolutionPresets } from "@/lib/resolution";
@@ -22,6 +29,7 @@ export default async function Home() {
     imageStyles: db.select().from(imageStyles).all(),
     captionStyles: db.select().from(captionStyles).all(),
     directionStyles: db.select().from(directionStyles).all(),
+    productionDesignStyles: db.select().from(productionDesignStyles).all(),
   };
   const prefs = listPreferences(db);
   const defaultMode = prefs.defaultMode === "manual" ? "manual" : "auto";
@@ -73,6 +81,7 @@ export default async function Home() {
             defaultImageStyleName={prefs.defaultImageStyle}
             defaultCaptionStyleName={prefs.defaultCaptionStyle}
             defaultDirectionStyleName={prefs.defaultDirectionStyle}
+            defaultProductionDesignStyleName={prefs.defaultProductionDesignStyle}
           />
         </section>
       )}

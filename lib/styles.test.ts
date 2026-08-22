@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTestDb } from "./db/testing";
 import { seed } from "./db/seed";
 import type { Db } from "./db/client";
-import { narrativeStyles, voiceStyles, imageStyles, captionStyles, directionStyles } from "./db/schema";
+import {
+  narrativeStyles,
+  voiceStyles,
+  imageStyles,
+  captionStyles,
+  directionStyles,
+  productionDesignStyles,
+} from "./db/schema";
 import { createProject } from "./projects";
 import {
   captionStyleSchema,
@@ -11,10 +18,12 @@ import {
   createImageStyle,
   createNarrativeStyle,
   createVoiceStyle,
+  createProductionDesignStyle,
   deleteCaptionStyle,
   deleteDirectionStyle,
   deleteImageStyle,
   deleteNarrativeStyle,
+  deleteProductionDesignStyle,
   deleteVoiceStyle,
   directionStyleSchema,
   imageStylePatchSchema,
@@ -23,12 +32,15 @@ import {
   listDirectionStyles,
   listImageStyles,
   listNarrativeStyles,
+  listProductionDesignStyles,
   listVoiceStyles,
   narrativeStyleSchema,
+  productionDesignStyleSchema,
   updateCaptionStyle,
   updateDirectionStyle,
   updateImageStyle,
   updateNarrativeStyle,
+  updateProductionDesignStyle,
   updateVoiceStyle,
   voiceStyleSchema,
 } from "./styles";
@@ -73,6 +85,14 @@ const DIRECTION_INPUT = {
   genreGuidance: "grounded drama",
   toneGuidance: "sincere",
   pacingGuidance: "patient",
+};
+
+const PRODUCTION_DESIGN_INPUT = {
+  name: "Custom production design",
+  description: "d",
+  visualLanguageGuidance: "observed, unstaged",
+  paletteGuidance: "muted, true-to-source",
+  textureGuidance: "worn, specific",
 };
 
 const CAPTION_INPUT = {
@@ -315,5 +335,60 @@ describe("direction styles", () => {
   it("is not resolved for a short_video_narrative project", () => {
     const project = createProject(db, { idea: "a plumber became mayor by wits" });
     expect(project.directionStyleId).toBeNull();
+  });
+});
+
+describe("production design styles (M7 PR6)", () => {
+  it("creates, lists and updates a custom style", () => {
+    const created = createProductionDesignStyle(db, PRODUCTION_DESIGN_INPUT);
+    expect(listProductionDesignStyles(db).map((s) => s.id)).toContain(created.id);
+
+    const updated = updateProductionDesignStyle(db, created.id, { paletteGuidance: "bold, saturated" });
+    expect(updated.paletteGuidance).toBe("bold, saturated");
+    expect(updated.visualLanguageGuidance).toBe(PRODUCTION_DESIGN_INPUT.visualLanguageGuidance);
+  });
+
+  it("seeds exactly two built-in styles", () => {
+    const builtins = db.select().from(productionDesignStyles).all().filter((s) => s.isBuiltin);
+    expect(builtins).toHaveLength(2);
+    expect(builtins.map((s) => s.name).sort()).toEqual(["Heightened", "Naturalistic"]);
+  });
+
+  it("refuses to delete a built-in style", () => {
+    const builtin = db.select().from(productionDesignStyles).all().find((s) => s.isBuiltin)!;
+    expect(() => deleteProductionDesignStyle(db, builtin.id)).toThrow(/built-in/);
+  });
+
+  it("deletes a custom style that nothing references", () => {
+    const created = createProductionDesignStyle(db, PRODUCTION_DESIGN_INPUT);
+    deleteProductionDesignStyle(db, created.id);
+    expect(listProductionDesignStyles(db).map((s) => s.id)).not.toContain(created.id);
+  });
+
+  it("refuses to delete a style a project depends on", () => {
+    const created = createProductionDesignStyle(db, PRODUCTION_DESIGN_INPUT);
+    createProject(db, {
+      idea: "a plumber became mayor by wits",
+      format: "short_movie",
+      productionDesignStyleId: created.id,
+    });
+    expect(() => deleteProductionDesignStyle(db, created.id)).toThrow(/used by an existing project/);
+  });
+
+  it("does not have the .partial() schema inject defaults on an omitted patch field", () => {
+    const patch = productionDesignStyleSchema.partial().parse({ description: "changed only" });
+    expect(patch).not.toHaveProperty("visualLanguageGuidance");
+    expect(patch).not.toHaveProperty("textureGuidance");
+
+    const created = createProductionDesignStyle(db, PRODUCTION_DESIGN_INPUT);
+    const updated = updateProductionDesignStyle(db, created.id, patch);
+    expect(updated.visualLanguageGuidance).toBe(PRODUCTION_DESIGN_INPUT.visualLanguageGuidance);
+    expect(updated.textureGuidance).toBe(PRODUCTION_DESIGN_INPUT.textureGuidance);
+  });
+
+  // Same "only the Development chain resolves one" story as Direction Style.
+  it("is not resolved for a short_video_narrative project", () => {
+    const project = createProject(db, { idea: "a plumber became mayor by wits" });
+    expect(project.productionDesignStyleId).toBeNull();
   });
 });

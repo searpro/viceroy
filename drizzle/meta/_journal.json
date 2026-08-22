@@ -106,6 +106,13 @@
       "when": 1787403774772,
       "tag": "0014_concept_through_structure",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1787477200000,
+      "tag": "0015_script_scene_breakdown",
+      "breakpoints": true
     }
   ]
 }

@@ -25,8 +25,10 @@ import {
   runConcept,
   runDevCharacters,
   runLogline,
+  runSceneBreakdown,
   runScreenplay,
   runScreenplayRevision,
+  runScriptBreakdown,
   runStoryBible,
   runStoryStructure,
   runTreatment,
@@ -852,12 +854,208 @@ describe("Development chain stages (M7 PR5 — screenplay revision & story bible
     // off on Development and reach `complete`.
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "story_bible", needsApproval: true });
 
+    // Development's own terminal state, before M7 PR6 extended
+    // `DEV_CHAIN_STAGES` with Preproduction's first two stages: approving
+    // story_bible now lands on "script_breakdown" rather than "complete" —
+    // see the PR6 describe block below for the walk past that point.
     const finalStep = advance(db, project.id);
-    expect(finalStep).toEqual({ kind: "complete", reason: "Development approved, ready for Preproduction" });
+    expect(finalStep).toMatchObject({ kind: "dev", stage: "script_breakdown" });
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "script_breakdown",
+      needsApproval: false,
+    });
+  });
+});
+
+/**
+ * Drives a fresh project through concept..story_bible (PR2-PR5's ten
+ * stages) and approves the bible — the same "continue" a human would click
+ * once Development is signed off — so `nextStep` lands on Preproduction's
+ * first stage, "script_breakdown".
+ */
+async function runThroughApprovedStoryBible(): Promise<Awaited<ReturnType<typeof newDevProject>>> {
+  const project = await runThroughScreenplay();
+  await runScreenplayRevision(
+    stubContext(db, enqueue(db, { type: "screenplay_revision", projectId: project.id }), {
+      llm: [{ json: passingEvaluation() }],
+    }),
+  );
+  await runStoryBible(stubContext(db, enqueue(db, { type: "story_bible", projectId: project.id }), {}));
+  advance(db, project.id);
+  return project;
+}
+
+const SCRIPT_BREAKDOWN = {
+  content:
+    "SCENE 1 — INT. REYNA'S SHOP — DAY\nCast: Reyna\nKey props: Her father's pick set\nNotes: none\n\n" +
+    "SCENE 2 — INT. BROTHER'S HOUSE — NIGHT\nCast: Reyna\nKey props: Her father's pick set\nNotes: none",
+};
+
+const SCENE_BREAKDOWN = {
+  content:
+    "SCENE 1\nProps: Her father's pick set (carried by Reyna)\nBlocking: Reyna enters, kneels at the " +
+    "workbench\nContinuity: none\nSpecial requirements: none\n\nSCENE 2\nProps: Her father's pick set " +
+    "(carried by Reyna)\nBlocking: Reyna enters through the front door, kneels at a new door\n" +
+    "Continuity: matches her posture from scene 1\nSpecial requirements: none",
+};
+
+describe("Preproduction stages (M7 PR6 — script & scene breakdown)", () => {
+  it("generates a script breakdown then a scene breakdown, advancing devNextStep script_breakdown -> scene_breakdown -> complete", async () => {
+    const project = await runThroughApprovedStoryBible();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "script_breakdown", needsApproval: false });
+
+    await runScriptBreakdown(
+      stubContext(db, enqueue(db, { type: "script_breakdown", projectId: project.id }), {
+        llm: [SCRIPT_BREAKDOWN],
+      }),
+    );
+    const scriptRow = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "script_breakdown")!;
+    expect(scriptRow.content).toBe(SCRIPT_BREAKDOWN.content);
+    expect(scriptRow.approvedAt).not.toBeNull(); // auto mode auto-approves
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "scene_breakdown", needsApproval: false });
+
+    await runSceneBreakdown(
+      stubContext(db, enqueue(db, { type: "scene_breakdown", projectId: project.id }), {
+        llm: [SCENE_BREAKDOWN],
+      }),
+    );
+    const sceneRow = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "scene_breakdown")!;
+    expect(sceneRow.content).toBe(SCENE_BREAKDOWN.content);
+
+    // Nothing is defined past "scene_breakdown" in `DEV_CHAIN_STAGES` yet —
+    // the same "no handler yet" interim landing every earlier PR's own
+    // terminal stage sat in before the next PR extended the chain further.
     expect(nextStep(db, project.id)).toEqual({
       kind: "complete",
-      reason: "Development approved, ready for Preproduction",
+      reason: "every Development/Preproduction stage built so far is approved",
     });
+  });
+
+  it("parks for review after each stage in manual mode, requiring an explicit approve-and-continue", async () => {
+    const project = await runThroughApprovedStoryBible();
+    // `advance` above already ran in auto mode via `runThroughApprovedStoryBible`'s
+    // helper chain — switch this project to manual before generating either
+    // Preproduction stage, so this test observes manual mode's own behaviour.
+    db.update(projects).set({ mode: "manual" }).where(eq(projects.id, project.id)).run();
+
+    await runScriptBreakdown(
+      stubContext(db, enqueue(db, { type: "script_breakdown", projectId: project.id }), {
+        llm: [SCRIPT_BREAKDOWN],
+      }),
+    );
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "script_breakdown", needsApproval: true });
+    expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.awaitingReview).toBe(true);
+
+    advance(db, project.id); // approve script_breakdown, enqueue scene_breakdown
+    await runSceneBreakdown(
+      stubContext(db, enqueue(db, { type: "scene_breakdown", projectId: project.id }), {
+        llm: [SCENE_BREAKDOWN],
+      }),
+    );
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "scene_breakdown", needsApproval: true });
+    expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.awaitingReview).toBe(true);
+  });
+
+  it("reads the approved story bible for script_breakdown and the prior breakdown plus cast/world for scene_breakdown, without threading Direction Style guidance into either (logistics documents, not prose)", async () => {
+    const project = await runThroughApprovedStoryBible();
+    const bibleRow = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "story_bible")!;
+    const direction = db
+      .select()
+      .from(directionStyles)
+      .where(eq(directionStyles.id, project.directionStyleId!))
+      .get()!;
+
+    let scriptPrompt = "";
+    await runScriptBreakdown(
+      stubContext(db, enqueue(db, { type: "script_breakdown", projectId: project.id }), {
+        llm: [SCRIPT_BREAKDOWN],
+        onChatRequest: (request) => {
+          scriptPrompt = (request.messages as { content: string }[])[0]!.content;
+        },
+      }),
+    );
+    expect(scriptPrompt).toContain(bibleRow.content);
+    expect(scriptPrompt).not.toContain(direction.genreGuidance);
+    expect(scriptPrompt).not.toContain(direction.toneGuidance);
+
+    let scenePrompt = "";
+    await runSceneBreakdown(
+      stubContext(db, enqueue(db, { type: "scene_breakdown", projectId: project.id }), {
+        llm: [SCENE_BREAKDOWN],
+        onChatRequest: (request) => {
+          scenePrompt = (request.messages as { content: string }[])[0]!.content;
+        },
+      }),
+    );
+    expect(scenePrompt).toContain(SCRIPT_BREAKDOWN.content);
+    expect(scenePrompt).toContain("Reyna"); // castSummary
+    expect(scenePrompt).not.toContain(direction.genreGuidance);
+    expect(scenePrompt).not.toContain(direction.pacingGuidance);
+  });
+
+  it("redoing script_breakdown invalidates scene_breakdown, per ADR 0003 / INVALIDATION_CHAIN", async () => {
+    const project = await runThroughApprovedStoryBible();
+    await runScriptBreakdown(
+      stubContext(db, enqueue(db, { type: "script_breakdown", projectId: project.id }), {
+        llm: [SCRIPT_BREAKDOWN],
+      }),
+    );
+    await runSceneBreakdown(
+      stubContext(db, enqueue(db, { type: "scene_breakdown", projectId: project.id }), {
+        llm: [SCENE_BREAKDOWN],
+      }),
+    );
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "every Development/Preproduction stage built so far is approved",
+    });
+
+    // `regenerate` returns the job it enqueues — used directly rather than
+    // `claim(db)`, since every earlier stage in this walk left its own
+    // already-run job row sitting "queued" (this file's `run*` helpers pass
+    // jobs to stage handlers directly rather than through `claim`), and
+    // `claim` would otherwise hand back the oldest of those instead of this
+    // redo's own job.
+    const job = regenerate(db, project.id, { target: "script_breakdown", direction: "tighten the props list" });
+
+    const sceneRow = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "scene_breakdown")!;
+    // Cleared, not deleted — `directionHistory` (empty here) would still
+    // survive a redo the same way every other dev-artifact discard preserves
+    // it, per `devArtifactDiscard`'s own doc comment.
+    expect(sceneRow.content).toBe("");
+    expect(sceneRow.approvedAt).toBeNull();
+
+    expect(job.type).toBe("script_breakdown");
+    expect(job.payload.direction).toBe("tighten the props list");
+
+    await runScriptBreakdown(
+      stubContext(db, job, { llm: [{ content: "revised, tighter breakdown" }] }),
+    );
+    // The redone script_breakdown auto-approves (auto mode) and hands off to
+    // scene_breakdown, which the invalidation cleared — exactly the state a
+    // fresh run of the two-stage chain would be in.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "scene_breakdown", needsApproval: false });
   });
 });
 

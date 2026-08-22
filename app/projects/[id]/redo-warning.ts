@@ -34,6 +34,11 @@ export const REDO_CHAIN = [
   "screenplay",
   "screenplay_revision",
   "story_bible",
+  // Preproduction (M7 PR6) — same "listed but nothing calls it yet" story as
+  // the Development stages above; `DevChainCard` has no redo affordance for
+  // any dev-chain stage.
+  "script_breakdown",
+  "scene_breakdown",
 ] as const;
 
 export type RedoTarget = (typeof REDO_CHAIN)[number];

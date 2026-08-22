@@ -14,6 +14,7 @@ import {
   narrativeStyles,
   preferences,
   PROJECT_FORMATS,
+  productionDesignStyles,
   projects,
   props,
   renders,
@@ -47,6 +48,9 @@ export const createProjectSchema = z
     imageStyleId: z.string().optional(),
     captionStyleId: z.string().optional(),
     directionStyleId: z.string().optional(),
+    // M7 PR6. Same "Development-chain project only" story as
+    // `directionStyleId` — see `createProject`'s resolution below.
+    productionDesignStyleId: z.string().optional(),
     resolutionKey: z.enum(RESOLUTION_KEYS).optional(),
     mode: z.enum(["auto", "manual"]).default("auto"),
   })
@@ -147,6 +151,19 @@ export function createProject(db: Db, raw: CreateProjectInput) {
           preferenceValue(db, "defaultDirectionStyle"),
           "direction style",
         );
+  // M7 PR6. Nothing in the pipeline reads this yet (PR8 is the first
+  // consumer) — resolved and stored now anyway, the same "build the
+  // foundational piece ahead of what uses it" call Direction Style's own
+  // table made a PR early.
+  const productionDesign =
+    input.format === "short_video_narrative"
+      ? undefined
+      : resolveStyle(
+          db.select().from(productionDesignStyles).all(),
+          input.productionDesignStyleId,
+          preferenceValue(db, "defaultProductionDesignStyle"),
+          "production design style",
+        );
   const resolution = resolvePresetDimensions(resolveConfig(), input.resolutionKey);
 
   // `idea` stays NOT NULL either way — rather than a nullability change, a
@@ -169,6 +186,7 @@ export function createProject(db: Db, raw: CreateProjectInput) {
       imageStyleId: image.id,
       captionStyleId: caption.id,
       directionStyleId: direction?.id,
+      productionDesignStyleId: productionDesign?.id,
       width: resolution.width,
       height: resolution.height,
     })
@@ -446,6 +464,12 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
     db.delete(evaluations).where(eq(evaluations.projectId, projectId)).run();
   },
   story_bible: devArtifactDiscard("story_bible"),
+  // Preproduction (M7 PR6) — same "cleared, not deleted" discipline as every
+  // other `dev_artifacts` stage above; "scene_breakdown" is one entry further
+  // down `INVALIDATION_CHAIN` than "script_breakdown", so redoing the latter
+  // still cascades into clearing the former.
+  script_breakdown: devArtifactDiscard("script_breakdown"),
+  scene_breakdown: devArtifactDiscard("scene_breakdown"),
 };
 
 /** `DISCARD`'s handler for one dev-artifact stage, covering every version. */

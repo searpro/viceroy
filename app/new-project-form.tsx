@@ -29,6 +29,7 @@ export function NewProjectForm({
   imageStyles,
   captionStyles,
   directionStyles,
+  productionDesignStyles,
   resolutionPresets,
   defaultMode,
   defaultNarrativeStyleName,
@@ -36,12 +37,14 @@ export function NewProjectForm({
   defaultImageStyleName,
   defaultCaptionStyleName,
   defaultDirectionStyleName,
+  defaultProductionDesignStyleName,
 }: {
   narrativeStyles: Style[];
   voiceStyles: Style[];
   imageStyles: Style[];
   captionStyles: Style[];
   directionStyles: Style[];
+  productionDesignStyles: Style[];
   resolutionPresets: ResolutionPreset[];
   defaultMode: "auto" | "manual";
   defaultNarrativeStyleName?: string;
@@ -49,6 +52,7 @@ export function NewProjectForm({
   defaultImageStyleName?: string;
   defaultCaptionStyleName?: string;
   defaultDirectionStyleName?: string;
+  defaultProductionDesignStyleName?: string;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -77,7 +81,10 @@ export function NewProjectForm({
         // `z.string().optional()` (optional allows a missing key, not a null
         // value), so each group is included only when its own select exists.
         ...(isDevFormat
-          ? { directionStyleId: formData.get("directionStyleId") }
+          ? {
+              directionStyleId: formData.get("directionStyleId"),
+              productionDesignStyleId: formData.get("productionDesignStyleId"),
+            }
           : {
               narrativeStyleId: formData.get("narrativeStyleId"),
               voiceStyleId: formData.get("voiceStyleId"),
@@ -204,12 +211,20 @@ export function NewProjectForm({
       </div>
 
       {isDevFormat ? (
-        <Select
-          label="Direction style"
-          name="directionStyleId"
-          options={directionStyles}
-          defaultName={defaultDirectionStyleName}
-        />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Select
+            label="Direction style"
+            name="directionStyleId"
+            options={directionStyles}
+            defaultName={defaultDirectionStyleName}
+          />
+          <Select
+            label="Production design style"
+            name="productionDesignStyleId"
+            options={productionDesignStyles}
+            defaultName={defaultProductionDesignStyleName}
+          />
+        </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
           <Select

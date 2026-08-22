@@ -170,7 +170,23 @@ function devNextStep(db: Db, projectId: string): NextStep {
         status === "pending" ? `${stage} is waiting for review` : `${stage} has not been generated yet`,
     };
   }
-  return { kind: "complete", reason: "Development approved, ready for Preproduction" };
+  // "Development approved, ready for Preproduction" was accurate while
+  // `DEV_CHAIN_STAGES` ended at `story_bible` (PR1-5) — once Preproduction
+  // PRs started appending their own stage names after it (PR6+), reaching
+  // the end of the (growing) list stopped meaning "Development is done" and
+  // started meaning "everything currently built is done," which are
+  // different claims once any Preproduction stage exists. `story_bible` is
+  // still the one fixed point that always means Development specifically
+  // finished; the message names it as long as it's the last stage this
+  // project actually walked, and stays generic once later stages exist too.
+  const lastStage = DEV_CHAIN_STAGES[DEV_CHAIN_STAGES.length - 1];
+  return {
+    kind: "complete",
+    reason:
+      lastStage === "story_bible"
+        ? "Development approved, ready for Preproduction"
+        : "every Development/Preproduction stage built so far is approved",
+  };
 }
 
 /**
