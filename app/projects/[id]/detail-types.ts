@@ -37,10 +37,35 @@ export type Character = {
   id: string;
   name: string;
   description: string;
+  arc: string | null;
   appearanceTag: string | null;
   imagePrompt: string | null;
   imageAssetId: string | null;
   imageSource: "generated" | "uploaded";
+};
+
+// One row per Development-chain stage that owns a `dev_artifacts` row —
+// "characters" and "world_building" write their own tables instead (see
+// `characters`/`worldBuilding` below), same as the API's `latestDevArtifactsByStage`.
+export type DevArtifact = {
+  id: string;
+  stage: string;
+  version: number;
+  content: string;
+  approvedAt: string | null;
+};
+
+export type WorldBuilding = {
+  id: string;
+  content: string;
+  approvedAt: string | null;
+};
+
+export type LocationOrProp = {
+  id: string;
+  name: string;
+  description: string;
+  imageAssetId: string | null;
 };
 
 export type Cue = {
@@ -77,6 +102,10 @@ export type Detail = {
   stalled: boolean;
   scenes: Scene[];
   characters: Character[];
+  devArtifacts: DevArtifact[];
+  worldBuilding?: WorldBuilding | null;
+  locations: LocationOrProp[];
+  props: LocationOrProp[];
   render?: { id: string; assetId: string | null; status: string } | null;
   voiceover?: {
     id: string;

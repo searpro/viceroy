@@ -261,7 +261,30 @@ export function getProjectDetail(db: Db, projectId: string) {
     jobs: listJobs(db, { projectId }),
     nextStep: nextStep(db, projectId),
     stalled: isStalled(db, projectId),
+    // The Development chain (M7) has no per-stage review UI yet — everything
+    // it's generated is otherwise invisible once the chain reaches its
+    // terminal "complete" state, since the chain-status card only ever shows
+    // the *next* stage. Latest version per stage, since a stage can have more
+    // than one (a redo keeps history rather than deleting it, per ADR 0003).
+    devArtifacts: latestDevArtifactsByStage(db, projectId),
+    worldBuilding: db.select().from(worldBuilding).where(eq(worldBuilding.projectId, projectId)).get(),
+    locations: db.select().from(locations).where(eq(locations.projectId, projectId)).all(),
+    props: db.select().from(props).where(eq(props.projectId, projectId)).all(),
   };
+}
+
+function latestDevArtifactsByStage(db: Db, projectId: string) {
+  const all = db
+    .select()
+    .from(devArtifacts)
+    .where(eq(devArtifacts.projectId, projectId))
+    .orderBy(desc(devArtifacts.version))
+    .all();
+  const latestByStage = new Map<string, (typeof all)[number]>();
+  for (const row of all) {
+    if (!latestByStage.has(row.stage)) latestByStage.set(row.stage, row);
+  }
+  return DEV_CHAIN_STAGES.map((stage) => latestByStage.get(stage)).filter((row) => row !== undefined);
 }
 
 /** Approve what is there and queue whatever is outstanding. */

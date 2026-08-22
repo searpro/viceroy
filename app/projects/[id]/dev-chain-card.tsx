@@ -32,9 +32,12 @@ export function DevChainCard({
 
   if (nextStep.kind === "complete") {
     return (
-      <Panel title="Development" empty={false} emptyText="">
-        <p className="text-sm text-white/85">{nextStep.reason}</p>
-      </Panel>
+      <div>
+        <Panel title="Development" empty={false} emptyText="">
+          <p className="text-sm text-white/85">{nextStep.reason}</p>
+        </Panel>
+        <DevChainHistory detail={detail} />
+      </div>
     );
   }
 
@@ -47,6 +50,158 @@ export function DevChainCard({
       <Panel title={stage ?? "Development"} empty emptyText="Not yet generated.">
         <></>
       </Panel>
+      <DevChainHistory detail={detail} />
+    </div>
+  );
+}
+
+// Mirrors `DEV_CHAIN_STAGES` in lib/db/schema.ts — hand-kept rather than
+// imported, same as `PROJECT_FORMATS` in new-project-form.tsx, since
+// lib/db/schema.ts pulls in better-sqlite3 and isn't safe in a client bundle.
+const DEV_STAGE_LABELS: Record<string, string> = {
+  concept: "Concept",
+  logline: "Logline",
+  characters: "Characters & arcs",
+  world_building: "World building",
+  story_structure: "Story structure",
+  beat_sheet: "Beat sheet",
+  treatment: "Treatment",
+  screenplay: "Screenplay",
+  screenplay_revision: "Screenplay revision",
+  story_bible: "Story bible",
+};
+const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
+
+/**
+ * Read-only history of everything the Development chain has generated so
+ * far — without this, a finished (or in-progress) dev-format project shows
+ * only whichever single stage is next, and everything already approved is
+ * otherwise invisible in the UI. Closed by default (`<details>`) since a
+ * Story Bible alone can run to several thousand words; opening one doesn't
+ * require a round trip since the content is already in `detail`.
+ */
+function DevChainHistory({ detail }: { detail: Detail }) {
+  const byStage = new Map(detail.devArtifacts.map((row) => [row.stage, row]));
+  const hasCharacters = detail.characters.length > 0;
+  const hasWorld = Boolean(detail.worldBuilding?.content) || detail.locations.length > 0 || detail.props.length > 0;
+
+  const stagesWithContent = DEV_CHAIN_ORDER.filter((stage) => {
+    if (stage === "characters") return hasCharacters;
+    if (stage === "world_building") return hasWorld;
+    return byStage.has(stage);
+  });
+
+  if (stagesWithContent.length === 0) return null;
+
+  return (
+    <section className="mt-6">
+      <h2 className="text-sm font-medium uppercase tracking-wide text-white/40">Generated so far</h2>
+      <div className="mt-3 space-y-2">
+        {stagesWithContent.map((stage) => (
+          <details
+            key={stage}
+            className="rounded-lg border border-white/10 bg-white/[0.02] p-4 open:pb-4"
+          >
+            <summary className="cursor-pointer text-sm font-medium text-white/85">
+              {DEV_STAGE_LABELS[stage]}
+            </summary>
+            <div className="mt-3">
+              {stage === "characters" ? (
+                <CharactersSection detail={detail} />
+              ) : stage === "world_building" ? (
+                <WorldBuildingSection detail={detail} />
+              ) : (
+                <StageContent
+                  content={byStage.get(stage)?.content ?? ""}
+                  approved={Boolean(byStage.get(stage)?.approvedAt)}
+                  pdfHref={
+                    stage === "screenplay" || stage === "screenplay_revision"
+                      ? `/api/projects/${detail.project.id}/screenplay.pdf`
+                      : undefined
+                  }
+                />
+              )}
+            </div>
+          </details>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function StageContent({
+  content,
+  approved,
+  pdfHref,
+}: {
+  content: string;
+  approved: boolean;
+  pdfHref?: string;
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-4">
+        <span className={`text-xs ${approved ? "text-emerald-400" : "text-white/40"}`}>
+          {approved ? "approved" : "draft, not yet approved"}
+        </span>
+        {pdfHref && approved && (
+          <a
+            href={pdfHref}
+            className="text-xs text-amber-300 underline decoration-amber-300/40 underline-offset-2 hover:text-amber-200"
+          >
+            download PDF
+          </a>
+        )}
+      </div>
+      <p className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap text-sm text-white/75">{content}</p>
+    </div>
+  );
+}
+
+function CharactersSection({ detail }: { detail: Detail }) {
+  return (
+    <ul className="space-y-3">
+      {detail.characters.map((character) => (
+        <li key={character.id} className="text-sm">
+          <p className="font-medium text-white/85">{character.name}</p>
+          <p className="mt-1 text-white/70">{character.description}</p>
+          {character.arc && <p className="mt-1 text-white/50">Arc: {character.arc}</p>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function WorldBuildingSection({ detail }: { detail: Detail }) {
+  return (
+    <div className="space-y-4 text-sm">
+      {detail.worldBuilding?.content && (
+        <p className="whitespace-pre-wrap text-white/75">{detail.worldBuilding.content}</p>
+      )}
+      {detail.locations.length > 0 && (
+        <div>
+          <p className="text-xs uppercase tracking-wide text-white/40">Locations</p>
+          <ul className="mt-1 space-y-1">
+            {detail.locations.map((location) => (
+              <li key={location.id} className="text-white/70">
+                <span className="font-medium text-white/85">{location.name}</span> — {location.description}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {detail.props.length > 0 && (
+        <div>
+          <p className="text-xs uppercase tracking-wide text-white/40">Props</p>
+          <ul className="mt-1 space-y-1">
+            {detail.props.map((prop) => (
+              <li key={prop.id} className="text-white/70">
+                <span className="font-medium text-white/85">{prop.name}</span> — {prop.description}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
