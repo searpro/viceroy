@@ -23,7 +23,7 @@ import {
 } from "./context";
 
 /**
- * The Development chain's five PR2 stages — concept through story structure.
+ * The Development chain's PR2/PR3 stages — concept through treatment.
  *
  * Every stage below shares one shape with the narrative pipeline's own
  * stages (story.ts, elements.ts): an injected provider, a rendered prompt,
@@ -394,15 +394,12 @@ export async function runWorldBuilding(ctx: StageContext): Promise<void> {
 }
 
 /**
- * Stage 5 (of PR2's five) — the approved concept, logline, cast and world
- * become a numbered beat structure.
+ * Stage 5 — the approved concept, logline, cast and world become a numbered
+ * beat structure.
  *
  * Behaves exactly like the four stages above: auto mode approves its own
- * draft and hands off to whatever `DEV_CHAIN_STAGES` names next. That next
- * stage, "beat_sheet", has no `STAGE_HANDLERS` entry yet (PR3+ scope), so the
- * enqueued job simply fails the way any unimplemented job type already does
- * (worker/index.ts) — the same graceful "park the project for review" outcome
- * a special case here would produce, without a special case.
+ * draft and hands off to whatever `DEV_CHAIN_STAGES` names next ("beat_sheet",
+ * PR3's own stage 6, below).
  */
 export async function runStoryStructure(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
@@ -443,4 +440,99 @@ export async function runStoryStructure(ctx: StageContext): Promise<void> {
   ctx.log("Story structure written");
 
   continueDevChain(ctx, projectId, project.mode, "beat_sheet");
+}
+
+/**
+ * Stage 6 — the approved story structure becomes a finer-grained beat sheet.
+ *
+ * Same shape as `runStoryStructure` above, minus world/pacing's extra inputs
+ * — per finding F10's 4096-token cap, this prompt carries only what it needs
+ * to expand (concept for premise, the structure itself, cast for who's in
+ * each beat), not the whole chain's history.
+ */
+export async function runBeatSheet(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project } = bundle;
+  const directionStyle = requireDirectionStyle(bundle);
+  const provider = resolveDevProvider(ctx.db);
+
+  const concept = requireDevArtifactContent(ctx.db, projectId, "concept");
+  const storyStructure = requireDevArtifactContent(ctx.db, projectId, "story_structure");
+  const direction = pendingDirection(ctx);
+
+  ctx.log(`Writing beat sheet with ${provider.model}`);
+  ctx.progress(0.2);
+  checkAbort(ctx);
+
+  const { content } = await ctx.sdApi.llm.chat({
+    model: provider.model,
+    messages: [
+      {
+        role: "user",
+        content: renderPrompt(ctx.db, "dev.beat_sheet", {
+          concept,
+          storyStructure,
+          castSummary: castSummary(ctx.db, projectId),
+          genreGuidance: directionStyle.genreGuidance,
+          pacingGuidance: directionStyle.pacingGuidance,
+          direction: directionBlock(direction),
+          groundingInstruction: groundingInstruction(project),
+        }),
+      },
+    ],
+    temperature: 0.7,
+  });
+
+  writeDevArtifact(ctx.db, projectId, "beat_sheet", content.trim(), direction, project.mode === "auto");
+  ctx.log("Beat sheet written");
+
+  continueDevChain(ctx, projectId, project.mode, "treatment");
+}
+
+/**
+ * Stage 7 — the approved beat sheet becomes a prose treatment.
+ *
+ * "treatment" hands off to "screenplay" next per `DEV_CHAIN_STAGES`, which
+ * has no `STAGE_HANDLERS` entry yet (PR4+ scope) — the same graceful landing
+ * `runStoryStructure`'s doc comment describes for "beat_sheet" before this PR.
+ */
+export async function runTreatment(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project } = bundle;
+  const directionStyle = requireDirectionStyle(bundle);
+  const provider = resolveDevProvider(ctx.db);
+
+  const concept = requireDevArtifactContent(ctx.db, projectId, "concept");
+  const beatSheet = requireDevArtifactContent(ctx.db, projectId, "beat_sheet");
+  const direction = pendingDirection(ctx);
+
+  ctx.log(`Writing treatment with ${provider.model}`);
+  ctx.progress(0.2);
+  checkAbort(ctx);
+
+  const { content } = await ctx.sdApi.llm.chat({
+    model: provider.model,
+    messages: [
+      {
+        role: "user",
+        content: renderPrompt(ctx.db, "dev.treatment", {
+          concept,
+          beatSheet,
+          castSummary: castSummary(ctx.db, projectId),
+          genreGuidance: directionStyle.genreGuidance,
+          toneGuidance: directionStyle.toneGuidance,
+          direction: directionBlock(direction),
+          groundingInstruction: groundingInstruction(project),
+        }),
+      },
+    ],
+    temperature: 0.75,
+  });
+
+  writeDevArtifact(ctx.db, projectId, "treatment", content.trim(), direction, project.mode === "auto");
+  ctx.log("Treatment written");
+
+  continueDevChain(ctx, projectId, project.mode, "screenplay");
 }

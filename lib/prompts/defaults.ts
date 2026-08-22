@@ -72,6 +72,8 @@ const STORY_VARS = [
     name: "worldSummary",
     description: "The Development chain's world-building notes plus its locations and props",
   },
+  { name: "storyStructure", description: "The Development chain's approved numbered story structure" },
+  { name: "beatSheet", description: "The Development chain's approved beat sheet" },
 ];
 
 function pick(...names: string[]) {
@@ -649,5 +651,79 @@ Write the structure as 6-10 numbered beats, one line each, in the form
 "<n>. <what happens, and whose turn it is>". Cover setup through resolution;
 each beat must follow causally from the one before it. No headings, no
 commentary before or after the numbered list. Output only the numbered beats.`,
+  },
+  {
+    key: "dev.beat_sheet",
+    section: "Development",
+    label: "Generate beat sheet",
+    description: "Expands the approved story structure into a detailed, scene-aware beat sheet.",
+    variables: pick(
+      "concept",
+      "storyStructure",
+      "castSummary",
+      "genreGuidance",
+      "pacingGuidance",
+      "direction",
+      "groundingInstruction",
+    ),
+    template: `Expand the story structure below into a detailed beat sheet for this project.
+
+Concept:
+{{concept}}
+
+Story structure:
+{{storyStructure}}
+
+Cast:
+{{castSummary}}
+
+Style guidance:
+Genre: {{genreGuidance}}
+Pacing: {{pacingGuidance}}
+{{groundingInstruction}}
+{{direction}}
+
+Write the beat sheet as numbered beats, one line each, in the form
+"<n>. <what happens>". Expand each structure beat into two or three finer
+beats that name the specific scene action and turn, in causal order from
+setup through resolution. No headings, no commentary before or after the
+numbered list. Output only the numbered beats.`,
+  },
+  {
+    key: "dev.treatment",
+    section: "Development",
+    label: "Generate treatment",
+    description: "Writes a prose treatment from the approved beat sheet.",
+    variables: pick(
+      "concept",
+      "beatSheet",
+      "castSummary",
+      "genreGuidance",
+      "toneGuidance",
+      "direction",
+      "groundingInstruction",
+    ),
+    template: `Write a prose treatment for this project, from the beat sheet below.
+
+Concept:
+{{concept}}
+
+Beat sheet:
+{{beatSheet}}
+
+Cast:
+{{castSummary}}
+
+Style guidance:
+Genre: {{genreGuidance}}
+Tone: {{toneGuidance}}
+{{groundingInstruction}}
+{{direction}}
+
+Write 400-700 words of flowing prose, present tense, covering the whole
+story from setup through resolution in scene order. This is a treatment for
+a reader to judge the story by, not a script — no dialogue, no scene
+headings, no shot list. No preamble, no commentary before or after the
+prose. Output only the treatment.`,
   },
 ];

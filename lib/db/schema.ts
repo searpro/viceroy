@@ -567,8 +567,8 @@ export const JOB_TYPES = [
   // generic mechanism every narrative stage already uses. `DEV_CHAIN_STAGES`
   // (M7 PR2) rather than `DEV_ARTIFACT_STAGES` (M7 PR1) — "characters" and
   // "world_building" need job types too, even though they aren't
-  // `dev_artifacts` rows. beat_sheet onward still has no `STAGE_HANDLERS`
-  // entry — PR3+ scope — so the worker refuses one if it is ever claimed, the
+  // `dev_artifacts` rows. screenplay onward still has no `STAGE_HANDLERS`
+  // entry — PR4+ scope — so the worker refuses one if it is ever claimed, the
   // same way it refuses any other unimplemented type.
   ...DEV_CHAIN_STAGES,
 ] as const;

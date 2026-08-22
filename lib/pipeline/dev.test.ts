@@ -10,12 +10,23 @@ import {
   locations,
   projects,
   props,
+  providers,
   worldBuilding,
 } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject, regenerate } from "../projects";
+import { setPreference } from "../preferences";
 import { advance, nextStep } from "./chain";
-import { runConcept, runDevCharacters, runLogline, runStoryStructure, runWorldBuilding } from "./dev";
+import { resolveProvider } from "./context";
+import {
+  runBeatSheet,
+  runConcept,
+  runDevCharacters,
+  runLogline,
+  runStoryStructure,
+  runTreatment,
+  runWorldBuilding,
+} from "./dev";
 import { filterLiveRefs } from "./images";
 import { stubContext } from "./test-support";
 
@@ -59,6 +70,17 @@ const WORLD = {
   },
 };
 const STRUCTURE = { content: "1. Reyna refuses the job. 2. The deadline forces her hand. 3. She finds what's really behind the door." };
+const BEAT_SHEET = {
+  content:
+    "1. Reyna refuses the job outright. 2. The bank sets a deadline. 3. She takes the job for the money, not her brother. " +
+    "4. She finds the first lock her father never taught her to pick. 5. She lets someone in. 6. She finds what's really behind the door.",
+};
+const TREATMENT = {
+  content:
+    "Reyna has spent her life trusting mechanisms more than people, and it has kept her safe until the bank sets a " +
+    "deadline on her estranged brother's house. She takes the job, tells herself it is only for the money, and finds " +
+    "a lock inside the house her father never taught her to pick — one that opens only if she lets someone in first.",
+};
 
 describe("Development chain stages (M7 PR2)", () => {
   it("advances devNextStep through all five PR2 stages in order (auto mode)", async () => {
@@ -212,6 +234,171 @@ describe("Development chain stages (M7 PR2)", () => {
 
     expect(seenPrompt).toContain(direction.genreGuidance);
     expect(seenPrompt).toContain(direction.toneGuidance);
+  });
+});
+
+/** Drives a fresh project through concept..story_structure (PR2's five stages), auto mode. */
+async function runThroughStoryStructure(): Promise<Awaited<ReturnType<typeof newDevProject>>> {
+  const project = newDevProject("auto");
+  await runConcept(stubContext(db, enqueue(db, { type: "concept", projectId: project.id }), { llm: [CONCEPT] }));
+  await runLogline(stubContext(db, enqueue(db, { type: "logline", projectId: project.id }), { llm: [LOGLINE] }));
+  await runDevCharacters(
+    stubContext(db, enqueue(db, { type: "characters", projectId: project.id }), { llm: [CHARACTERS] }),
+  );
+  await runWorldBuilding(
+    stubContext(db, enqueue(db, { type: "world_building", projectId: project.id }), { llm: [WORLD] }),
+  );
+  await runStoryStructure(
+    stubContext(db, enqueue(db, { type: "story_structure", projectId: project.id }), { llm: [STRUCTURE] }),
+  );
+  return project;
+}
+
+describe("Development chain stages (M7 PR3 — beat sheet & treatment)", () => {
+  it("generates a beat sheet and a treatment as dev_artifacts rows, advancing devNextStep beat_sheet -> treatment -> screenplay", async () => {
+    const project = await runThroughStoryStructure();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "beat_sheet" });
+
+    await runBeatSheet(
+      stubContext(db, enqueue(db, { type: "beat_sheet", projectId: project.id }), { llm: [BEAT_SHEET] }),
+    );
+    const beatSheetRow = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "beat_sheet")!;
+    expect(beatSheetRow.content).toBe(BEAT_SHEET.content);
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "treatment" });
+
+    await runTreatment(
+      stubContext(db, enqueue(db, { type: "treatment", projectId: project.id }), { llm: [TREATMENT] }),
+    );
+    const treatmentRow = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "treatment")!;
+    expect(treatmentRow.content).toBe(TREATMENT.content);
+
+    // "screenplay" has no STAGE_HANDLERS entry yet (PR4+) — landing there, not
+    // generated, is what a correctly-advancing devNextStep looks like here,
+    // the same interim state "beat_sheet" was in before this PR.
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "screenplay",
+      needsApproval: false,
+    });
+  });
+
+  it("resolves beat_sheet's and treatment's provider via resolveDevProvider, not the ordinary default llm provider", async () => {
+    const project = await runThroughStoryStructure();
+
+    const [devProvider] = db
+      .insert(providers)
+      .values({ kind: "llm", name: "dev-tier", baseUrl: "http://dev-tier.example", model: "dev-tier-model" })
+      .returning()
+      .all();
+    setPreference(db, "defaultDevLlmProvider", devProvider!.id);
+
+    let seenModel: unknown;
+    await runBeatSheet(
+      stubContext(db, enqueue(db, { type: "beat_sheet", projectId: project.id }), {
+        llm: [BEAT_SHEET],
+        onChatRequest: (request) => {
+          seenModel = request.model;
+        },
+      }),
+    );
+    expect(seenModel).toBe(devProvider!.model);
+
+    seenModel = undefined;
+    await runTreatment(
+      stubContext(db, enqueue(db, { type: "treatment", projectId: project.id }), {
+        llm: [TREATMENT],
+        onChatRequest: (request) => {
+          seenModel = request.model;
+        },
+      }),
+    );
+    expect(seenModel).toBe(devProvider!.model);
+  });
+
+  it("keeps the narrative pipeline's default llm provider and the dev-tier preference from affecting each other's resolution", async () => {
+    const project = await runThroughStoryStructure();
+
+    // A second "llm" provider, made the ordinary default — this is what the
+    // narrative pipeline's synopsis/story stages resolve via resolveProvider.
+    // Only one "llm" row may be `isDefault` (providers.ts's own invariant),
+    // so unset the seeded one before inserting this test's replacement.
+    db.update(providers).set({ isDefault: false }).where(eq(providers.kind, "llm")).run();
+    const [narrativeDefault] = db
+      .insert(providers)
+      .values({ kind: "llm", name: "fast-cheap", baseUrl: "http://fast.example", model: "fast-cheap-model", isDefault: true })
+      .returning()
+      .all();
+
+    const [devProvider] = db
+      .insert(providers)
+      .values({ kind: "llm", name: "dev-tier", baseUrl: "http://dev-tier.example", model: "dev-tier-model" })
+      .returning()
+      .all();
+    setPreference(db, "defaultDevLlmProvider", devProvider!.id);
+
+    // Changing the narrative pipeline's default llm provider must not change
+    // what a dev-chain stage resolves.
+    let seenModel: unknown;
+    await runBeatSheet(
+      stubContext(db, enqueue(db, { type: "beat_sheet", projectId: project.id }), {
+        llm: [BEAT_SHEET],
+        onChatRequest: (request) => {
+          seenModel = request.model;
+        },
+      }),
+    );
+    expect(seenModel).toBe(devProvider!.model);
+    expect(seenModel).not.toBe(narrativeDefault!.model);
+
+    // And conversely: the dev-tier preference must not change what
+    // resolveProvider(db, "llm") — the narrative pipeline's own resolution —
+    // returns.
+    expect(resolveProvider(db, "llm").id).toBe(narrativeDefault!.id);
+  });
+
+  it("threads Direction Style guidance into beat_sheet's and treatment's prompts, referencing the prior approved artifact", async () => {
+    const project = await runThroughStoryStructure();
+    const direction = db
+      .select()
+      .from(directionStyles)
+      .where(eq(directionStyles.id, project.directionStyleId!))
+      .get()!;
+
+    let beatSheetPrompt = "";
+    await runBeatSheet(
+      stubContext(db, enqueue(db, { type: "beat_sheet", projectId: project.id }), {
+        llm: [BEAT_SHEET],
+        onChatRequest: (request) => {
+          beatSheetPrompt = (request.messages as { content: string }[])[0]!.content;
+        },
+      }),
+    );
+    expect(beatSheetPrompt).toContain(direction.genreGuidance);
+    expect(beatSheetPrompt).toContain(direction.pacingGuidance);
+    expect(beatSheetPrompt).toContain(STRUCTURE.content);
+
+    let treatmentPrompt = "";
+    await runTreatment(
+      stubContext(db, enqueue(db, { type: "treatment", projectId: project.id }), {
+        llm: [TREATMENT],
+        onChatRequest: (request) => {
+          treatmentPrompt = (request.messages as { content: string }[])[0]!.content;
+        },
+      }),
+    );
+    expect(treatmentPrompt).toContain(direction.genreGuidance);
+    expect(treatmentPrompt).toContain(direction.toneGuidance);
+    expect(treatmentPrompt).toContain(BEAT_SHEET.content);
   });
 });
 

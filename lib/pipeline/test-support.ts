@@ -27,6 +27,10 @@ export type StubOptions = {
   images?: Buffer[];
   onImageRequest?: (request: Record<string, unknown>) => void;
   onChatJsonRequest?: (request: Record<string, unknown>) => void;
+  /** Same as `onChatJsonRequest`, for the plain-text `llm.chat` path — lets a
+   * test assert which provider's `model` a stage resolved and sent, not just
+   * that output exists (M7 PR3's provider-resolution acceptance bar). */
+  onChatRequest?: (request: Record<string, unknown>) => void;
   shouldAbort?: () => boolean;
   /** Override the throwaway data directory, e.g. to assert on written files. */
   dataDir?: string;
@@ -122,7 +126,10 @@ export function stubContext(db: Db, job: Job, options: StubOptions = {}): StageC
     shouldAbort: options.shouldAbort ?? (() => false),
     sdApi: {
       llm: {
-        chat: async () => ({ content: nextLlm().content ?? "", completionTokens: 10 }),
+        chat: async (request: Record<string, unknown>) => {
+          options.onChatRequest?.(request);
+          return { content: nextLlm().content ?? "", completionTokens: 10 };
+        },
         chatJson: async (request: Record<string, unknown>) => {
           options.onChatJsonRequest?.(request);
           return nextLlm().json;

@@ -155,8 +155,8 @@ function devStageStatus(db: Db, projectId: string, stage: DevChainStage): DevSta
  * own output alone" — see `invalidateDownstreamOf`), so "approved" means the
  * *latest* version is, which is what `devStageStatus` checks.
  *
- * Only PR2's five stages (concept through story_structure) have generation
- * logic; PR3+ is what makes the terminal `complete` below reachable.
+ * PR2+PR3's seven stages (concept through treatment) have generation logic;
+ * PR4+ is what makes the terminal `complete` below reachable.
  */
 function devNextStep(db: Db, projectId: string): NextStep {
   for (const stage of DEV_CHAIN_STAGES) {

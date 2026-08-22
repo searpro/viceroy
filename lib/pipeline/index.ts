@@ -4,7 +4,15 @@ import { runElements } from "./elements";
 import { runCharacterImages, runSceneImages } from "./images";
 import { runSubtitleAlign, runVoiceover } from "./voiceover";
 import { runRender } from "./render";
-import { runConcept, runDevCharacters, runLogline, runStoryStructure, runWorldBuilding } from "./dev";
+import {
+  runBeatSheet,
+  runConcept,
+  runDevCharacters,
+  runLogline,
+  runStoryStructure,
+  runTreatment,
+  runWorldBuilding,
+} from "./dev";
 import type { StageHandler } from "./context";
 
 export * from "./context";
@@ -29,12 +37,14 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   voiceover: runVoiceover,
   subtitle_align: runSubtitleAlign,
   render: runRender,
-  // Development chain (M7 PR2) — concept through story structure. The
-  // remaining five stages (beat_sheet onward) have no handler yet: PR3+
+  // Development chain (M7 PR2+PR3) — concept through treatment. The
+  // remaining three stages (screenplay onward) have no handler yet: PR4+
   // scope, per `DEV_CHAIN_STAGES` in lib/db/schema.ts.
   concept: runConcept,
   logline: runLogline,
   characters: runDevCharacters,
   world_building: runWorldBuilding,
   story_structure: runStoryStructure,
+  beat_sheet: runBeatSheet,
+  treatment: runTreatment,
 };
