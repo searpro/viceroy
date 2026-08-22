@@ -481,10 +481,19 @@ what the array is for — the prompt itself describes them without naming them.`
     // comes from the image style rather than the narrative style, portrait and
     // scene are rendered alike by construction. The story's settings and props
     // are correctly absent — this is a face against a plain background.
+    //
+    // Framing comes before `{{characterDescription}}` rather than after
+    // (BUG-26). Earlier phrases in a comma-separated diffusion prompt carry
+    // more weight, and `appearanceTag` routinely ends in a clothing clause
+    // ("...blue shirt, grey slacks") — with framing trailing that, the
+    // clothing was winning and the model was framing wide enough to show it.
+    // Leading with a stronger, doubled framing instruction and closing with
+    // the original one keeps the crop instruction weighted at both ends.
     variables: pick("characterDescription"),
-    template: `{{characterDescription}}, centred head-and-shoulders portrait,
-neutral expression, facing camera, plain uncluttered background, evenly lit,
-full face clearly visible and unobstructed`,
+    template: `tightly cropped, centred head-and-shoulders portrait, face fills
+most of the frame, {{characterDescription}}, neutral expression, facing
+camera, plain uncluttered background, evenly lit, full face clearly visible
+and unobstructed`,
   },
   /* ------------------------------------------------------- Development (M7) */
   // Each of these five is deliberately scoped to one stage's own output plus
