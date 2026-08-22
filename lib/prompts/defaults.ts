@@ -479,7 +479,7 @@ what the array is for — the prompt itself describes them without naming them.`
     variables: pick("characterDescription"),
     template: `{{characterDescription}}, centred head-and-shoulders portrait,
 neutral expression, facing camera, plain uncluttered background, evenly lit,
-full face clearly visible and unobstructed, no text or watermark`,
+full face clearly visible and unobstructed`,
   },
   /* ------------------------------------------------------- Development (M7) */
   // Each of these five is deliberately scoped to one stage's own output plus

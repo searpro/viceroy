@@ -191,6 +191,20 @@ describe("built-in text destined for image prompts", () => {
     }
   });
 
+  // BUG-025: `character.portrait` is the one prompt template whose rendered
+  // output goes straight to the diffusion model with no LLM in between —
+  // the same rule as an image style's prefix/suffix, not the rule for
+  // LLM-facing instruction templates (which do handle "avoid X" correctly).
+  it("has no negations in the character.portrait template", () => {
+    seed(db);
+    const row = db
+      .select()
+      .from(promptTemplates)
+      .where(eq(promptTemplates.key, "character.portrait"))
+      .get()!;
+    expect(row.template, "character.portrait template").not.toMatch(NEGATION);
+  });
+
   it("still expresses exclusions, in the image provider's negative prompt where they work", () => {
     seed(db);
     const imageProvider = db.select().from(providers).where(eq(providers.kind, "image")).get()!;
