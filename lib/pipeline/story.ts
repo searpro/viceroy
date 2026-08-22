@@ -120,7 +120,10 @@ export async function runStory(ctx: StageContext): Promise<void> {
   enqueue(ctx.db, { type: "story_eval", projectId });
 }
 
-type EvaluationPayload = {
+// Exported so the Development chain's screenplay-revision loop (M7 PR5, in
+// dev.ts) can shape its own raw LLM response the same way, without a second
+// copy of this type drifting from this one.
+export type EvaluationPayload = {
   verdict?: unknown;
   dimensions?: Record<string, { score?: unknown; comment?: unknown }>;
   issues?: { severity?: unknown; note?: unknown; sceneIndex?: unknown }[];

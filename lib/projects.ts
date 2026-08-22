@@ -413,7 +413,15 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
   beat_sheet: devArtifactDiscard("beat_sheet"),
   treatment: devArtifactDiscard("treatment"),
   screenplay: devArtifactDiscard("screenplay"),
-  screenplay_revision: devArtifactDiscard("screenplay_revision"),
+  // Also clears the revision loop's evaluation history — same reasoning as
+  // "story" above clearing `evaluations` on its own redo: a fresh run of the
+  // loop should judge only its own attempts, not carry an iteration count
+  // (and QC-threshold budget) left over from a run against a screenplay this
+  // redo is about to replace.
+  screenplay_revision: (db, projectId) => {
+    devArtifactDiscard("screenplay_revision")(db, projectId);
+    db.delete(evaluations).where(eq(evaluations.projectId, projectId)).run();
+  },
   story_bible: devArtifactDiscard("story_bible"),
 };
 

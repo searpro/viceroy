@@ -300,6 +300,16 @@ export const scenes = sqliteTable(
   (t) => [unique("scenes_project_index_uq").on(t.projectId, t.index)],
 );
 
+// Shared by the narrative pipeline's story_eval/story_revise loop (story.ts)
+// and the Development chain's screenplay_revision loop (dev.ts, M7 PR5) —
+// deliberately not split into two tables or given a "subject"/"kind"
+// discriminator column. Nothing here names what was judged; every column is
+// already generic (a checklist's keys, a verdict, freeform issue notes), and
+// a project is only ever one format or the other (`projects.format`), so its
+// evaluations rows are always all one loop's history or all the other's,
+// never a mix one query could misattribute. Splitting would only add a
+// column every reader has to thread through for a distinction the data never
+// actually needs to make.
 export const evaluations = sqliteTable(
   "evaluations",
   {
@@ -310,7 +320,9 @@ export const evaluations = sqliteTable(
     iteration: integer("iteration").notNull(),
     verdict: text("verdict", { enum: ["pass", "revise", "fail"] }).notNull(),
     overallScore: real("overall_score"),
-    // Keyed by the narrative style's own checklist keys.
+    // Keyed by whichever checklist judged this evaluation — the narrative
+    // style's own checklist for a story_eval row, or `SCREENPLAY_CHECKLIST`
+    // (dev.ts) for a screenplay_revision row.
     dimensions: text("dimensions", { mode: "json" })
       .notNull()
       .$type<Record<string, { score: number; comment: string }>>(),

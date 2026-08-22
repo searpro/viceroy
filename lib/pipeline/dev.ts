@@ -3,6 +3,7 @@ import { Fountain, type Script } from "fountain-js";
 import {
   characters,
   devArtifacts,
+  evaluations,
   locations,
   projects,
   props,
@@ -22,6 +23,7 @@ import {
   resolveDevProvider,
   type StageContext,
 } from "./context";
+import { parseEvaluation, type EvaluationPayload } from "./story";
 
 /**
  * The Development chain's PR2/PR3 stages — concept through treatment.
@@ -579,10 +581,8 @@ export function parseScreenplay(content: string): Script {
  * screenplay sitting in the chain for stage 9 (revision) or 11-12 (script/
  * scene breakdown) to choke on later.
  *
- * "screenplay" hands off to "screenplay_revision" next per `DEV_CHAIN_STAGES`,
- * which has no `STAGE_HANDLERS` entry yet (PR5+ scope) — the same graceful
- * landing `runTreatment`'s own doc comment describes for "screenplay" before
- * this PR.
+ * "screenplay" hands off to "screenplay_revision" next per `DEV_CHAIN_STAGES`
+ * — `runScreenplayRevision`, below, PR5's own stage 9.
  */
 export async function runScreenplay(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
@@ -631,4 +631,237 @@ export async function runScreenplay(ctx: StageContext): Promise<void> {
   ctx.log("Screenplay written");
 
   continueDevChain(ctx, projectId, project.mode, "screenplay_revision");
+}
+
+/**
+ * The checklist `runScreenplayRevision` judges a screenplay against.
+ *
+ * There is no style-table equivalent to draw this from — Direction Style
+ * deliberately carries no checklist field (ADR-scoped decision from PR2's
+ * design: genre/tone/pacing guidance for the *writer*, not a rubric for a
+ * judge) — so this is a standalone module-level constant, the same shape as
+ * `FACTUAL_GROUNDING_CHECKLIST_ITEM` in context.ts.
+ */
+const SCREENPLAY_CHECKLIST: { key: string; description: string }[] = [
+  {
+    key: "scene_structure",
+    description:
+      "Scenes are well-formed Fountain (a slugline, action/dialogue, a clear turn or beat) " +
+      "and, taken in order, cover the story from setup through resolution.",
+  },
+  {
+    key: "character_voice",
+    description:
+      "Each character's dialogue reads distinctly theirs — word choice, rhythm, what they " +
+      "would and would not say — rather than interchangeable lines redistributed by cue.",
+  },
+  {
+    key: "dialogue_quality",
+    description:
+      "Dialogue does the scene's work through subtext and conflict, not by characters " +
+      "stating what they want or feel outright.",
+  },
+  {
+    key: "pacing",
+    description:
+      "No scene overstays a beat that has already landed, and no turn arrives before the " +
+      "scene has earned it — the read moves at the story's own speed, not the treatment's.",
+  },
+  {
+    key: "fountain_cleanliness",
+    description:
+      "Strict Fountain syntax throughout: sluglines in caps starting INT./EXT., character " +
+      "cues in caps immediately before their dialogue, no stray markdown, no prose outside " +
+      "the screenplay's own elements.",
+  },
+];
+
+function formatScreenplayChecklist(): string {
+  return SCREENPLAY_CHECKLIST.map((c) => `- ${c.key}: ${c.description}`).join("\n");
+}
+
+/** How many screenplay-revision-loop evaluations this project has recorded so far. */
+function countScreenplayEvaluations(db: Db, projectId: string): number {
+  return db.select({ id: evaluations.id }).from(evaluations).where(eq(evaluations.projectId, projectId)).all()
+    .length;
+}
+
+/**
+ * Stage 9 — evaluate the approved screenplay against `SCREENPLAY_CHECKLIST`
+ * and, if it falls short, revise and re-judge, until it passes or the QC
+ * iteration threshold is reached.
+ *
+ * Mirrors `runStoryEval`/`runStoryRevise` (story.ts) exactly in mechanism —
+ * same evaluator/reviser split, same `parseEvaluation` "trust the scores over
+ * the stated verdict" logic, same `qcMaxIterations` threshold-then-await-review
+ * behaviour, same `evaluations` table (see its doc comment in
+ * lib/db/schema.ts for why one shared table needs no format-specific
+ * discriminator column). The one structural difference is deliberate: the
+ * narrative pipeline's loop is two job types (`story_eval`/`story_revise`)
+ * because `nextStep` walks a flat job sequence with no notion of "waiting for
+ * approval" — but `DEV_CHAIN_STAGES` is one entry per `dev_artifacts` stage,
+ * and `screenplay_revision` is that one entry (see `JOB_TYPES`'s comment in
+ * lib/db/schema.ts: dev-chain job types come from `DEV_CHAIN_STAGES`, not a
+ * second parallel list a `screenplay_eval`/`screenplay_revise` pair would
+ * need). So this stage is a single job that loops internally — evaluate,
+ * and if it doesn't pass, revise and evaluate again, all within one call —
+ * rather than two jobs re-queuing each other.
+ */
+export async function runScreenplayRevision(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project } = bundle;
+  const provider = resolveDevProvider(ctx.db);
+
+  let content = requireDevArtifactContent(ctx.db, projectId, "screenplay");
+  const allowedKeys = SCREENPLAY_CHECKLIST.map((c) => c.key);
+  const checklist = formatScreenplayChecklist();
+
+  for (;;) {
+    const iteration = countScreenplayEvaluations(ctx.db, projectId) + 1;
+
+    ctx.log(`Evaluating screenplay (attempt ${iteration}) with ${provider.model}`);
+    ctx.progress(0.1);
+    checkAbort(ctx);
+
+    const raw = await ctx.sdApi.llm.chatJson<EvaluationPayload>({
+      model: provider.model,
+      messages: [
+        {
+          role: "user",
+          content: renderPrompt(ctx.db, "dev.screenplay_evaluate", { screenplay: content, checklist }),
+        },
+      ],
+      temperature: 0.2,
+    });
+
+    const parsed = parseEvaluation(raw, allowedKeys);
+
+    ctx.db
+      .insert(evaluations)
+      .values({
+        projectId,
+        iteration,
+        verdict: parsed.verdict,
+        overallScore: parsed.overallScore,
+        dimensions: parsed.dimensions,
+        issues: parsed.issues,
+        model: provider.model,
+      })
+      .run();
+
+    ctx.log(
+      `Evaluation ${iteration}: ${parsed.verdict}` +
+        (parsed.overallScore ? ` (mean ${parsed.overallScore.toFixed(2)}/5)` : "") +
+        (parsed.issues.length > 0 ? `, ${parsed.issues.length} issue(s)` : ""),
+    );
+
+    if (parsed.verdict === "pass") {
+      writeDevArtifact(ctx.db, projectId, "screenplay_revision", content, "", project.mode === "auto");
+      ctx.log("Screenplay passed evaluation");
+      continueDevChain(ctx, projectId, project.mode, "story_bible");
+      return;
+    }
+
+    if (iteration >= ctx.config.qcMaxIterations) {
+      // Leave the latest (still-failing) draft behind as an unapproved
+      // `dev_artifacts` row rather than nothing at all — a human reviewing
+      // this project has something concrete to look at, and can approve it
+      // as-is via the ordinary "continue" mechanism (chain.ts's `advance`) if
+      // they judge it good enough despite the evaluator, exactly the same
+      // override every other dev-chain stage's manual review already allows.
+      writeDevArtifact(ctx.db, projectId, "screenplay_revision", content, "", false);
+      const reason =
+        `Screenplay still failing evaluation after ${iteration} attempt(s) — ` +
+        `QC threshold reached, stopping for review`;
+      awaitReview(ctx.db, projectId, reason);
+      ctx.log(reason, "warn");
+      return;
+    }
+
+    ctx.log(`Revising screenplay against ${parsed.issues.length} issue(s)`);
+    checkAbort(ctx);
+
+    const { content: revised } = await ctx.sdApi.llm.chat({
+      model: provider.model,
+      messages: [
+        {
+          role: "user",
+          content: renderPrompt(ctx.db, "dev.screenplay_revise", {
+            screenplay: content,
+            issues: parsed.issues.map((i) => `- [${i.severity}] ${i.note}`).join("\n"),
+          }),
+        },
+      ],
+      temperature: 0.7,
+    });
+
+    const trimmed = revised.trim();
+    // Same validation `runScreenplay` applies to a fresh generation — a
+    // revision that has drifted out of Fountain is exactly as unusable
+    // downstream as a first draft that never was one.
+    parseScreenplay(trimmed);
+    content = trimmed;
+  }
+}
+
+/**
+ * Stage 10 — the capstone. Assembles one readable document from every
+ * approved Development artifact: concept through the final screenplay
+ * revision, the cast, and the world.
+ *
+ * Deliberately not a generation: every source here is already-approved prose
+ * a human signed off on, so this stage's job is formatting, not writing.
+ * No provider is resolved and no `sd-api` call is made — the acceptance bar
+ * this stage has to clear is "assembles the document", not "writes good
+ * prose". Left unapproved on write, like every other dev-chain draft — the
+ * ordinary "approve and continue" mechanism (chain.ts's `advance`) is what
+ * gates Development's `devNextStep` "complete" state on a human's sign-off,
+ * not a second approval path invented just for this stage.
+ */
+export async function runStoryBible(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const project = ctx.db.select().from(projects).where(eq(projects.id, projectId)).get();
+  if (!project) throw new Error(`No such project: ${projectId}`);
+
+  const concept = requireDevArtifactContent(ctx.db, projectId, "concept");
+  const logline = requireDevArtifactContent(ctx.db, projectId, "logline");
+  const storyStructure = requireDevArtifactContent(ctx.db, projectId, "story_structure");
+  const beatSheet = requireDevArtifactContent(ctx.db, projectId, "beat_sheet");
+  const treatment = requireDevArtifactContent(ctx.db, projectId, "treatment");
+  // The final, revised screenplay — not the pre-revision "screenplay" stage's
+  // own content — is what belongs in the bible: it is the version Development
+  // actually signed off on.
+  const finalScreenplay = requireDevArtifactContent(ctx.db, projectId, "screenplay_revision");
+
+  const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
+  const world = ctx.db.select().from(worldBuilding).where(eq(worldBuilding.projectId, projectId)).get();
+  const locs = ctx.db.select().from(locations).where(eq(locations.projectId, projectId)).all();
+  const items = ctx.db.select().from(props).where(eq(props.projectId, projectId)).all();
+
+  const worldSection = [
+    world?.content ?? "",
+    locs.length > 0 ? `Locations:\n${locs.map((l) => `- ${l.name}: ${l.description}`).join("\n")}` : "",
+    items.length > 0 ? `Props:\n${items.map((p) => `- ${p.name}: ${p.description}`).join("\n")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const castSection = cast.map((c) => `- ${c.name}: ${c.description} (Arc: ${c.arc ?? "—"})`).join("\n");
+
+  const content = [
+    `# Concept\n\n${concept}`,
+    `# Logline\n\n${logline}`,
+    `# Characters & Arcs\n\n${castSection}`,
+    `# World Building\n\n${worldSection}`,
+    `# Story Structure\n\n${storyStructure}`,
+    `# Beat Sheet\n\n${beatSheet}`,
+    `# Treatment\n\n${treatment}`,
+    `# Screenplay\n\n${finalScreenplay}`,
+  ].join("\n\n");
+
+  ctx.progress(0.5);
+  writeDevArtifact(ctx.db, projectId, "story_bible", content, "", false);
+  ctx.log("Story bible assembled");
+  ctx.progress(1);
 }

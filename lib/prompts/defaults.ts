@@ -75,6 +75,7 @@ const STORY_VARS = [
   { name: "storyStructure", description: "The Development chain's approved numbered story structure" },
   { name: "beatSheet", description: "The Development chain's approved beat sheet" },
   { name: "treatment", description: "The Development chain's approved prose treatment" },
+  { name: "screenplay", description: "The Development chain's screenplay, in Fountain syntax" },
 ];
 
 function pick(...names: string[]) {
@@ -778,5 +779,69 @@ read as prose. Follow these rules exactly:
 No title page, no prose commentary, no markdown formatting, no code fences,
 nothing before the first scene heading or after the last line of the last
 scene. Output only the screenplay itself.`,
+  },
+  {
+    key: "dev.screenplay_evaluate",
+    section: "Development",
+    label: "Evaluate screenplay",
+    description: "Scores the screenplay against a Fountain-specific checklist, ahead of the revision loop.",
+    variables: pick("screenplay", "checklist"),
+    template: `You are a script editor judging a screenplay written in valid Fountain
+syntax.
+
+Judge it against this checklist and nothing else. A quality this checklist
+does not mention is not a flaw here.
+
+{{checklist}}
+
+Screenplay:
+{{screenplay}}
+
+Respond with a single JSON object, no prose around it:
+
+{
+  "verdict": "pass" | "revise",
+  "dimensions": {
+    "<checklist key>": { "score": <1-5>, "comment": "<one sentence>" }
+  },
+  "issues": [
+    { "severity": "low" | "medium" | "high", "note": "<what is wrong and where>" }
+  ]
+}
+
+Rules:
+- include every checklist key in "dimensions", using the exact keys given
+- "revise" if any dimension scores 2 or below, otherwise "pass"
+- leave "issues" empty on a pass
+- be specific: quote the scene heading or character cue you mean rather than
+  describing it in general terms`,
+  },
+  {
+    key: "dev.screenplay_revise",
+    section: "Development",
+    label: "Revise screenplay",
+    description: "Rewrites the screenplay in Fountain syntax to address the evaluator's issues.",
+    variables: pick("screenplay", "issues"),
+    template: `You are revising a screenplay written in valid Fountain syntax.
+
+Current screenplay:
+{{screenplay}}
+
+An editor raised these issues:
+{{issues}}
+
+Rewrite the screenplay so every issue is addressed. Keep what is already
+working — this is a revision, not a fresh draft. Preserve the scene order and
+cast.
+
+Output strict Fountain syntax only, following the same formatting rules as the
+original: scene headings (sluglines) in caps starting with INT. or EXT.,
+action lines in plain sentence case, character cues in caps immediately
+before their dialogue, parentheticals on their own line between a cue and its
+dialogue when needed, and a blank line between every element.
+
+No title page, no prose commentary, no markdown formatting, no code fences,
+nothing before the first scene heading or after the last line of the last
+scene. Output only the revised screenplay.`,
   },
 ];

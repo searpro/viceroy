@@ -7,6 +7,7 @@ import {
   characters,
   devArtifacts,
   directionStyles,
+  evaluations,
   locations,
   projects,
   props,
@@ -25,6 +26,8 @@ import {
   runDevCharacters,
   runLogline,
   runScreenplay,
+  runScreenplayRevision,
+  runStoryBible,
   runStoryStructure,
   runTreatment,
   runWorldBuilding,
@@ -567,6 +570,294 @@ describe("Development chain stages (M7 PR4 — screenplay)", () => {
       }),
     );
     expect(seenModel).toBe(devProvider!.model);
+  });
+});
+
+/** Drives a fresh project through concept..screenplay (PR2-PR4's eight stages), auto mode. */
+async function runThroughScreenplay(): Promise<Awaited<ReturnType<typeof newDevProject>>> {
+  const project = await runThroughTreatment();
+  await runScreenplay(
+    stubContext(db, enqueue(db, { type: "screenplay", projectId: project.id }), { llm: [SCREENPLAY] }),
+  );
+  return project;
+}
+
+const REVISION_KEYS = ["scene_structure", "character_voice", "dialogue_quality", "pacing", "fountain_cleanliness"];
+
+function passingEvaluation() {
+  return {
+    verdict: "pass",
+    dimensions: Object.fromEntries(REVISION_KEYS.map((k) => [k, { score: 5, comment: "solid" }])),
+    issues: [],
+  };
+}
+
+function failingEvaluation(note: string) {
+  return {
+    verdict: "revise",
+    dimensions: Object.fromEntries(
+      REVISION_KEYS.map((k, i) => [k, { score: i === 0 ? 1 : 4, comment: i === 0 ? note : "fine" }]),
+    ),
+    issues: [{ severity: "high", note }],
+  };
+}
+
+const REVISED_SCREENPLAY = {
+  content: `INT. REYNA'S SHOP - DAY
+
+Reyna bends over a half-fixed lock, her father's pick set open beside her,
+the bank's notice still unopened.
+
+REYNA
+(quietly, to the lock)
+Almost. Just a little more trust than that.
+
+INT. BROTHER'S HOUSE - NIGHT
+
+Reyna kneels at a door she doesn't recognize, working a lock her father
+never taught her.
+
+REYNA
+This one's new. This one's yours.
+
+She lets it click open, and the house exhales around her.`,
+};
+
+describe("Development chain stages (M7 PR5 — screenplay revision & story bible)", () => {
+  it("passes the screenplay on first evaluation, writes an approved screenplay_revision row, and advances to story_bible", async () => {
+    const project = await runThroughScreenplay();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "screenplay_revision" });
+
+    await runScreenplayRevision(
+      stubContext(db, enqueue(db, { type: "screenplay_revision", projectId: project.id }), {
+        llm: [{ json: passingEvaluation() }],
+      }),
+    );
+
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "screenplay_revision")!;
+    expect(row.content).toBe(SCREENPLAY.content);
+    expect(row.approvedAt).not.toBeNull(); // auto mode approves its own draft
+
+    const evalRow = db.select().from(evaluations).where(eq(evaluations.projectId, project.id)).get()!;
+    expect(evalRow.verdict).toBe("pass");
+    expect(evalRow.iteration).toBe(1);
+
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "story_bible" });
+  });
+
+  it("loops through revision attempts, feeding each rewrite back into the next evaluation", async () => {
+    const project = await runThroughScreenplay();
+
+    await runScreenplayRevision(
+      stubContext(db, enqueue(db, { type: "screenplay_revision", projectId: project.id }), {
+        llm: [{ json: failingEvaluation("dialogue is generic") }, REVISED_SCREENPLAY, { json: passingEvaluation() }],
+      }),
+    );
+
+    const evalRows = db.select().from(evaluations).where(eq(evaluations.projectId, project.id)).all();
+    expect(evalRows.map((r) => r.verdict)).toEqual(["revise", "pass"]);
+
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "screenplay_revision")!;
+    // The passing draft written is the *revised* screenplay, not the original
+    // — the loop's rewrite fed forward into the evaluation that passed it.
+    expect(row.content).toBe(REVISED_SCREENPLAY.content);
+    expect(row.approvedAt).not.toBeNull();
+
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "story_bible" });
+  });
+
+  // Mirrors runStoryEval's own QC-threshold test: a model that never converges
+  // must stop burning attempts rather than loop forever.
+  it("stops at the QC threshold and parks the project for review instead of looping forever", async () => {
+    const project = await runThroughScreenplay();
+
+    // qcMaxIterations defaults to 3: eval-fail, revise, eval-fail, revise,
+    // eval-fail (>= threshold) — no third revise.
+    await runScreenplayRevision(
+      stubContext(db, enqueue(db, { type: "screenplay_revision", projectId: project.id }), {
+        llm: [
+          { json: failingEvaluation("still generic") },
+          REVISED_SCREENPLAY,
+          { json: failingEvaluation("still generic") },
+          REVISED_SCREENPLAY,
+          { json: failingEvaluation("still generic") },
+        ],
+      }),
+    );
+
+    const after = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(after.awaitingReview).toBe(true);
+    expect(after.failureReason).toMatch(/QC threshold/);
+
+    const evalRows = db.select().from(evaluations).where(eq(evaluations.projectId, project.id)).all();
+    expect(evalRows).toHaveLength(3);
+    expect(evalRows.every((r) => r.verdict === "revise")).toBe(true);
+
+    // The latest (still-failing) draft is left behind unapproved, not
+    // discarded — a human reviewing this project has something to look at,
+    // and can approve it as-is via the ordinary "continue" mechanism.
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "screenplay_revision")!;
+    expect(row.content).toBe(REVISED_SCREENPLAY.content);
+    expect(row.approvedAt).toBeNull();
+
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "screenplay_revision",
+      needsApproval: true,
+    });
+  });
+
+  it("parks for review after a pass in manual mode too, the same as every other dev-chain stage", async () => {
+    const project = newDevProject("manual");
+    // Drive the manual-mode project through concept..screenplay, approving
+    // each stage's draft via `advance` (as "continue" would) before running
+    // the next one directly — `devStageStatus`/`devNextStep` gate on
+    // `approvedAt`, so a manual-mode chain has to actually approve its way
+    // through, unlike the auto-mode helpers above.
+    await runConcept(stubContext(db, enqueue(db, { type: "concept", projectId: project.id }), { llm: [CONCEPT] }));
+    advance(db, project.id);
+    await runLogline(stubContext(db, enqueue(db, { type: "logline", projectId: project.id }), { llm: [LOGLINE] }));
+    advance(db, project.id);
+    await runDevCharacters(
+      stubContext(db, enqueue(db, { type: "characters", projectId: project.id }), { llm: [CHARACTERS] }),
+    );
+    advance(db, project.id);
+    await runWorldBuilding(
+      stubContext(db, enqueue(db, { type: "world_building", projectId: project.id }), { llm: [WORLD] }),
+    );
+    advance(db, project.id);
+    await runStoryStructure(
+      stubContext(db, enqueue(db, { type: "story_structure", projectId: project.id }), { llm: [STRUCTURE] }),
+    );
+    advance(db, project.id);
+    await runBeatSheet(
+      stubContext(db, enqueue(db, { type: "beat_sheet", projectId: project.id }), { llm: [BEAT_SHEET] }),
+    );
+    advance(db, project.id);
+    await runTreatment(
+      stubContext(db, enqueue(db, { type: "treatment", projectId: project.id }), { llm: [TREATMENT] }),
+    );
+    advance(db, project.id);
+    await runScreenplay(
+      stubContext(db, enqueue(db, { type: "screenplay", projectId: project.id }), { llm: [SCREENPLAY] }),
+    );
+    advance(db, project.id);
+
+    await runScreenplayRevision(
+      stubContext(db, enqueue(db, { type: "screenplay_revision", projectId: project.id }), {
+        llm: [{ json: passingEvaluation() }],
+      }),
+    );
+
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "screenplay_revision", needsApproval: true });
+    expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.awaitingReview).toBe(true);
+  });
+
+  it("assembles the story bible from every upstream approved artifact, without calling the LLM provider", async () => {
+    const project = await runThroughScreenplay();
+    await runScreenplayRevision(
+      stubContext(db, enqueue(db, { type: "screenplay_revision", projectId: project.id }), {
+        llm: [{ json: passingEvaluation() }],
+      }),
+    );
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "story_bible" });
+
+    await runStoryBible(
+      stubContext(db, enqueue(db, { type: "story_bible", projectId: project.id }), {
+        // No `llm` entries configured — `nextLlm()` throws if either chat
+        // path is ever reached, which is exactly the "never calls the LLM
+        // provider" assertion this test needs.
+        onChatRequest: () => {
+          throw new Error("story_bible must never call the LLM provider (chat)");
+        },
+        onChatJsonRequest: () => {
+          throw new Error("story_bible must never call the LLM provider (chatJson)");
+        },
+      }),
+    );
+
+    const row = db
+      .select()
+      .from(devArtifacts)
+      .where(eq(devArtifacts.projectId, project.id))
+      .all()
+      .find((r) => r.stage === "story_bible")!;
+
+    expect(row.content).toContain(CONCEPT.content);
+    expect(row.content).toContain("Reyna"); // a character name, from the `characters` table
+    expect(row.content).toContain("Reyna's shop"); // a location name, from the `locations` table
+    expect(row.content).toContain(SCREENPLAY.content); // the final screenplay/revision content
+    // Left unapproved — the generic "approve and continue" mechanism gates
+    // this, not an auto-approval path this stage would have to invent.
+    expect(row.approvedAt).toBeNull();
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "story_bible",
+      needsApproval: true,
+    });
+  });
+
+  // The capstone proof for the entire M7 Development milestone: a full
+  // end-to-end walk through all ten `DEV_CHAIN_STAGES`, concept through
+  // story_bible, ending at the exact terminal state `devNextStep` promises.
+  it("walks a project through the entire ten-stage Development chain to devNextStep's terminal 'complete' state", async () => {
+    const project = newDevProject("auto");
+
+    await runConcept(stubContext(db, enqueue(db, { type: "concept", projectId: project.id }), { llm: [CONCEPT] }));
+    await runLogline(stubContext(db, enqueue(db, { type: "logline", projectId: project.id }), { llm: [LOGLINE] }));
+    await runDevCharacters(
+      stubContext(db, enqueue(db, { type: "characters", projectId: project.id }), { llm: [CHARACTERS] }),
+    );
+    await runWorldBuilding(
+      stubContext(db, enqueue(db, { type: "world_building", projectId: project.id }), { llm: [WORLD] }),
+    );
+    await runStoryStructure(
+      stubContext(db, enqueue(db, { type: "story_structure", projectId: project.id }), { llm: [STRUCTURE] }),
+    );
+    await runBeatSheet(
+      stubContext(db, enqueue(db, { type: "beat_sheet", projectId: project.id }), { llm: [BEAT_SHEET] }),
+    );
+    await runTreatment(
+      stubContext(db, enqueue(db, { type: "treatment", projectId: project.id }), { llm: [TREATMENT] }),
+    );
+    await runScreenplay(
+      stubContext(db, enqueue(db, { type: "screenplay", projectId: project.id }), { llm: [SCREENPLAY] }),
+    );
+    await runScreenplayRevision(
+      stubContext(db, enqueue(db, { type: "screenplay_revision", projectId: project.id }), {
+        llm: [{ json: passingEvaluation() }],
+      }),
+    );
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "story_bible" });
+
+    await runStoryBible(stubContext(db, enqueue(db, { type: "story_bible", projectId: project.id }), {}));
+
+    // story_bible is left unapproved even in auto mode (it is an assembly
+    // stage, not a generation one) — "continue" is what a human uses to sign
+    // off on Development and reach `complete`.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "story_bible", needsApproval: true });
+
+    const finalStep = advance(db, project.id);
+    expect(finalStep).toEqual({ kind: "complete", reason: "Development approved, ready for Preproduction" });
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "Development approved, ready for Preproduction",
+    });
   });
 });
 
