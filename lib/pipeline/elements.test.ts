@@ -7,7 +7,7 @@ import type { Db } from "../db/client";
 import { assets, characters, imageStyles, projects, providers, scenes } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
-import { runElements } from "./elements";
+import { runElements, stripNegatedPhrases } from "./elements";
 import { filterLiveRefs, negativePromptFor, runCharacterImages, runSceneImages } from "./images";
 import { stubContext } from "./test-support";
 
@@ -434,6 +434,63 @@ describe("runElements", () => {
     const contents = prompts.map((p) => (p.messages as { content: string }[])[0]!.content);
     expect(contents[0]).not.toContain("do not introduce");
     expect(contents[2]).not.toContain("do not introduce");
+  });
+
+  // BUG-023: the model copies a negation straight out of the narration
+  // ("no larger than necessary") into the diffusion-bound prompt. The rule
+  // is stated in `elements.scene`, but a deterministic strip is the part of
+  // the fix that does not depend on the model listening to it.
+  it("strips a negated phrase the model copied into a scene's image prompt, and logs it", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    const negated = {
+      json: {
+        storyboard: "A humble sign outside city hall.",
+        imagePrompt: "a humble sign, no larger than necessary, listing the town's annual budget",
+        characters: [],
+      },
+    };
+    const logs: [string, string | undefined][] = [];
+    await runElements(
+      stubContext(db, job, {
+        llm: [CAST, BEATS, negated, sceneDetail(2), sceneDetail(3)],
+        onLog: (message, level) => logs.push([message, level]),
+      }),
+    );
+
+    const rows = db
+      .select()
+      .from(scenes)
+      .where(eq(scenes.projectId, project.id))
+      .orderBy(asc(scenes.index))
+      .all();
+    expect(rows[0]!.imagePrompt).toBe("a humble sign, listing the town's annual budget");
+    expect(rows[0]!.imagePrompt).not.toMatch(/\bno\b/i);
+    expect(logs.some(([message, level]) => level === "warn" && message.includes("no larger than necessary"))).toBe(
+      true,
+    );
+  });
+});
+
+describe("stripNegatedPhrases", () => {
+  it("drops a comma-separated phrase that opens with no/not/without", () => {
+    expect(stripNegatedPhrases("a wooden desk, no papers on it, warm lamplight").prompt).toBe(
+      "a wooden desk, warm lamplight",
+    );
+    expect(stripNegatedPhrases("an empty street, not a soul in sight").prompt).toBe("an empty street");
+    expect(stripNegatedPhrases("a hallway, without any furniture, bare walls").prompt).toBe(
+      "a hallway, bare walls",
+    );
+  });
+
+  it("leaves a prompt with no negation untouched", () => {
+    const prompt = "a wiry man in his fifties, navy overalls, kneeling by a burst pipe";
+    expect(stripNegatedPhrases(prompt)).toEqual({ prompt, stripped: [] });
+  });
+
+  it("does not touch a word that merely contains no/not as a substring", () => {
+    const prompt = "a piano in the corner, notebook on the desk";
+    expect(stripNegatedPhrases(prompt)).toEqual({ prompt, stripped: [] });
   });
 });
 

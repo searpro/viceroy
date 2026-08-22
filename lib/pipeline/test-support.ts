@@ -50,6 +50,8 @@ export type StubOptions = {
   /** Bytes returned by each video generation, in order. */
   videos?: Buffer[];
   onVideoRequest?: (request: Record<string, unknown>) => void;
+  /** Observe what a stage logs, e.g. to assert on a warn-level message. */
+  onLog?: (message: string, level?: "debug" | "info" | "warn" | "error") => void;
 };
 
 /** A 16-bit mono WAV header with no samples — enough to parse a sample rate. */
@@ -121,7 +123,7 @@ export function stubContext(db: Db, job: Job, options: StubOptions = {}): StageC
     job,
     imageBackend: () => imageBackend,
     videoBackend: () => videoBackend,
-    log: () => {},
+    log: (message, level) => options.onLog?.(message, level),
     progress: () => {},
     shouldAbort: options.shouldAbort ?? (() => false),
     sdApi: {

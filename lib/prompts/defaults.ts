@@ -437,7 +437,7 @@ Respond with a single JSON object, no prose around it:
 
 {
   "storyboard": "<what the viewer sees: subject, action, setting, camera framing>",
-  "imagePrompt": "<the generation prompt: comma-separated visual phrases>",
+  "imagePrompt": "<the generation prompt: comma-separated visual phrases. State only what IS in the frame — never copy a negation like 'no X', 'without X' or 'not X' out of the narration above, even if the narration itself uses one>",
   "characters": ["<names from the cast who appear, or empty>"]
 }
 

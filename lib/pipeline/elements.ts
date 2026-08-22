@@ -24,6 +24,37 @@ type ScenePayload = {
   characters?: unknown;
 };
 
+// Matches the negation forms `elements.scene` explicitly forbids ("no X",
+// "without X", "not X") anchored to the start of a comma-separated phrase.
+// A diffusion prompt has no grammatical negation — "no fantasy elements"
+// reads as a request for fantasy elements — but the instruction sits below
+// the narration it governs, and on a 12B model source-text mimicry beats an
+// instruction stated once (BUG-023). The rule is restated next to the
+// `imagePrompt` field in the template too, but that only improves
+// compliance; this strip is the guarantee that does not depend on it.
+const NEGATED_PHRASE = /^(no|not|without)\b/i;
+
+/**
+ * Drops any comma-separated phrase of an image prompt that opens with a
+ * negation, mirroring `styles.ts`'s `refuseNegations` guard on style
+ * prefix/suffix text — same failure class, but this prompt is model-authored
+ * rather than user-authored, so the pipeline strips and logs instead of
+ * rejecting outright: failing the whole scene over one clause the model
+ * shouldn't have written just forces an identical retry.
+ */
+export function stripNegatedPhrases(prompt: string): { prompt: string; stripped: string[] } {
+  const stripped: string[] = [];
+  const kept = prompt.split(",").filter((phrase) => {
+    const trimmed = phrase.trim();
+    if (trimmed && NEGATED_PHRASE.test(trimmed)) {
+      stripped.push(trimmed);
+      return false;
+    }
+    return true;
+  });
+  return { prompt: kept.join(",").trim(), stripped };
+}
+
 /**
  * Stage 4 — turn the approved story into scenes and a cast.
  *
@@ -200,9 +231,20 @@ export async function runElements(ctx: StageContext): Promise<void> {
       temperature: 0.6,
     });
 
-    const imagePrompt = typeof payload.imagePrompt === "string" ? payload.imagePrompt.trim() : "";
-    if (!imagePrompt) {
+    const rawImagePrompt = typeof payload.imagePrompt === "string" ? payload.imagePrompt.trim() : "";
+    if (!rawImagePrompt) {
       throw new Error(`Scene ${scene.index} came back without an image prompt`);
+    }
+
+    const { prompt: imagePrompt, stripped } = stripNegatedPhrases(rawImagePrompt);
+    if (stripped.length > 0) {
+      ctx.log(
+        `Scene ${scene.index + 1}: stripped negated phrase(s) from image prompt: ${stripped.join("; ")}`,
+        "warn",
+      );
+    }
+    if (!imagePrompt) {
+      throw new Error(`Scene ${scene.index}'s image prompt was entirely negation after stripping`);
     }
 
     const named = Array.isArray(payload.characters)
