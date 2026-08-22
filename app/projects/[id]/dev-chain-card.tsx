@@ -1,18 +1,33 @@
 "use client";
 
 import { Panel } from "./steps/panel";
+import { ContinueBanner } from "./continue-banner";
 import type { Detail } from "./detail-types";
 
 /**
- * The Development chain's review card (M7 PR1).
+ * The Development chain's review card (M7 PR1, generate/approve wiring added
+ * once PR2/PR3 gave the chain something to generate).
  *
  * A dev-format project's `nextStep` names a `dev_artifacts` stage instead of
- * a job type — there is no per-stage step component yet because there is no
- * generation logic yet (PR2+ builds concept/logline/etc one at a time). This
- * is the whole UI for now: report which stage is next and show it empty,
- * the same way any other step already reads before its first job has run.
+ * a job type; there is still no per-stage step component (PR4+ can grow one
+ * once there's per-stage content worth reviewing beyond raw text). Until
+ * then this reuses the same `ContinueBanner` every narrative step already
+ * uses to dispatch/approve work — `advance()` in `lib/pipeline/chain.ts`
+ * already handles both an empty stage (enqueue it) and a pending one
+ * (approve, then re-derive and enqueue the next), so no dev-specific action
+ * is needed here beyond calling the same `onContinue`.
  */
-export function DevChainCard({ detail }: { detail: Detail }) {
+export function DevChainCard({
+  detail,
+  active,
+  busy,
+  onContinue,
+}: {
+  detail: Detail;
+  active: boolean;
+  busy: boolean;
+  onContinue: () => void;
+}) {
   const { nextStep } = detail;
 
   if (nextStep.kind === "complete") {
@@ -27,10 +42,7 @@ export function DevChainCard({ detail }: { detail: Detail }) {
 
   return (
     <div>
-      <p className="rounded-md bg-white/5 px-4 py-3 text-sm text-white/70">
-        Development chain — next: <span className="font-mono">{stage ?? "—"}</span>
-        {nextStep.reason ? `, because ${nextStep.reason}.` : "."}
-      </p>
+      <ContinueBanner detail={detail} active={active} busy={busy} onContinue={onContinue} />
 
       <Panel title={stage ?? "Development"} empty emptyText="Not yet generated.">
         <></>

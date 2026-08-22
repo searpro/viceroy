@@ -28,23 +28,27 @@ export function NewProjectForm({
   voiceStyles,
   imageStyles,
   captionStyles,
+  directionStyles,
   resolutionPresets,
   defaultMode,
   defaultNarrativeStyleName,
   defaultVoiceStyleName,
   defaultImageStyleName,
   defaultCaptionStyleName,
+  defaultDirectionStyleName,
 }: {
   narrativeStyles: Style[];
   voiceStyles: Style[];
   imageStyles: Style[];
   captionStyles: Style[];
+  directionStyles: Style[];
   resolutionPresets: ResolutionPreset[];
   defaultMode: "auto" | "manual";
   defaultNarrativeStyleName?: string;
   defaultVoiceStyleName?: string;
   defaultImageStyleName?: string;
   defaultCaptionStyleName?: string;
+  defaultDirectionStyleName?: string;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -52,6 +56,8 @@ export function NewProjectForm({
   const [inputMode, setInputMode] = useState<"idea" | "context">("idea");
   const [idea, setIdea] = useState("");
   const [context, setContext] = useState("");
+  const [format, setFormat] = useState("short_video_narrative");
+  const isDevFormat = format !== "short_video_narrative";
 
   async function submit(formData: FormData) {
     setError(null);
@@ -66,10 +72,18 @@ export function NewProjectForm({
           ? { context: formData.get("context") }
           : { idea: formData.get("idea") }),
         format: formData.get("format"),
-        narrativeStyleId: formData.get("narrativeStyleId"),
-        voiceStyleId: formData.get("voiceStyleId"),
-        imageStyleId: formData.get("imageStyleId"),
-        captionStyleId: formData.get("captionStyleId"),
+        // Whichever style group isn't rendered has no field in `formData` to
+        // read — sending it as an explicit `null` fails the server's
+        // `z.string().optional()` (optional allows a missing key, not a null
+        // value), so each group is included only when its own select exists.
+        ...(isDevFormat
+          ? { directionStyleId: formData.get("directionStyleId") }
+          : {
+              narrativeStyleId: formData.get("narrativeStyleId"),
+              voiceStyleId: formData.get("voiceStyleId"),
+              imageStyleId: formData.get("imageStyleId"),
+              captionStyleId: formData.get("captionStyleId"),
+            }),
         resolutionKey: formData.get("resolutionKey"),
         mode: formData.get("mode"),
       }),
@@ -173,47 +187,57 @@ export function NewProjectForm({
         <select
           id="format"
           name="format"
-          defaultValue="short_video_narrative"
+          value={format}
+          onChange={(event) => setFormat(event.target.value)}
           className="mt-2 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none focus:border-white/25 sm:w-72"
         >
-          {PROJECT_FORMATS.map((format) => (
-            <option key={format.value} value={format.value} className="bg-neutral-900">
-              {format.label}
+          {PROJECT_FORMATS.map((option) => (
+            <option key={option.value} value={option.value} className="bg-neutral-900">
+              {option.label}
             </option>
           ))}
         </select>
         <p className="mt-1.5 text-xs text-white/40">
-          Anything other than a short video runs the newer Development chain, which does not
-          generate anything yet.
+          Anything other than a short video runs the newer Development chain: concept through
+          treatment generate today, screenplay onward is still being built.
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
+      {isDevFormat ? (
         <Select
-          label="Narrative style"
-          name="narrativeStyleId"
-          options={narrativeStyles}
-          defaultName={defaultNarrativeStyleName}
+          label="Direction style"
+          name="directionStyleId"
+          options={directionStyles}
+          defaultName={defaultDirectionStyleName}
         />
-        <Select
-          label="Voice style"
-          name="voiceStyleId"
-          options={voiceStyles}
-          defaultName={defaultVoiceStyleName}
-        />
-        <Select
-          label="Image style"
-          name="imageStyleId"
-          options={imageStyles}
-          defaultName={defaultImageStyleName}
-        />
-        <Select
-          label="Caption style"
-          name="captionStyleId"
-          options={captionStyles}
-          defaultName={defaultCaptionStyleName}
-        />
-      </div>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
+          <Select
+            label="Narrative style"
+            name="narrativeStyleId"
+            options={narrativeStyles}
+            defaultName={defaultNarrativeStyleName}
+          />
+          <Select
+            label="Voice style"
+            name="voiceStyleId"
+            options={voiceStyles}
+            defaultName={defaultVoiceStyleName}
+          />
+          <Select
+            label="Image style"
+            name="imageStyleId"
+            options={imageStyles}
+            defaultName={defaultImageStyleName}
+          />
+          <Select
+            label="Caption style"
+            name="captionStyleId"
+            options={captionStyles}
+            defaultName={defaultCaptionStyleName}
+          />
+        </div>
+      )}
 
       <div>
         <label htmlFor="resolutionKey" className="block text-sm font-medium">

@@ -18,7 +18,12 @@ export function ContinueBanner({
   busy: boolean;
   onContinue: () => void;
 }) {
-  if (active || detail.nextStep.kind !== "run") return null;
+  if (active || detail.nextStep.kind === "complete") return null;
+
+  // Both the narrative pipeline's job types (`nextStep.type`) and the
+  // Development chain's `dev_artifacts` stages (`nextStep.stage`) name "what
+  // comes next" the same way — this banner is otherwise identical for both.
+  const label = detail.nextStep.kind === "run" ? detail.nextStep.type : detail.nextStep.stage;
 
   return (
     <div
@@ -28,7 +33,7 @@ export function ContinueBanner({
     >
       <span>
         {detail.stalled ? "Stalled — " : detail.project.awaitingReview ? "Waiting for you — " : ""}
-        next: <span className="font-mono">{detail.nextStep.type}</span>, because {detail.nextStep.reason}.
+        next: <span className="font-mono">{label}</span>, because {detail.nextStep.reason}.
       </span>
       <button
         onClick={onContinue}

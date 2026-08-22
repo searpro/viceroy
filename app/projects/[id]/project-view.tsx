@@ -295,7 +295,7 @@ export function ProjectView({ initial }: { initial: Detail }) {
         // generated" anyway. PR2+ can grow this into its own stepper once
         // there's per-stage content worth stepping between.
         <div className="mt-6">
-          <DevChainCard detail={detail} />
+          <DevChainCard detail={detail} active={active} busy={busy} onContinue={continueProject} />
         </div>
       ) : layout === "stepper" ? (
         <>
