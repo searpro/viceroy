@@ -39,6 +39,7 @@ export const REDO_CHAIN = [
   // any dev-chain stage.
   "script_breakdown",
   "scene_breakdown",
+  "continuity",
 ] as const;
 
 export type RedoTarget = (typeof REDO_CHAIN)[number];

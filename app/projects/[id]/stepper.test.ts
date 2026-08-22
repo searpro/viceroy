@@ -23,6 +23,7 @@ function baseDetail(overrides: Partial<Detail> = {}): Detail {
     devArtifacts: [],
     locations: [],
     props: [],
+    continuityFacts: [],
     render: null,
     voiceover: null,
     cues: [],

@@ -5,6 +5,7 @@ import { seed } from "../db/seed";
 import type { Db } from "../db/client";
 import {
   characters,
+  continuityFacts,
   devArtifacts,
   directionStyles,
   evaluations,
@@ -15,7 +16,7 @@ import {
   worldBuilding,
 } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
-import { createProject, regenerate } from "../projects";
+import { createProject, regenerate, resolveContinuityFact } from "../projects";
 import { setPreference } from "../preferences";
 import { advance, nextStep } from "./chain";
 import { resolveProvider } from "./context";
@@ -23,6 +24,7 @@ import {
   parseScreenplay,
   runBeatSheet,
   runConcept,
+  runContinuity,
   runDevCharacters,
   runLogline,
   runSceneBreakdown,
@@ -900,6 +902,20 @@ const SCENE_BREAKDOWN = {
     "Continuity: matches her posture from scene 1\nSpecial requirements: none",
 };
 
+const CONTINUITY_FACTS = {
+  json: {
+    facts: [
+      {
+        subjectType: "character",
+        subjectName: "Reyna",
+        sceneId: "1",
+        fact: "Reyna always keeps her father's pick set in her jacket pocket, never her bag.",
+        conflict: false,
+      },
+    ],
+  },
+};
+
 describe("Preproduction stages (M7 PR6 — script & scene breakdown)", () => {
   it("generates a script breakdown then a scene breakdown, advancing devNextStep script_breakdown -> scene_breakdown -> complete", async () => {
     const project = await runThroughApprovedStoryBible();
@@ -932,10 +948,17 @@ describe("Preproduction stages (M7 PR6 — script & scene breakdown)", () => {
       .all()
       .find((r) => r.stage === "scene_breakdown")!;
     expect(sceneRow.content).toBe(SCENE_BREAKDOWN.content);
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "continuity", needsApproval: false });
 
-    // Nothing is defined past "scene_breakdown" in `DEV_CHAIN_STAGES` yet —
-    // the same "no handler yet" interim landing every earlier PR's own
-    // terminal stage sat in before the next PR extended the chain further.
+    await runContinuity(
+      stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), {
+        llm: [CONTINUITY_FACTS],
+      }),
+    );
+
+    // Nothing is defined past "continuity" in `DEV_CHAIN_STAGES` yet — the
+    // same "no handler yet" interim landing every earlier PR's own terminal
+    // stage sat in before the next PR extended the chain further.
     expect(nextStep(db, project.id)).toEqual({
       kind: "complete",
       reason: "every Development/Preproduction stage built so far is approved",
@@ -1021,6 +1044,11 @@ describe("Preproduction stages (M7 PR6 — script & scene breakdown)", () => {
         llm: [SCENE_BREAKDOWN],
       }),
     );
+    await runContinuity(
+      stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), {
+        llm: [CONTINUITY_FACTS],
+      }),
+    );
     expect(nextStep(db, project.id)).toEqual({
       kind: "complete",
       reason: "every Development/Preproduction stage built so far is approved",
@@ -1056,6 +1084,188 @@ describe("Preproduction stages (M7 PR6 — script & scene breakdown)", () => {
     // scene_breakdown, which the invalidation cleared — exactly the state a
     // fresh run of the two-stage chain would be in.
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "scene_breakdown", needsApproval: false });
+  });
+});
+
+describe("Preproduction stages (M7 PR7 — continuity)", () => {
+  async function runThroughApprovedSceneBreakdown() {
+    const project = await runThroughApprovedStoryBible();
+    await runScriptBreakdown(
+      stubContext(db, enqueue(db, { type: "script_breakdown", projectId: project.id }), {
+        llm: [SCRIPT_BREAKDOWN],
+      }),
+    );
+    await runSceneBreakdown(
+      stubContext(db, enqueue(db, { type: "scene_breakdown", projectId: project.id }), {
+        llm: [SCENE_BREAKDOWN],
+      }),
+    );
+    return project;
+  }
+
+  it("extracts facts, resolving the LLM's named subject back to the real character row, and auto-approves in auto mode", async () => {
+    const project = await runThroughApprovedSceneBreakdown();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "continuity", needsApproval: false });
+
+    await runContinuity(
+      stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), { llm: [CONTINUITY_FACTS] }),
+    );
+
+    const reyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    const rows = db.select().from(continuityFacts).where(eq(continuityFacts.projectId, project.id)).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      subjectType: "character",
+      subjectId: reyna.id,
+      subjectName: "Reyna",
+      source: "extracted",
+      sceneId: "1",
+    });
+    expect(rows[0]!.resolvedAt).toBeNull();
+
+    expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.continuityApprovedAt).not.toBeNull();
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "every Development/Preproduction stage built so far is approved",
+    });
+  });
+
+  it("parks for review in manual mode without auto-approving", async () => {
+    const project = await runThroughApprovedSceneBreakdown();
+    db.update(projects).set({ mode: "manual" }).where(eq(projects.id, project.id)).run();
+
+    await runContinuity(
+      stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), { llm: [CONTINUITY_FACTS] }),
+    );
+
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "continuity", needsApproval: true });
+    expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.awaitingReview).toBe(true);
+    expect(
+      db.select().from(projects).where(eq(projects.id, project.id)).get()!.continuityApprovedAt,
+    ).toBeNull();
+  });
+
+  it("drops a fact naming a subject that doesn't match any known character/location/prop, logging a warning rather than failing the stage", async () => {
+    const project = await runThroughApprovedSceneBreakdown();
+    const logs: [string, string | undefined][] = [];
+
+    await runContinuity(
+      stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), {
+        llm: [
+          {
+            json: {
+              facts: [
+                ...CONTINUITY_FACTS.json.facts,
+                {
+                  subjectType: "character",
+                  subjectName: "Someone Who Doesn't Exist",
+                  sceneId: null,
+                  fact: "This should be dropped.",
+                  conflict: false,
+                },
+              ],
+            },
+          },
+        ],
+        onLog: (message, level) => logs.push([message, level]),
+      }),
+    );
+
+    const rows = db.select().from(continuityFacts).where(eq(continuityFacts.projectId, project.id)).all();
+    expect(rows).toHaveLength(1); // only the resolvable one was written
+    expect(rows[0]!.subjectName).toBe("Reyna");
+    expect(logs.some(([message, level]) => level === "warn" && message.includes("Someone Who Doesn't Exist"))).toBe(
+      true,
+    );
+  });
+
+  it(
+    "a redo whose extraction conflicts with an already-recorded fact keeps both rows — the new one " +
+      "marked conflict, not silently overwriting the earlier one; approving it sets resolvedAt without " +
+      "touching the other row",
+    async () => {
+      const project = await runThroughApprovedSceneBreakdown();
+
+      // First pass: one established fact about Reyna.
+      await runContinuity(
+        stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), { llm: [CONTINUITY_FACTS] }),
+      );
+      const firstRun = db.select().from(continuityFacts).where(eq(continuityFacts.projectId, project.id)).all();
+      expect(firstRun).toHaveLength(1);
+      expect(firstRun[0]!.source).toBe("extracted");
+
+      // A redo (per DISCARD["continuity"] in lib/projects.ts) resets only the
+      // approval gate — the first pass's fact row is left in place, which is
+      // exactly what this second extraction needs to detect a contradiction
+      // against.
+      const job = regenerate(db, project.id, { target: "continuity" });
+      expect(job.type).toBe("continuity");
+
+      const CONTRADICTING_FACT = {
+        json: {
+          facts: [
+            {
+              subjectType: "character",
+              subjectName: "Reyna",
+              sceneId: "2",
+              fact: "Reyna keeps her father's pick set locked in the shop safe, never on her person.",
+              conflict: true,
+            },
+          ],
+        },
+      };
+      await runContinuity(stubContext(db, job, { llm: [CONTRADICTING_FACT] }));
+
+      const rows = db
+        .select()
+        .from(continuityFacts)
+        .where(eq(continuityFacts.projectId, project.id))
+        .all();
+      expect(rows).toHaveLength(2); // both facts survive — no silent overwrite/merge
+      const original = rows.find((r) => r.source === "extracted")!;
+      const conflicting = rows.find((r) => r.source === "conflict")!;
+      expect(original.fact).toBe(firstRun[0]!.fact);
+      expect(conflicting.fact).toBe(CONTRADICTING_FACT.json.facts[0]!.fact);
+      expect(original.resolvedAt).toBeNull();
+      expect(conflicting.resolvedAt).toBeNull();
+
+      // Approving (resolving) the conflicting fact...
+      const resolved = resolveContinuityFact(db, project.id, conflicting.id);
+      expect(resolved.source).toBe("resolved");
+      expect(resolved.resolvedAt).not.toBeNull();
+
+      // ...without deleting or otherwise touching the fact it conflicted with.
+      const untouched = db.select().from(continuityFacts).where(eq(continuityFacts.id, original.id)).get()!;
+      expect(untouched.source).toBe("extracted");
+      expect(untouched.resolvedAt).toBeNull();
+      expect(
+        db.select().from(continuityFacts).where(eq(continuityFacts.projectId, project.id)).all(),
+      ).toHaveLength(2);
+    },
+  );
+
+  it("does not duplicate an identical fact already on record when an unchanged redo re-extracts it", async () => {
+    const project = await runThroughApprovedSceneBreakdown();
+
+    await runContinuity(
+      stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), { llm: [CONTINUITY_FACTS] }),
+    );
+    const job = regenerate(db, project.id, { target: "continuity" });
+    await runContinuity(stubContext(db, job, { llm: [CONTINUITY_FACTS] }));
+
+    const rows = db.select().from(continuityFacts).where(eq(continuityFacts.projectId, project.id)).all();
+    expect(rows).toHaveLength(1);
+  });
+
+  it("resolveContinuityFact refuses a fact id that doesn't belong to the given project", async () => {
+    const project = await runThroughApprovedSceneBreakdown();
+    await runContinuity(
+      stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), { llm: [CONTINUITY_FACTS] }),
+    );
+    const fact = db.select().from(continuityFacts).where(eq(continuityFacts.projectId, project.id)).get()!;
+    const otherProject = await newDevProject();
+
+    expect(() => resolveContinuityFact(db, otherProject.id, fact.id)).toThrow(/no such continuity fact/i);
   });
 });
 

@@ -157,6 +157,17 @@ export function ProjectView({ initial }: { initial: Detail }) {
     setBusy(false);
   }
 
+  // M7 PR7. No bespoke review screen for continuity (the M7 detail page's
+  // own "no UI review surface beyond a flat list" scope) — this is the one
+  // action `DevChainHistory`'s flat list offers per conflicting fact.
+  async function resolveContinuityFact(factId: string) {
+    setBusy(true);
+    await fetch(`/api/projects/${detail.project.id}/continuity-facts/${factId}`, { method: "PATCH" });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
   async function continueProject() {
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
@@ -295,7 +306,13 @@ export function ProjectView({ initial }: { initial: Detail }) {
         // generated" anyway. PR2+ can grow this into its own stepper once
         // there's per-stage content worth stepping between.
         <div className="mt-6">
-          <DevChainCard detail={detail} active={active} busy={busy} onContinue={continueProject} />
+          <DevChainCard
+            detail={detail}
+            active={active}
+            busy={busy}
+            onContinue={continueProject}
+            onResolveContinuityFact={resolveContinuityFact}
+          />
         </div>
       ) : layout === "stepper" ? (
         <>

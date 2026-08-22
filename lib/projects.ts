@@ -5,6 +5,7 @@ import type { Db } from "./db/client";
 import {
   captionStyles,
   characters,
+  continuityFacts,
   DEV_CHAIN_STAGES,
   devArtifacts,
   directionStyles,
@@ -288,6 +289,17 @@ export function getProjectDetail(db: Db, projectId: string) {
     worldBuilding: db.select().from(worldBuilding).where(eq(worldBuilding.projectId, projectId)).get(),
     locations: db.select().from(locations).where(eq(locations.projectId, projectId)).all(),
     props: db.select().from(props).where(eq(props.projectId, projectId)).all(),
+    // M7 PR7. Every fact this project has ever extracted, unresolved conflict
+    // and all — never filtered down to "just the latest", since the whole
+    // point of keeping a conflicting fact is that it stays visible next to
+    // the fact it conflicts with (see `continuityFacts`'s own comment in
+    // lib/db/schema.ts).
+    continuityFacts: db
+      .select()
+      .from(continuityFacts)
+      .where(eq(continuityFacts.projectId, projectId))
+      .orderBy(desc(continuityFacts.createdAt))
+      .all(),
   };
 }
 
@@ -308,6 +320,30 @@ function latestDevArtifactsByStage(db: Db, projectId: string) {
 /** Approve what is there and queue whatever is outstanding. */
 export function continueProject(db: Db, projectId: string) {
   return advance(db, projectId);
+}
+
+/**
+ * Resolve one continuity fact — typically a `source: "conflict"` one, though
+ * nothing stops resolving an ordinary `"extracted"` fact a human just wants
+ * to mark as reviewed. Sets `resolvedAt` and flips `source` to `"resolved"`;
+ * never deletes the row, and never touches whatever fact it conflicted with
+ * — that row is left exactly as it was, so the audit trail this PR's
+ * acceptance bar asks for ("approving one records resolvedAt without
+ * deleting the other") is just what the data already looks like, not
+ * something this function has to construct.
+ */
+export function resolveContinuityFact(db: Db, projectId: string, factId: string) {
+  const fact = db.select().from(continuityFacts).where(eq(continuityFacts.id, factId)).get();
+  if (!fact || fact.projectId !== projectId) {
+    throw new Error(`No such continuity fact: ${factId}`);
+  }
+  const [updated] = db
+    .update(continuityFacts)
+    .set({ source: "resolved", resolvedAt: new Date() })
+    .where(eq(continuityFacts.id, factId))
+    .returning()
+    .all();
+  return updated!;
 }
 
 export const regenerateSchema = z.object({
@@ -470,6 +506,15 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
   // still cascades into clearing the former.
   script_breakdown: devArtifactDiscard("script_breakdown"),
   scene_breakdown: devArtifactDiscard("scene_breakdown"),
+  // Deliberately does NOT delete `continuity_facts` rows, unlike every other
+  // table-backed stage above (`characters`/`world_building` both clear their
+  // rows wholesale on redo) — a redo's own extraction depends on that history
+  // still being there to detect a conflict against (see `runContinuity`'s doc
+  // comment, dev.ts). Only the approval gate resets, so the redo is treated
+  // as a fresh draft awaiting review the same way every other stage's redo is.
+  continuity: (db, projectId) => {
+    db.update(projects).set({ continuityApprovedAt: null }).where(eq(projects.id, projectId)).run();
+  },
 };
 
 /** `DISCARD`'s handler for one dev-artifact stage, covering every version. */

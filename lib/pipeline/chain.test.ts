@@ -6,6 +6,7 @@ import type { Db } from "../db/client";
 import {
   assets,
   characters,
+  continuityFacts,
   devArtifacts,
   evaluations,
   projects,
@@ -344,6 +345,12 @@ describe("nextStep — Development chain", () => {
     db.insert(worldBuilding)
       .values({ projectId: project.id, content: "w", approvedAt: new Date() })
       .run();
+    // Preproduction (M7 PR7) — same "own table, own approval mechanism"
+    // story as "characters"/"world_building" above.
+    db.insert(continuityFacts)
+      .values({ projectId: project.id, subjectType: "character", subjectId: "x", subjectName: "Hal", fact: "f" })
+      .run();
+    db.update(projects).set({ continuityApprovedAt: new Date() }).where(eq(projects.id, project.id)).run();
 
     expect(nextStep(db, project.id)).toMatchObject({
       kind: "complete",

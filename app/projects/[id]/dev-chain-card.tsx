@@ -22,11 +22,13 @@ export function DevChainCard({
   active,
   busy,
   onContinue,
+  onResolveContinuityFact,
 }: {
   detail: Detail;
   active: boolean;
   busy: boolean;
   onContinue: () => void;
+  onResolveContinuityFact: (factId: string) => void;
 }) {
   const { nextStep } = detail;
 
@@ -36,7 +38,7 @@ export function DevChainCard({
         <Panel title="Development" empty={false} emptyText="">
           <p className="text-sm text-white/85">{nextStep.reason}</p>
         </Panel>
-        <DevChainHistory detail={detail} />
+        <DevChainHistory detail={detail} onResolveContinuityFact={onResolveContinuityFact} />
       </div>
     );
   }
@@ -50,7 +52,7 @@ export function DevChainCard({
       <Panel title={stage ?? "Development"} empty emptyText="Not yet generated.">
         <></>
       </Panel>
-      <DevChainHistory detail={detail} />
+      <DevChainHistory detail={detail} onResolveContinuityFact={onResolveContinuityFact} />
     </div>
   );
 }
@@ -69,6 +71,9 @@ const DEV_STAGE_LABELS: Record<string, string> = {
   screenplay: "Screenplay",
   screenplay_revision: "Screenplay revision",
   story_bible: "Story bible",
+  script_breakdown: "Script breakdown",
+  scene_breakdown: "Scene breakdown",
+  continuity: "Continuity",
 };
 const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
 
@@ -80,14 +85,22 @@ const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
  * Story Bible alone can run to several thousand words; opening one doesn't
  * require a round trip since the content is already in `detail`.
  */
-function DevChainHistory({ detail }: { detail: Detail }) {
+function DevChainHistory({
+  detail,
+  onResolveContinuityFact,
+}: {
+  detail: Detail;
+  onResolveContinuityFact: (factId: string) => void;
+}) {
   const byStage = new Map(detail.devArtifacts.map((row) => [row.stage, row]));
   const hasCharacters = detail.characters.length > 0;
   const hasWorld = Boolean(detail.worldBuilding?.content) || detail.locations.length > 0 || detail.props.length > 0;
+  const hasContinuity = detail.continuityFacts.length > 0;
 
   const stagesWithContent = DEV_CHAIN_ORDER.filter((stage) => {
     if (stage === "characters") return hasCharacters;
     if (stage === "world_building") return hasWorld;
+    if (stage === "continuity") return hasContinuity;
     return byStage.has(stage);
   });
 
@@ -110,6 +123,8 @@ function DevChainHistory({ detail }: { detail: Detail }) {
                 <CharactersSection detail={detail} />
               ) : stage === "world_building" ? (
                 <WorldBuildingSection detail={detail} />
+              ) : stage === "continuity" ? (
+                <ContinuitySection detail={detail} onResolveContinuityFact={onResolveContinuityFact} />
               ) : (
                 <StageContent
                   content={byStage.get(stage)?.content ?? ""}
@@ -203,5 +218,59 @@ function WorldBuildingSection({ detail }: { detail: Detail }) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Flat list of every continuity fact on record, per the M7 detail page's own
+ * PR7 scope ("no UI review surface beyond a flat list is required... a
+ * richer conflict-resolution UI can follow once there's real data to design
+ * against"). A `source: "conflict"` fact gets a one-click "resolve" button;
+ * every other fact is read-only here.
+ */
+function ContinuitySection({
+  detail,
+  onResolveContinuityFact,
+}: {
+  detail: Detail;
+  onResolveContinuityFact: (factId: string) => void;
+}) {
+  return (
+    <ul className="space-y-3">
+      {detail.continuityFacts.map((fact) => (
+        <li key={fact.id} className="text-sm">
+          <div className="flex items-start justify-between gap-4">
+            <p className="text-white/75">
+              <span className="text-xs uppercase tracking-wide text-white/40">
+                {fact.subjectType}
+              </span>{" "}
+              <span className="font-medium text-white/85">{fact.subjectName}</span>
+              {fact.sceneId ? <span className="text-white/40"> (scene {fact.sceneId})</span> : null}
+              {": "}
+              {fact.fact}
+            </p>
+            {fact.source === "conflict" && (
+              <button
+                onClick={() => onResolveContinuityFact(fact.id)}
+                className="shrink-0 rounded border border-amber-300/40 px-2 py-0.5 text-xs text-amber-300 transition hover:bg-amber-300/10"
+              >
+                resolve
+              </button>
+            )}
+          </div>
+          <span
+            className={`text-xs ${
+              fact.source === "conflict"
+                ? "text-amber-300"
+                : fact.source === "resolved"
+                  ? "text-emerald-400"
+                  : "text-white/40"
+            }`}
+          >
+            {fact.source === "conflict" ? "conflicts with another fact" : fact.source}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }

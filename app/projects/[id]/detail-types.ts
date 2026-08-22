@@ -68,6 +68,19 @@ export type LocationOrProp = {
   imageAssetId: string | null;
 };
 
+// M7 PR7. Same "own table, not a `dev_artifacts` row" story as `Character`/
+// `WorldBuilding` above — "continuity" is a `DEV_CHAIN_STAGES` entry that
+// writes `continuity_facts` directly.
+export type ContinuityFact = {
+  id: string;
+  sceneId: string | null;
+  subjectType: "character" | "location" | "prop";
+  subjectName: string;
+  fact: string;
+  source: "extracted" | "conflict" | "resolved";
+  resolvedAt: string | null;
+};
+
 export type Cue = {
   id: string;
   index: number;
@@ -106,6 +119,7 @@ export type Detail = {
   worldBuilding?: WorldBuilding | null;
   locations: LocationOrProp[];
   props: LocationOrProp[];
+  continuityFacts: ContinuityFact[];
   render?: { id: string; assetId: string | null; status: string } | null;
   voiceover?: {
     id: string;

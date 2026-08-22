@@ -85,6 +85,14 @@ const STORY_VARS = [
     name: "scriptBreakdown",
     description: "The Preproduction chain's approved coarse script breakdown",
   },
+  {
+    name: "sceneBreakdown",
+    description: "The Preproduction chain's approved fine-grained scene breakdown",
+  },
+  {
+    name: "existingFacts",
+    description: "Continuity facts already on record from an earlier pass, pre-formatted",
+  },
 ];
 
 function pick(...names: string[]) {
@@ -935,5 +943,59 @@ Special requirements (stunts, effects, vehicles, crowd, animals, weather):
 Cover every scene number the script breakdown lists, in order, and invent
 nothing the script breakdown, cast or world do not support. No preamble, no
 commentary before or after the list. Output only the scene entries.`,
+  },
+  {
+    key: "dev.continuity",
+    section: "Preproduction",
+    label: "Extract continuity facts",
+    description:
+      "Extracts continuity facts (a character's scar, where a prop was left, a location's " +
+      "established geography) from the cast/world summaries and the scene breakdown, flagging " +
+      "any that contradict a fact already on record from an earlier pass.",
+    // Cast/world summaries, not the full story bible + both breakdowns: the
+    // bible alone runs ~4k tokens, which blew finding F10's 4096-token cap in
+    // real use (measured, not a paper risk). The summaries are the same
+    // entity-focused data `scene_breakdown`'s own prompt already condenses
+    // to, and `sceneBreakdown` alone (the finer of the two breakdowns)
+    // already carries forward what `scriptBreakdown` established.
+    variables: pick("castSummary", "worldSummary", "sceneBreakdown", "existingFacts", "direction"),
+    template: `You are a continuity supervisor reviewing this project's cast, world and
+scene breakdown for facts that later stages must not contradict: what a
+character looks like or carries, where a prop was left, how a location's
+geography works, and anything else a later scene could get wrong if it
+forgot this one.
+
+Cast:
+{{castSummary}}
+
+World:
+{{worldSummary}}
+
+Scene breakdown:
+{{sceneBreakdown}}
+
+Facts already on record from an earlier pass, if any:
+{{existingFacts}}
+{{direction}}
+
+Extract every continuity fact worth tracking as a JSON object of this exact
+shape:
+
+{"facts": [{"subjectType": "character" | "location" | "prop", "subjectName":
+"<the subject's name, exactly as it appears in the material above>",
+"sceneId": "<the scene number this fact is anchored to, if it is specific to
+one scene, otherwise null>", "fact": "<the continuity detail itself, one
+plain sentence>", "conflict": true | false}]}
+
+"subjectName" must name a character, location or prop that actually appears
+in the material above — invent nothing. Set "conflict" to true only when
+this fact directly contradicts either another fact you are extracting in
+this same pass or one of the facts already on record above for the same
+subject (a genuine contradiction — a different detail about the same
+subject that cannot both be true — not merely a fact about a different
+aspect of it). Leave "conflict" false otherwise; do not resolve a
+contradiction yourself by picking one side or blending the two — flagging it
+is your whole job here, not correcting it. Output only the JSON object, no
+commentary before or after it.`,
   },
 ];

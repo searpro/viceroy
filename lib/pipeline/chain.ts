@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client";
 import {
   characters,
+  continuityFacts,
   DEV_CHAIN_STAGES,
   devArtifacts,
   evaluations,
@@ -136,6 +137,19 @@ function devStageStatus(db: Db, projectId: string, stage: DevChainStage): DevSta
     return row.approvedAt ? "approved" : "pending";
   }
 
+  if (stage === "continuity") {
+    // Zero rows means the extraction hasn't run — `runContinuity` throws
+    // rather than leaving no facts behind on a genuine run (mirrors
+    // `runDevCharacters`'s "no usable characters" throw), so this can't be
+    // confused with "ran, found nothing worth recording". "Approved" is
+    // deliberately not gated on every conflict being resolved — see
+    // `runContinuity`'s own doc comment (dev.ts) for why.
+    const facts = db.select({ id: continuityFacts.id }).from(continuityFacts).where(eq(continuityFacts.projectId, projectId)).all();
+    if (facts.length === 0) return "empty";
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+    return project?.continuityApprovedAt ? "approved" : "pending";
+  }
+
   const latest = db
     .select()
     .from(devArtifacts)
@@ -231,6 +245,10 @@ function approveDevStage(db: Db, projectId: string, stage: DevChainStage): void 
       .set({ approvedAt: new Date() })
       .where(eq(worldBuilding.projectId, projectId))
       .run();
+    return;
+  }
+  if (stage === "continuity") {
+    db.update(projects).set({ continuityApprovedAt: new Date() }).where(eq(projects.id, projectId)).run();
     return;
   }
   db.update(devArtifacts)

@@ -2,12 +2,15 @@ import { and, desc, eq } from "drizzle-orm";
 import { Fountain, type Script } from "fountain-js";
 import {
   characters,
+  CONTINUITY_SUBJECT_TYPES,
+  continuityFacts,
   devArtifacts,
   evaluations,
   locations,
   projects,
   props,
   worldBuilding,
+  type ContinuitySubjectType,
   type DevArtifactStage,
 } from "../db/schema";
 import { renderPrompt } from "../prompts";
@@ -102,7 +105,12 @@ function writeDevArtifact(
 }
 
 /** In auto mode, hand off to the next stage; in manual mode, park for review. */
-function continueDevChain(ctx: StageContext, projectId: string, mode: "auto" | "manual", next: DevArtifactStage | "characters" | "world_building"): void {
+function continueDevChain(
+  ctx: StageContext,
+  projectId: string,
+  mode: "auto" | "manual",
+  next: DevArtifactStage | "characters" | "world_building" | "continuity",
+): void {
   if (mode === "manual") {
     awaitReview(ctx.db, projectId);
     ctx.log("Stopping for review (manual mode)");
@@ -945,13 +953,8 @@ export async function runScriptBreakdown(ctx: StageContext): Promise<void> {
  * same scoping discipline as `runBeatSheet`/`runTreatment` above (finding
  * F10).
  *
- * Preproduction has no further `STAGE_HANDLERS` entry yet past this stage
- * (PR7+ scope) — rather than enqueue a stage name that does not exist,
- * this stage simply does not hand off in auto mode: `devNextStep` walking
- * `DEV_CHAIN_STAGES` self-heals once a later PR appends the next stage's
- * name, the same "derive, don't record" reasoning `nextStep`'s own doc
- * comment gives for reading artifacts instead of a stage column. Manual
- * mode still parks for review, exactly as every stage above does.
+ * "scene_breakdown" hands off to "continuity" next per `DEV_CHAIN_STAGES` —
+ * `runContinuity`, below, this same PR's stage 13.
  */
 export async function runSceneBreakdown(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
@@ -993,12 +996,252 @@ export async function runSceneBreakdown(ctx: StageContext): Promise<void> {
   );
   ctx.log("Scene breakdown written");
 
+  continueDevChain(ctx, projectId, project.mode, "continuity");
+}
+
+type ContinuityFactCandidate = {
+  subjectType?: unknown;
+  subjectName?: unknown;
+  sceneId?: unknown;
+  fact?: unknown;
+  conflict?: unknown;
+};
+type ContinuityPayload = { facts?: ContinuityFactCandidate[] };
+
+/**
+ * Resolve the LLM's named subject ("Reyna", "the pick set") back to the row
+ * it means, case-insensitively — the model names a subject, not an id, the
+ * same way it names a cast member or a location when writing prose. Three
+ * lookups rather than one generic one: `characters`/`locations`/`props` are
+ * different tables with different columns beyond `id`/`name`, and a fact's
+ * `subjectType` already tells this function which one to look in, so there's
+ * nothing a shared query would save.
+ */
+function resolveSubject(
+  db: Db,
+  projectId: string,
+  subjectType: ContinuitySubjectType,
+  name: string,
+): { id: string; name: string } | undefined {
+  const normalized = name.trim().toLowerCase();
+  if (subjectType === "character") {
+    return db
+      .select({ id: characters.id, name: characters.name })
+      .from(characters)
+      .where(eq(characters.projectId, projectId))
+      .all()
+      .find((r) => r.name.trim().toLowerCase() === normalized);
+  }
+  if (subjectType === "location") {
+    return db
+      .select({ id: locations.id, name: locations.name })
+      .from(locations)
+      .where(eq(locations.projectId, projectId))
+      .all()
+      .find((r) => r.name.trim().toLowerCase() === normalized);
+  }
+  return db
+    .select({ id: props.id, name: props.name })
+    .from(props)
+    .where(eq(props.projectId, projectId))
+    .all()
+    .find((r) => r.name.trim().toLowerCase() === normalized);
+}
+
+/**
+ * Every continuity fact already on record for this project, formatted for
+ * the extraction prompt — so a redo's LLM call can see what an earlier run
+ * already established and flag a genuine contradiction itself, rather than
+ * this stage running any rules-based text-contradiction check of its own.
+ * Empty on a project's first continuity pass, same as `castSummary`'s "(no
+ * cast yet)" fallback elsewhere in this file.
+ */
+function existingFactsSummary(db: Db, projectId: string): string {
+  const rows = db.select().from(continuityFacts).where(eq(continuityFacts.projectId, projectId)).all();
+  if (rows.length === 0) return "(none yet — this is the first continuity pass)";
+  return rows
+    .map(
+      (r) =>
+        `- [${r.subjectType}] ${r.subjectName}: ${r.fact}` +
+        (r.source === "conflict" ? " (unresolved conflict)" : ""),
+    )
+    .join("\n");
+}
+
+/**
+ * Stage 13 — extracts continuity facts (a character's scar, where a prop was
+ * left, a location's established geography) from the approved Story Bible
+ * and the script/scene breakdowns, for a human to confirm or correct — "the
+ * system extracts continuity facts... automatically, flags conflicts as they
+ * appear in later stages, and a human approves or corrects — never silent
+ * auto-resolution" (the M7 detail page's own "Continuity" section). This is
+ * the same posture as the story-quality evaluator: assistive, not
+ * authoritative.
+ *
+ * Writes `continuity_facts` rows directly rather than a `dev_artifacts` row
+ * (see that table's own comment in lib/db/schema.ts) — so, like
+ * "characters"/"world_building", this stage sits in `DEV_CHAIN_STAGES` but
+ * not `DEV_ARTIFACT_STAGES`, and `devStageStatus`/`approveDevStage` (chain.ts)
+ * and `DISCARD` (lib/projects.ts) special-case it the same way those two
+ * already are.
+ *
+ * Reads the Story Bible plus both breakdowns, per the M7 detail page's own
+ * scope for this stage — a wider input than any other dev-chain stage takes
+ * (finding F10's 4096-token cap is a real risk here, more than anywhere else
+ * in this chain: the bible alone already runs long, and both breakdowns are
+ * appended on top of it). Accepted rather than trimmed, because continuity's
+ * whole job is cross-referencing what the bible established against what the
+ * breakdowns derived from it — narrowing the input would narrow exactly what
+ * this stage exists to catch. If this proves to overrun the cap in practice,
+ * the fix is a condensed digest of the bible (concept/characters/world only,
+ * dropping the prose treatment and full screenplay text it also carries),
+ * not dropping a whole source document.
+ *
+ * Never overwrites a prior run's facts: `DISCARD["continuity"]`
+ * (lib/projects.ts) only clears the approval gate on a redo, deliberately
+ * leaving every earlier `continuity_facts` row in place — that history is
+ * what lets this stage's own LLM call notice a contradiction against
+ * something an earlier pass already established (`existingFactsSummary`
+ * above). Conflict detection is therefore entirely the model's own judgment,
+ * given that history as prompt context, not a rules-based text-contradiction
+ * check this stage runs itself — per the M7 detail page's "LLM-assisted...
+ * flags conflicts", and per this PR's own scope note against over-engineering
+ * that. A fact identical to one already on record for the same subject
+ * (same text, case-insensitive) is skipped rather than reinserted, so an
+ * unchanged redo doesn't pad the table with duplicate rows on every run —
+ * but a fact the model flags as conflicting with the record is always kept
+ * as its own new row (`source: "conflict"`), never merged into or replacing
+ * the fact it conflicts with.
+ *
+ * "Approved" for this stage means only that extraction has run at least once
+ * and a human has continued past it — not that every conflict is resolved.
+ * PR7's own scope, per the M7 detail page, is "no UI review surface beyond a
+ * flat list... a richer conflict-resolution UI can follow" — blocking
+ * approval on every conflict being resolved would need that richer UI to
+ * exist first. A conflict left unresolved at approval time stays visible
+ * (and individually resolvable, via the continuity-facts API route) after
+ * approval; it just doesn't gate the chain the way an unapproved draft does.
+ *
+ * "continuity" is currently the last stage `DEV_CHAIN_STAGES` names, so this
+ * stage does not hand off further in auto mode — the same "derive, don't
+ * record" landing every stage at the end of the chain-so-far sits in until a
+ * later PR extends `DEV_CHAIN_STAGES` past it (see `runScreenplay`'s doc
+ * comment for the general pattern). Manual mode still parks for review,
+ * exactly as every stage above does.
+ */
+export async function runContinuity(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project } = bundle;
+  const provider = resolveDevProvider(ctx.db);
+
+  // Chain order already guarantees story_bible/script_breakdown are approved
+  // by the time continuity runs — this is a defensive existence check, not
+  // context for the prompt. Passing their full text on top of the scene
+  // breakdown measured out to 4432 tokens against a 4096 cap (finding F10)
+  // the first time this ran for real; castSummary/worldSummary are the same
+  // entity-focused condensation `scene_breakdown`'s own prompt already uses.
+  requireDevArtifactContent(ctx.db, projectId, "story_bible");
+  requireDevArtifactContent(ctx.db, projectId, "script_breakdown");
+  const sceneBreakdown = requireDevArtifactContent(ctx.db, projectId, "scene_breakdown");
+  const direction = pendingDirection(ctx);
+
+  ctx.log(`Extracting continuity facts with ${provider.model}`);
+  ctx.progress(0.2);
+  checkAbort(ctx);
+
+  const payload = await ctx.sdApi.llm.chatJson<ContinuityPayload>({
+    model: provider.model,
+    messages: [
+      {
+        role: "user",
+        content: renderPrompt(ctx.db, "dev.continuity", {
+          castSummary: castSummary(ctx.db, projectId),
+          worldSummary: worldSummary(ctx.db, projectId),
+          sceneBreakdown,
+          existingFacts: existingFactsSummary(ctx.db, projectId),
+          direction: directionBlock(direction),
+        }),
+      },
+    ],
+    temperature: 0.3,
+  });
+
+  const candidates = (payload.facts ?? []).filter(
+    (
+      f,
+    ): f is { subjectType: ContinuitySubjectType; subjectName: string; sceneId: unknown; fact: string; conflict: unknown } =>
+      typeof f?.subjectType === "string" &&
+      (CONTINUITY_SUBJECT_TYPES as readonly string[]).includes(f.subjectType) &&
+      typeof f?.subjectName === "string" &&
+      f.subjectName.trim().length > 0 &&
+      typeof f?.fact === "string" &&
+      f.fact.trim().length > 0,
+  );
+
+  if (candidates.length === 0) {
+    throw new Error(`Project ${projectId} — continuity extraction returned no usable facts`);
+  }
+
+  const existing = ctx.db.select().from(continuityFacts).where(eq(continuityFacts.projectId, projectId)).all();
+
+  let written = 0;
+  let dropped = 0;
+  for (const candidate of candidates) {
+    const subject = resolveSubject(ctx.db, projectId, candidate.subjectType, candidate.subjectName);
+    if (!subject) {
+      // Degrade gracefully, log a warning, never fail the whole stage over
+      // one bad reference — the same discipline `filterLiveRefs` (images.ts)
+      // already applies to a dangling `refInputName`.
+      dropped++;
+      ctx.log(
+        `Continuity fact named "${candidate.subjectName}" as a ${candidate.subjectType}, which doesn't match ` +
+          `any known ${candidate.subjectType} in this project — dropping it`,
+        "warn",
+      );
+      continue;
+    }
+
+    const factText = candidate.fact.trim();
+    const alreadyRecorded = existing.some(
+      (row) => row.subjectId === subject.id && row.fact.trim().toLowerCase() === factText.toLowerCase(),
+    );
+    if (alreadyRecorded) continue;
+
+    const sceneId =
+      typeof candidate.sceneId === "string" && candidate.sceneId.trim().length > 0
+        ? candidate.sceneId.trim()
+        : typeof candidate.sceneId === "number"
+          ? String(candidate.sceneId)
+          : null;
+
+    ctx.db
+      .insert(continuityFacts)
+      .values({
+        projectId,
+        sceneId,
+        subjectType: candidate.subjectType,
+        subjectId: subject.id,
+        subjectName: subject.name,
+        fact: factText,
+        source: candidate.conflict === true ? "conflict" : "extracted",
+      })
+      .run();
+    written++;
+  }
+
+  ctx.log(`${written} continuity fact(s) written` + (dropped > 0 ? `, ${dropped} dropped (unresolved subject)` : ""));
+
+  ctx.db
+    .update(projects)
+    .set({ continuityApprovedAt: project.mode === "auto" ? new Date() : null })
+    .where(eq(projects.id, projectId))
+    .run();
+
   if (project.mode === "manual") {
     awaitReview(ctx.db, projectId);
     ctx.log("Stopping for review (manual mode)");
     return;
   }
-  // No next stage exists in `DEV_CHAIN_STAGES` yet — see this function's doc
-  // comment above.
-  ctx.log("Scene breakdown is the last Preproduction stage defined so far — nothing further to enqueue");
+  ctx.log("Continuity is the last Preproduction stage defined so far — nothing further to enqueue");
 }

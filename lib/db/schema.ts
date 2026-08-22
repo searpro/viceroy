@@ -240,6 +240,14 @@ export const projects = sqliteTable(
       .notNull()
       .$type<string[]>()
       .default([]),
+    // M7 PR7. The "continuity" stage's equivalent of `charactersApprovedAt`
+    // above — it writes many `continuity_facts` rows, not one row of its own,
+    // so it has nowhere else to record approval. Deliberately NOT gated on
+    // every extracted fact being resolved: the spec's own scope for PR7 is "no
+    // UI review surface beyond a flat list", so approval here means only "the
+    // extraction ran and a human clicked continue", the same bar `characters`
+    // and `world_building` clear — see `devStageStatus` in chain.ts.
+    continuityApprovedAt: integer("continuity_approved_at", { mode: "timestamp_ms" }),
     // Nullable, like captionStyleId: a project created before this column
     // existed has no way to have one set. render.ts falls back to
     // config.video's dimensions when either is null.
@@ -478,14 +486,19 @@ export const DEV_CHAIN_STAGES = [
   // Development stage above them is approved.
   "script_breakdown",
   "scene_breakdown",
+  // Stage 13 (M7 PR7) — extracted facts live in `continuity_facts`, not
+  // `dev_artifacts` (see that table's own comment below), so like
+  // "characters"/"world_building" this is a `DEV_TABLE_STAGES` entry, not a
+  // `DEV_ARTIFACT_STAGES` one.
+  "continuity",
 ] as const;
 export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 
-// The two dev-chain stages that are NOT `dev_artifacts` rows (see
+// The dev-chain stages that are NOT `dev_artifacts` rows (see
 // `DEV_CHAIN_STAGES` above) — pulled out as their own type so job dispatch and
 // `DISCARD` can be exhaustive over them without re-deriving the split from
 // `DEV_CHAIN_STAGES` minus `DEV_ARTIFACT_STAGES` by hand.
-export const DEV_TABLE_STAGES = ["characters", "world_building"] as const;
+export const DEV_TABLE_STAGES = ["characters", "world_building", "continuity"] as const;
 export type DevTableStage = (typeof DEV_TABLE_STAGES)[number];
 
 export const devArtifacts = sqliteTable(
@@ -593,6 +606,62 @@ export const props = sqliteTable(
     updatedAt: updatedAt(),
   },
   (t) => [index("props_project_idx").on(t.projectId)],
+);
+
+export const CONTINUITY_SUBJECT_TYPES = ["character", "location", "prop"] as const;
+export type ContinuitySubjectType = (typeof CONTINUITY_SUBJECT_TYPES)[number];
+
+export const CONTINUITY_FACT_SOURCES = ["extracted", "conflict", "resolved"] as const;
+export type ContinuityFactSource = (typeof CONTINUITY_FACT_SOURCES)[number];
+
+// Stage 13 (M7 PR7). Facts extracted from the Story Bible plus the script/
+// scene breakdowns — a character's scar, where a prop was left, a location's
+// established geography — surfaced for human review rather than silently
+// trusted (the M7 detail page's own "never silent auto-resolution").
+//
+// `subjectId` deliberately carries no DB-level FK: the LLM names a subject by
+// type (character/location/prop), and each type is its own table, so a real
+// foreign key would need to point at three different tables depending on a
+// sibling column's value. `scenes.characterIds` already accepts this same
+// trade-off for a loose id list rather than a polymorphic FK — see its own
+// comment. `subjectName` is kept alongside it, denormalized, purely so the
+// flat review list (dev-chain-card.tsx) can render without a three-way join
+// per row; `dev.ts`'s extraction handler is what keeps it in sync with the
+// row it resolved the id from.
+//
+// `sceneId` is free text, not a `scenes` FK either — the dev chain's script/
+// scene breakdowns are prose documents ("SCENE 3 — INT. ..."), not `scenes`
+// rows (those are the narrative pipeline's own table, per `DEV_ARTIFACT_STAGES`'s
+// comment above), so a fact anchored to one just carries whatever scene
+// number/heading the LLM extracted it against.
+//
+// A conflicting fact is never overwritten in place: the new, conflicting
+// fact is inserted as its own row with `source: "conflict"`, leaving the
+// original untouched — see `runContinuity`'s doc comment for how a conflict
+// is detected. Approving a conflict sets `resolvedAt` without deleting either
+// row, the same audit-trail discipline `dev_artifacts.directionHistory`
+// already keeps.
+export const continuityFacts = sqliteTable(
+  "continuity_facts",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id"),
+    subjectType: text("subject_type", { enum: CONTINUITY_SUBJECT_TYPES }).notNull(),
+    subjectId: text("subject_id").notNull(),
+    subjectName: text("subject_name").notNull(),
+    fact: text("fact").notNull(),
+    source: text("source", { enum: CONTINUITY_FACT_SOURCES }).notNull().default("extracted"),
+    resolvedAt: integer("resolved_at", { mode: "timestamp_ms" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("continuity_facts_project_idx").on(t.projectId),
+    index("continuity_facts_subject_idx").on(t.projectId, t.subjectId),
+  ],
 );
 
 export const assets = sqliteTable("assets", {
@@ -859,6 +928,7 @@ export const schema = {
   worldBuilding,
   locations,
   props,
+  continuityFacts,
   assets,
   jobs,
   jobLogs,
