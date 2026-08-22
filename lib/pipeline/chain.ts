@@ -11,6 +11,7 @@ import {
   props,
   renders,
   scenes,
+  shotListItems,
   storyboardPanels,
   subtitleCues,
   voiceovers,
@@ -197,6 +198,30 @@ function devStageStatus(db: Db, projectId: string, stage: DevChainStage): DevSta
     return panels.length === 0 ? "empty" : "pending";
   }
 
+  if (stage === "shot_list") {
+    // Same shape as "storyboards" above, for the same reason: the target row
+    // count is only known after this stage's own extraction runs, so it isn't
+    // derivable from a fixed set the way `concept_art`'s locations/props are.
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+    if (project?.shotListApprovedAt) return "approved";
+    const items = db
+      .select({ id: shotListItems.id })
+      .from(shotListItems)
+      .where(eq(shotListItems.projectId, projectId))
+      .all();
+    return items.length === 0 ? "empty" : "pending";
+  }
+
+  if (stage === "previs") {
+    // No "pending" state for this stage, deliberately — unlike every other
+    // table stage above, previs produces exactly one artifact per project
+    // (the rendered animatic), not many reviewable rows, so there is nothing
+    // for a separate approval click to mean beyond "the render exists". See
+    // `projects.previsAssetId`'s own comment (schema.ts).
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+    return project?.previsAssetId ? "approved" : "empty";
+  }
+
   const latest = db
     .select()
     .from(devArtifacts)
@@ -304,6 +329,17 @@ function approveDevStage(db: Db, projectId: string, stage: DevChainStage): void 
   }
   if (stage === "storyboards") {
     db.update(projects).set({ storyboardsApprovedAt: new Date() }).where(eq(projects.id, projectId)).run();
+    return;
+  }
+  if (stage === "shot_list") {
+    db.update(projects).set({ shotListApprovedAt: new Date() }).where(eq(projects.id, projectId)).run();
+    return;
+  }
+  if (stage === "previs") {
+    // Never actually called — `devStageStatus` never reports "previs" as
+    // "pending" (see its own comment above), so `advance` never reaches this
+    // branch for it. Present anyway so `stage` narrows to `DevArtifactStage`
+    // by the time it reaches the `devArtifacts` update below.
     return;
   }
   db.update(devArtifacts)

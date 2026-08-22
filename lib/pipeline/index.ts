@@ -4,6 +4,7 @@ import { runElements } from "./elements";
 import { runCharacterImages, runSceneImages } from "./images";
 import { runSubtitleAlign, runVoiceover } from "./voiceover";
 import { runRender } from "./render";
+import { runPrevis } from "./previs";
 import {
   runBeatSheet,
   runConcept,
@@ -16,6 +17,7 @@ import {
   runScreenplay,
   runScreenplayRevision,
   runScriptBreakdown,
+  runShotList,
   runStoryBible,
   runStoryboards,
   runStoryStructure,
@@ -69,4 +71,8 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   production_design: runProductionDesign,
   concept_art: runConceptArt,
   storyboards: runStoryboards,
+  // Preproduction (M7 PR11) — stages 18-19, the last of the 11-21 range this
+  // milestone's own PR sequence scoped for Preproduction.
+  shot_list: runShotList,
+  previs: runPrevis,
 };

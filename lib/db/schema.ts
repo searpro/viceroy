@@ -262,6 +262,21 @@ export const projects = sqliteTable(
     // ran (or had nothing to do) and a human reached this point" bar, not
     // per-panel sign-off — see `runStoryboards`'s own doc comment (dev.ts).
     storyboardsApprovedAt: integer("storyboards_approved_at", { mode: "timestamp_ms" }),
+    // M7 PR11. The "shot_list" stage's equivalent of `storyboardsApprovedAt`
+    // above — it writes `shot_list_items` rows, not a row of its own, so it
+    // has nowhere else to record approval. Same "the pass ran and a human
+    // reached this point" bar as `storyboards`, not per-item sign-off — see
+    // `runShotList`'s own doc comment (dev.ts).
+    shotListApprovedAt: integer("shot_list_approved_at", { mode: "timestamp_ms" }),
+    // M7 PR11. The finished previs animatic, once rendered — unlike every
+    // other table-stage approval gate above, this is not a boolean/timestamp
+    // paired with the pass having "run"; it is the render's own asset. Previs
+    // produces exactly one artifact per project (unlike `concept_art`'s many
+    // images or `storyboards`' many panels), so "approved" is simply
+    // "this is set" — no separate `previsApprovedAt` column, per
+    // `devStageStatus`'s own comment on why a "pending" state does not exist
+    // for this stage (chain.ts).
+    previsAssetId: text("previs_asset_id").references(() => assets.id),
     // Nullable, like captionStyleId: a project created before this column
     // existed has no way to have one set. render.ts falls back to
     // config.video's dimensions when either is null.
@@ -531,6 +546,20 @@ export const DEV_CHAIN_STAGES = [
   // row — same shape as "characters"/"world_building"/"continuity"/
   // "concept_art" before it.
   "storyboards",
+  // Stage 18 (M7 PR11) — one `shot_list_items` row per approved storyboard
+  // panel, refining its single flat `panelImagePrompt` into the keyframe/
+  // motion two-register split M8's own `shots` table will need (see
+  // `shotListItems`'s own comment below for why this is a new table, not a
+  // shared one). Writes its own table, not a `dev_artifacts` row — same shape
+  // as "storyboards" before it.
+  "shot_list",
+  // Stage 19 (M7 PR11) — the thin animatic. Unlike every generation stage
+  // above, this reads structured rows and renders a video (see
+  // `runPrevis`, previs.ts) rather than calling an LLM or diffusion model;
+  // "approved" here means the render exists (`projects.previsAssetId` is
+  // set), not a `dev_artifacts` row or a boolean gate of its own — see that
+  // column's own comment above.
+  "previs",
 ] as const;
 export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 
@@ -544,6 +573,8 @@ export const DEV_TABLE_STAGES = [
   "continuity",
   "concept_art",
   "storyboards",
+  "shot_list",
+  "previs",
 ] as const;
 export type DevTableStage = (typeof DEV_TABLE_STAGES)[number];
 
@@ -776,6 +807,78 @@ export const storyboardPanels = sqliteTable(
   (t) => [
     index("storyboard_panels_project_idx").on(t.projectId),
     index("storyboard_panels_project_scene_idx").on(t.projectId, t.sceneId),
+  ],
+);
+
+// Stage 18 (M7 PR11). One row per approved storyboard panel, refining that
+// panel's own flat `panelImagePrompt` into the two registers a shot actually
+// needs: `keyframePrompt` (what a still frame of the shot looks like) and
+// `motionPrompt` (what happens over its duration — camera and subject
+// movement). See the M8 detail page's own "Prompt engine" section for why
+// collapsing these two into one field is a documented failure mode: "Her
+// face lit by a guttering lantern" describes a frame; "slow push in as the
+// flame dies" describes what the camera and the subject do, and a model
+// asked for one field tends to describe only the frame.
+//
+// Deliberately its own table, not M8's own (later, separate milestone)
+// `shots` table — this is a settled call from the M7 detail page's own
+// "Shot lists vs. M8's shots table" section, not a judgment call made here:
+// Preproduction's shot list is a *planning* artifact (a project may never
+// commit to the `film` pipeline that owns `shots` at all), while `shots`
+// carries M8's own quantised timing (`frames`/`fps`) and render lifecycle
+// (`videoAssetId`) that make no sense before a project has committed to that
+// pipeline. "Feeds M8's `shots` table directly" means a straightforward
+// copy-with-defaults when a project's `pipeline` is later set to `film`
+// (M8 PR1's fork), not a table the two milestones share. Carries the same
+// `keyframePrompt`/`motionPrompt` field names as `shots` will, in the same
+// spirit, precisely so that copy is a rename-free row insert.
+//
+// `sceneId` is free text, not a `scenes` FK — same reasoning as
+// `storyboardPanels.sceneId` and `continuityFacts.sceneId` above: the dev
+// chain's scene breakdown is a prose document, not `scenes` rows.
+//
+// `characterIds` mirrors `scenes.characterIds`'s own loose-json-array shape
+// (see that column's comment) rather than a polymorphic FK, for the same
+// reason `continuityFacts.subjectId` carries none: a shot can mention more
+// than one character, and there is no single foreign table a JSON array of
+// ids could point at with a real constraint.
+//
+// `durationHintMs` is a plain millisecond estimate — "quantisation-ready" per
+// the acceptance bar means a duration exists for M8 to quantise into
+// `frames`/`fps` later, not that this row does that quantisation itself; this
+// stage has no frame rate or clip-length rules of its own to apply.
+//
+// `keyframeAssetId` defaults to the source storyboard panel's own
+// `panelImageAssetId` — the panel IS effectively a keyframe already, so this
+// stage does not regenerate an image, only refines the text/metadata around
+// the one that already exists.
+export const shotListItems = sqliteTable(
+  "shot_list_items",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id").notNull(),
+    index: integer("index").notNull(),
+    keyframePrompt: text("keyframe_prompt").notNull().default(""),
+    motionPrompt: text("motion_prompt").notNull().default(""),
+    shotType: text("shot_type", { enum: STORYBOARD_SHOT_TYPES }).notNull().default("medium"),
+    cameraAngle: text("camera_angle", { enum: STORYBOARD_CAMERA_ANGLES }).notNull().default("eye-level"),
+    cameraMovement: text("camera_movement", { enum: STORYBOARD_CAMERA_MOVEMENTS })
+      .notNull()
+      .default("static"),
+    lens: text("lens", { enum: STORYBOARD_LENSES }).notNull().default("standard"),
+    characterIds: text("character_ids", { mode: "json" }).notNull().$type<string[]>().default([]),
+    durationHintMs: integer("duration_hint_ms"),
+    keyframeAssetId: text("keyframe_asset_id").references(() => assets.id),
+    approvedAt: integer("approved_at", { mode: "timestamp_ms" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("shot_list_items_project_idx").on(t.projectId),
+    index("shot_list_items_project_scene_idx").on(t.projectId, t.sceneId),
   ],
 );
 
@@ -1045,6 +1148,7 @@ export const schema = {
   props,
   continuityFacts,
   storyboardPanels,
+  shotListItems,
   assets,
   jobs,
   jobLogs,

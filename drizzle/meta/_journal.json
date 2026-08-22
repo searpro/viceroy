@@ -134,6 +134,13 @@
       "when": 1787736400000,
       "tag": "0018_storyboards",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1787822800000,
+      "tag": "0019_shot_list_previs",
+      "breakpoints": true
     }
   ]
 }

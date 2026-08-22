@@ -20,6 +20,7 @@ import {
   props,
   renders,
   scenes,
+  shotListItems,
   storyboardPanels,
   subtitleCues,
   voiceovers,
@@ -310,6 +311,14 @@ export function getProjectDetail(db: Db, projectId: string) {
       .where(eq(storyboardPanels.projectId, projectId))
       .orderBy(asc(storyboardPanels.index))
       .all(),
+    // M7 PR11. Every generated shot list item, in the same project-wide
+    // `index` order `runShotList` assigns — mirrors `storyboardPanels` above.
+    shotListItems: db
+      .select()
+      .from(shotListItems)
+      .where(eq(shotListItems.projectId, projectId))
+      .orderBy(asc(shotListItems.index))
+      .all(),
   };
 }
 
@@ -555,6 +564,25 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
   storyboards: (db, projectId) => {
     db.delete(storyboardPanels).where(eq(storyboardPanels.projectId, projectId)).run();
     db.update(projects).set({ storyboardsApprovedAt: null }).where(eq(projects.id, projectId)).run();
+  },
+  // Stage 18 (M7 PR11) — same "no upstream row here to preserve" shape as
+  // `storyboards`' own discard above: the shot list item row itself, both
+  // prompt registers and cinematography fields included, is this stage's
+  // whole output, so a redo deletes every row outright rather than trying to
+  // line new refinements back up against old ones.
+  shot_list: (db, projectId) => {
+    db.delete(shotListItems).where(eq(shotListItems.projectId, projectId)).run();
+    db.update(projects).set({ shotListApprovedAt: null }).where(eq(projects.id, projectId)).run();
+  },
+  // Stage 19 (M7 PR11) — clears the render's own asset pointer only; the
+  // `assets` row/file it pointed at is left alone, same "rows are deleted or
+  // nulled, the underlying asset files are left alone" discipline this
+  // whole map's own doc comment already states (assets are reaped
+  // separately). Nothing currently sits downstream of "previs" in
+  // `INVALIDATION_CHAIN`, so this never fires as part of a cascade yet — it
+  // exists so a direct redo of "previs" itself clears the stale render.
+  previs: (db, projectId) => {
+    db.update(projects).set({ previsAssetId: null }).where(eq(projects.id, projectId)).run();
   },
 };
 

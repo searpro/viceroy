@@ -12,6 +12,7 @@ import {
   projects,
   renders,
   scenes,
+  shotListItems,
   storyboardPanels,
   subtitleCues,
   voiceovers,
@@ -364,6 +365,20 @@ describe("nextStep — Development chain", () => {
     // story as "continuity"/"concept_art" above.
     db.insert(storyboardPanels).values({ projectId: project.id, sceneId: "1", index: 0 }).run();
     db.update(projects).set({ storyboardsApprovedAt: new Date() }).where(eq(projects.id, project.id)).run();
+    // Preproduction (M7 PR11) — same "own table, own approval mechanism"
+    // story as "storyboards" above.
+    db.insert(shotListItems).values({ projectId: project.id, sceneId: "1", index: 0 }).run();
+    db.update(projects).set({ shotListApprovedAt: new Date() }).where(eq(projects.id, project.id)).run();
+    // Preproduction (M7 PR11) — "previs" has no separate approval column;
+    // setting `previsAssetId` IS the approval (see that column's own comment,
+    // schema.ts), so this is the only stage here approved by inserting an
+    // `assets` row rather than by setting a timestamp column.
+    const [previsAsset] = db
+      .insert(assets)
+      .values({ kind: "video", path: "/tmp/previs.mp4", mimeType: "video/mp4", bytes: 1 })
+      .returning()
+      .all();
+    db.update(projects).set({ previsAssetId: previsAsset!.id }).where(eq(projects.id, project.id)).run();
 
     expect(nextStep(db, project.id)).toMatchObject({
       kind: "complete",

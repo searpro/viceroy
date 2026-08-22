@@ -25,6 +25,7 @@ function baseDetail(overrides: Partial<Detail> = {}): Detail {
     props: [],
     continuityFacts: [],
     storyboardPanels: [],
+    shotListItems: [],
     render: null,
     voiceover: null,
     cues: [],

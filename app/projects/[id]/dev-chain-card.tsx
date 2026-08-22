@@ -78,6 +78,8 @@ const DEV_STAGE_LABELS: Record<string, string> = {
   production_design: "Production design",
   concept_art: "Concept art",
   storyboards: "Storyboards",
+  shot_list: "Shot list",
+  previs: "Previs",
 };
 const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
 
@@ -102,6 +104,8 @@ function DevChainHistory({
   const hasContinuity = detail.continuityFacts.length > 0;
   const hasConceptArt = [...detail.locations, ...detail.props].some((entity) => entity.imageAssetId);
   const hasStoryboards = detail.storyboardPanels.length > 0;
+  const hasShotList = detail.shotListItems.length > 0;
+  const hasPrevis = Boolean(detail.project.previsAssetId);
 
   const stagesWithContent = DEV_CHAIN_ORDER.filter((stage) => {
     if (stage === "characters") return hasCharacters;
@@ -109,6 +113,8 @@ function DevChainHistory({
     if (stage === "continuity") return hasContinuity;
     if (stage === "concept_art") return hasConceptArt;
     if (stage === "storyboards") return hasStoryboards;
+    if (stage === "shot_list") return hasShotList;
+    if (stage === "previs") return hasPrevis;
     return byStage.has(stage);
   });
 
@@ -137,6 +143,10 @@ function DevChainHistory({
                 <ConceptArtSection detail={detail} />
               ) : stage === "storyboards" ? (
                 <StoryboardsSection detail={detail} />
+              ) : stage === "shot_list" ? (
+                <ShotListSection detail={detail} />
+              ) : stage === "previs" ? (
+                <PrevisSection detail={detail} />
               ) : (
                 <StageContent
                   content={byStage.get(stage)?.content ?? ""}
@@ -289,6 +299,75 @@ function StoryboardsSection({ detail }: { detail: Detail }) {
           </ul>
         </figure>
       ))}
+    </div>
+  );
+}
+
+// M7 PR11. Same thumbnail-grid shape as `StoryboardsSection` above, plus the
+// keyframe/motion two-register split surfaced as two separate, truncated
+// lines rather than one — the acceptance bar this stage exists to clear is
+// that the two registers stay visibly distinct, never baked into one field.
+function ShotListSection({ detail }: { detail: Detail }) {
+  const items = [...detail.shotListItems].sort((a, b) =>
+    a.sceneId === b.sceneId ? a.index - b.index : a.sceneId.localeCompare(b.sceneId),
+  );
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+      {items.map((item) => (
+        <figure key={item.id} className="space-y-1.5">
+          {item.keyframeAssetId ? (
+            <img
+              src={`/api/assets/${item.keyframeAssetId}`}
+              alt={`Scene ${item.sceneId}, shot ${item.index + 1}`}
+              className="aspect-[9/16] w-full rounded-md border border-white/10 object-cover"
+            />
+          ) : (
+            <div className="flex aspect-[9/16] w-full items-center justify-center rounded-md border border-white/10 text-xs text-white/40">
+              no keyframe
+            </div>
+          )}
+          <figcaption className="text-xs text-white/60">
+            Scene {item.sceneId} · shot {item.index + 1}
+            {item.durationHintMs ? ` · ~${(item.durationHintMs / 1000).toFixed(1)}s` : ""}
+          </figcaption>
+          <p className="line-clamp-2 text-[11px] text-white/70">
+            <span className="text-white/40">Frame: </span>
+            {item.keyframePrompt}
+          </p>
+          <p className="line-clamp-2 text-[11px] text-white/70">
+            <span className="text-white/40">Motion: </span>
+            {item.motionPrompt}
+          </p>
+        </figure>
+      ))}
+    </div>
+  );
+}
+
+// M7 PR11. Previs produces exactly one artifact per project, unlike every
+// other Preproduction stage above — a video element plus a plain download
+// link, the same `/api/assets/{id}` route every other asset already serves
+// through (mirrors the screenplay PDF download link's `<a>` pattern, just
+// against a video src instead of a PDF href).
+function PrevisSection({ detail }: { detail: Detail }) {
+  const assetId = detail.project.previsAssetId;
+  if (!assetId) {
+    return <p className="text-sm text-white/50">Not yet rendered.</p>;
+  }
+  return (
+    <div className="space-y-2">
+      <video
+        src={`/api/assets/${assetId}`}
+        controls
+        className="aspect-[9/16] w-full max-w-xs rounded-md border border-white/10"
+      />
+      <a
+        href={`/api/assets/${assetId}`}
+        download
+        className="block text-xs text-amber-300 underline decoration-amber-300/40 underline-offset-2 hover:text-amber-200"
+      >
+        download previs
+      </a>
     </div>
   );
 }

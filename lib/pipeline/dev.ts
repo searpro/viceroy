@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { Fountain, type Script } from "fountain-js";
 import {
   characters,
@@ -9,6 +9,7 @@ import {
   locations,
   projects,
   props,
+  shotListItems,
   storyboardPanels,
   STORYBOARD_CAMERA_ANGLES,
   STORYBOARD_CAMERA_MOVEMENTS,
@@ -1863,4 +1864,182 @@ function coerceVocab<T extends string>(value: unknown, allowed: readonly T[], fa
     if ((allowed as readonly string[]).includes(normalized)) return normalized;
   }
   return fallback;
+}
+
+type ShotListRefinement = {
+  keyframePrompt?: unknown;
+  motionPrompt?: unknown;
+  durationHintMs?: unknown;
+};
+
+// A plausible default for one shot's screen time when the model's own
+// estimate is missing or nonsensical — sits mid-range of the prompt's own
+// "typically 2000-6000ms" guidance, not at either edge, so a bad estimate
+// degrades to something a previs animatic can still cut on rather than to a
+// value that reads as broken (a 0ms or 60000ms shot).
+const DEFAULT_SHOT_DURATION_MS = 4000;
+const MIN_SHOT_DURATION_MS = 1000;
+const MAX_SHOT_DURATION_MS = 15_000;
+
+/** Clamp a model-supplied duration estimate into a sane range, defaulting on anything unusable. */
+function coerceDurationHintMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_SHOT_DURATION_MS;
+  return Math.round(Math.min(MAX_SHOT_DURATION_MS, Math.max(MIN_SHOT_DURATION_MS, value)));
+}
+
+/**
+ * Stage 18 (M7 PR11) — one `shot_list_items` row per approved storyboard
+ * panel, refining that panel's own flat `panelImagePrompt` into the two
+ * registers a shot actually needs: `keyframePrompt` (what the frame looks
+ * like) and `motionPrompt` (what happens over its duration) — the same split
+ * M8's own "Prompt engine" section specifies for its `shots` table, so a shot
+ * list is ready to seed `shots` unchanged once a project commits to the
+ * `film` pipeline (M8 PR1's fork). See `shotListItems`'s own comment in
+ * lib/db/schema.ts for why this is a new table rather than a shared one —
+ * that data-model question was already settled by the M7 detail page before
+ * this PR started, not decided here.
+ *
+ * One LLM call per panel, not one call for the whole storyboard — each
+ * refinement only needs its own panel's prompt plus its own cinematography
+ * fields as input (see `dev.shot_list`'s own narrow-input discipline,
+ * finding F10), and per-panel calls are what makes this stage resumable the
+ * same way `runStoryboards`/`runConceptArt` are: a crash partway through
+ * costs one row, not the whole run.
+ *
+ * Reuses `runStoryboards`' own simple case-insensitive name-matching
+ * heuristic for `characterIds` — matched against the panel's own
+ * `panelImagePrompt` (which already carries the beat's visual content that
+ * produced it), not a second extraction pass to name which cast members a
+ * shot "is about".
+ *
+ * Deliberately does NOT generate a new image: `keyframeAssetId` defaults to
+ * the source panel's own `panelImageAssetId` — the panel IS effectively a
+ * keyframe already, so this stage only refines text/metadata around the
+ * image that exists, the same "no new inference where an existing artifact
+ * already serves" call `runShotList`'s own doc comment on `keyframeAssetId`
+ * (schema.ts) already makes.
+ *
+ * Resumable per item, matched by (projectId, sceneId, index): an item that
+ * already exists for a given panel is skipped — chain order already
+ * guarantees "storyboards" is approved by the time this stage runs, so every
+ * panel it reads has a `panelImageAssetId`.
+ *
+ * Deliberately does NOT `continueDevChain` into "previs", the same reason
+ * `runProductionDesign`/`runConceptArt` don't auto-chain into the
+ * image-generation stage that follows them: previs is a full Remotion render
+ * (finding F9's CPU-bound cost applies at least as much here as it does to a
+ * single frame), so auto-chaining straight from a text-refinement pass into
+ * a render removes the only natural pause point a user gets before it
+ * starts. The generic "continue" mechanism (chain.ts's `advance`) is what
+ * starts "previs", same as it starts every other stage this pattern applies
+ * to.
+ */
+export async function runShotList(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project } = bundle;
+  const provider = resolveDevProvider(ctx.db);
+  const direction = pendingDirection(ctx);
+
+  const panels = ctx.db
+    .select()
+    .from(storyboardPanels)
+    .where(eq(storyboardPanels.projectId, projectId))
+    .orderBy(asc(storyboardPanels.index))
+    .all();
+  if (panels.length === 0) {
+    throw new Error(`Project ${projectId} has no storyboard panels to build a shot list from`);
+  }
+
+  const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
+
+  const existing = ctx.db.select().from(shotListItems).where(eq(shotListItems.projectId, projectId)).all();
+  const existingByKey = new Set(existing.map((row) => `${row.sceneId}::${row.index}`));
+
+  const pending = panels.filter((panel) => !existingByKey.has(`${panel.sceneId}::${panel.index}`));
+
+  if (pending.length === 0) {
+    ctx.log("Every storyboard panel already has a shot list item");
+  }
+
+  let done = 0;
+  for (const panel of pending) {
+    checkAbort(ctx);
+    ctx.log(
+      `Refining shot list item for scene ${panel.sceneId}, panel ${panel.index + 1} (${done + 1}/${pending.length})`,
+    );
+
+    const shotDescriptor = [
+      `${panel.shotType} shot`,
+      `${panel.cameraAngle} angle`,
+      `${panel.cameraMovement} camera`,
+      `${panel.lens} lens`,
+    ].join(", ");
+
+    const payload = await ctx.sdApi.llm.chatJson<ShotListRefinement>({
+      model: provider.model,
+      messages: [
+        {
+          role: "user",
+          content: renderPrompt(ctx.db, "dev.shot_list", {
+            storyboardPanelPrompt: panel.panelImagePrompt,
+            shotDescriptor,
+            direction: directionBlock(direction),
+          }),
+        },
+      ],
+      temperature: 0.4,
+    });
+
+    const keyframePrompt = typeof payload.keyframePrompt === "string" ? payload.keyframePrompt.trim() : "";
+    const motionPrompt = typeof payload.motionPrompt === "string" ? payload.motionPrompt.trim() : "";
+    if (!keyframePrompt || !motionPrompt) {
+      throw new Error(
+        `Project ${projectId} — shot list refinement for scene ${panel.sceneId}, panel ${panel.index} ` +
+          `did not return both a keyframePrompt and a motionPrompt`,
+      );
+    }
+
+    // Same simple name-mention heuristic `runStoryboards` uses for
+    // locations/props, applied here against the cast instead — see this
+    // function's own doc comment.
+    const mentioned = cast.filter((c) => panel.panelImagePrompt.toLowerCase().includes(c.name.toLowerCase()));
+
+    ctx.db
+      .insert(shotListItems)
+      .values({
+        projectId,
+        sceneId: panel.sceneId,
+        index: panel.index,
+        keyframePrompt,
+        motionPrompt,
+        shotType: panel.shotType,
+        cameraAngle: panel.cameraAngle,
+        cameraMovement: panel.cameraMovement,
+        lens: panel.lens,
+        characterIds: mentioned.map((c) => c.id),
+        durationHintMs: coerceDurationHintMs(payload.durationHintMs),
+        keyframeAssetId: panel.panelImageAssetId,
+      })
+      .run();
+    done++;
+  }
+
+  ctx.log(pending.length === 0 ? "No shot list items needed" : `${done} shot list item(s) written`);
+
+  // Same "the pass ran (or had nothing to do) and a human reached this
+  // point" approval bar `storyboardsApprovedAt` already clears — no
+  // per-item review UI exists yet.
+  ctx.db
+    .update(projects)
+    .set({ shotListApprovedAt: project.mode === "auto" ? new Date() : null })
+    .where(eq(projects.id, projectId))
+    .run();
+
+  if (project.mode === "manual") {
+    awaitReview(ctx.db, projectId);
+    ctx.log("Stopping for review (manual mode)");
+    return;
+  }
+  ctx.log("Shot list written — advance to previs next");
 }

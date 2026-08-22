@@ -137,6 +137,16 @@ const STORY_VARS = [
     description:
       "A storyboard panel's shotType/cameraAngle/cameraMovement/lens, folded into one phrase",
   },
+  // Preproduction (M7 PR11) — the approved storyboard panel's own assembled
+  // diffusion prompt, handed to an LLM as *reference material* for splitting
+  // into the keyframe/motion registers, not itself sent to an image backend
+  // (that already happened in `runStoryboards`) — see `dev.shot_list`'s own
+  // template for why its instructions explicitly tell the model to ignore
+  // any rendering-register language already baked into this string.
+  {
+    name: "storyboardPanelPrompt",
+    description: "The source storyboard panel's own assembled image prompt, for reference",
+  },
 ];
 
 function pick(...names: string[]) {
@@ -1139,6 +1149,49 @@ above. Choose shotType/cameraAngle/cameraMovement/lens for what best serves
 the beat (a confrontation reads differently in a wide static shot than a
 handheld close-up), not the same four values for every panel. Output only
 the JSON object, no commentary before or after it.`,
+  },
+  {
+    key: "dev.shot_list",
+    section: "Preproduction",
+    label: "Refine shot list item",
+    description:
+      "Splits one approved storyboard panel into the keyframe/motion two-register split M8's own " +
+      "shots table needs, plus a duration estimate (M7 PR11, stage 18).",
+    // Only this one panel's own prompt plus its shot descriptor — not the
+    // scene breakdown or world/cast summaries a second time. This stage
+    // refines a single already-approved panel's own content, one call per
+    // panel, the same narrow-input discipline `dev.continuity` and
+    // `dev.storyboards` already apply for the same reason (finding F10).
+    variables: pick("storyboardPanelPrompt", "shotDescriptor", "direction"),
+    template: `You are a cinematographer turning one approved storyboard panel into a
+shot-list entry for a previs animatic.
+
+Storyboard panel's own image prompt (included for reference only — ignore
+any rendering/technical language already baked into it: film stock, grade,
+lens or camera jargon. Read it only for what is staged in the frame, not how
+it should be rendered):
+{{storyboardPanelPrompt}}
+
+Shot: {{shotDescriptor}}
+{{direction}}
+
+Split this into two different registers — collapsing them into one is a
+known failure mode, so keep them genuinely distinct:
+- "keyframePrompt": what a single still frame of this shot looks like — the
+  staging, the subject, the lighting, what is physically in view. Content
+  only, e.g. "Her face lit by a guttering lantern."
+- "motionPrompt": what happens over the course of the shot — camera
+  movement, subject movement, anything that changes between the first and
+  last frame. Never restate the keyframe's own content; describe change,
+  not composition, e.g. "Slow push in as the flame dies."
+
+Also estimate "durationHintMs": a plausible shot length in milliseconds for
+what this shot needs to do (typically 2000-6000; longer for a shot doing
+more dramatic work, shorter for a quick insert).
+
+Output only a JSON object of this exact shape: {"keyframePrompt": "...",
+"motionPrompt": "...", "durationHintMs": <integer>}. No commentary before or
+after it.`,
   },
   {
     key: "dev.production_design",

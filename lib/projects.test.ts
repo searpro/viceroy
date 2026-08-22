@@ -476,8 +476,8 @@ describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", ()
     expect(targets).toEqual(chain);
   });
 
-  it("includes all seventeen Development/Preproduction-chain stages in DEV_CHAIN_STAGES order", () => {
-    const devStages = INVALIDATION_CHAIN.slice(INVALIDATION_CHAIN.length - 17);
+  it("includes all nineteen Development/Preproduction-chain stages in DEV_CHAIN_STAGES order", () => {
+    const devStages = INVALIDATION_CHAIN.slice(INVALIDATION_CHAIN.length - 19);
     expect(devStages).toEqual([
       "concept",
       "logline",
@@ -489,7 +489,7 @@ describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", ()
       "screenplay",
       "screenplay_revision",
       "story_bible",
-      // Preproduction (M7 PR6-PR10).
+      // Preproduction (M7 PR6-PR11).
       "script_breakdown",
       "scene_breakdown",
       "continuity",
@@ -497,6 +497,8 @@ describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", ()
       "production_design",
       "concept_art",
       "storyboards",
+      "shot_list",
+      "previs",
     ]);
   });
 });

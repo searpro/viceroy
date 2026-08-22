@@ -100,6 +100,28 @@ export type StoryboardPanel = {
   approvedAt: string | null;
 };
 
+// M7 PR11. Same "own table, not a `dev_artifacts` row" story as
+// `StoryboardPanel` above — "shot_list" is a `DEV_CHAIN_STAGES` entry that
+// writes `shot_list_items` directly. `keyframePrompt`/`motionPrompt` are
+// surfaced as two distinct fields, per this stage's whole acceptance bar:
+// collapsing them into one is the failure mode M8's own prompt-engine
+// section warns against.
+export type ShotListItem = {
+  id: string;
+  sceneId: string;
+  index: number;
+  keyframePrompt: string;
+  motionPrompt: string;
+  shotType: string;
+  cameraAngle: string;
+  cameraMovement: string;
+  lens: string;
+  characterIds: string[];
+  durationHintMs: number | null;
+  keyframeAssetId: string | null;
+  approvedAt: string | null;
+};
+
 export type Cue = {
   id: string;
   index: number;
@@ -123,6 +145,12 @@ export type Detail = {
     mode: string;
     awaitingReview: boolean;
     failureReason: string | null;
+    // M7 PR11. Set once the previs render exists — no separate approval
+    // column, per that column's own comment in lib/db/schema.ts. Optional
+    // (not just nullable) so the fixtures other tests already built for
+    // `Detail["project"]` before this PR don't all need updating for a field
+    // they have no reason to care about.
+    previsAssetId?: string | null;
   };
   narrativeStyle?: { name: string };
   voiceStyle?: { name: string };
@@ -140,6 +168,7 @@ export type Detail = {
   props: LocationOrProp[];
   continuityFacts: ContinuityFact[];
   storyboardPanels: StoryboardPanel[];
+  shotListItems: ShotListItem[];
   render?: { id: string; assetId: string | null; status: string } | null;
   voiceover?: {
     id: string;

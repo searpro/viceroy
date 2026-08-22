@@ -4,6 +4,7 @@ import { createTestDb } from "../db/testing";
 import { seed } from "../db/seed";
 import type { Db } from "../db/client";
 import {
+  assets,
   characters,
   continuityFacts,
   devArtifacts,
@@ -15,6 +16,7 @@ import {
   projects,
   props,
   providers,
+  shotListItems,
   storyboardPanels,
   worldBuilding,
 } from "../db/schema";
@@ -36,6 +38,7 @@ import {
   runScreenplay,
   runScreenplayRevision,
   runScriptBreakdown,
+  runShotList,
   runStoryBible,
   runStoryboards,
   runStoryStructure,
@@ -1854,13 +1857,10 @@ describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
       }),
     );
 
-    // Nothing is defined past "storyboards" in `DEV_CHAIN_STAGES` yet — the
-    // same "landed on the next PR's own terminal stage" interim state
-    // "concept_art" sat in before this PR extended the chain further.
-    expect(nextStep(db, project.id)).toEqual({
-      kind: "complete",
-      reason: "every Development/Preproduction stage built so far is approved",
-    });
+    // "shot_list" is what M7 PR11 extends the chain with next — see
+    // "Preproduction stages 18-19 (M7 PR11 — shot list & previs)" below for
+    // the full devNextStep walk past this point.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "shot_list", needsApproval: false });
   });
 
   // Acceptance criterion 4: `storyboards`' own `INVALIDATION_CHAIN` entry
@@ -1876,10 +1876,7 @@ describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
         images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
       }),
     );
-    expect(nextStep(db, project.id)).toEqual({
-      kind: "complete",
-      reason: "every Development/Preproduction stage built so far is approved",
-    });
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "shot_list", needsApproval: false });
 
     const job = regenerate(db, project.id, { target: "concept_art" });
     expect(job.type).toBe("concept_art");
@@ -1912,6 +1909,276 @@ describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
       stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
         llm: [BEATS],
         images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+        onChatJsonRequest: (r) => {
+          seenModel = r.model;
+        },
+      }),
+    );
+
+    const devProvider = resolveProvider(db, "llm");
+    expect(seenModel).toBe(devProvider.model);
+  });
+});
+
+describe("Preproduction stage 18 (M7 PR11 — shot list)", () => {
+  // Both beats mention "Reyna" by name (the WORLD fixture's cast member) so
+  // the characterIds-matching test below has something real to match
+  // against; independently-set cinematography fields carry through the same
+  // way `BEATS` in the storyboards describe block above sets them up.
+  const BEATS = {
+    json: {
+      beats: [
+        {
+          sceneId: "1",
+          description: "Reyna kneels at the workbench, examining her father's pick set closely.",
+          shotType: "close-up",
+          cameraAngle: "high",
+          cameraMovement: "static",
+          lens: "telephoto",
+        },
+        {
+          sceneId: "2",
+          description: "Reyna kneels at a new door, her father's pick set glinting in low light.",
+          shotType: "wide",
+          cameraAngle: "eye-level",
+          cameraMovement: "dolly",
+          lens: "wide",
+        },
+      ],
+    },
+  };
+
+  async function runThroughApprovedStoryboards() {
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id); // approve visual_bible, enqueue production_design
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+      }),
+    );
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [BEATS],
+        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+      }),
+    );
+    return project;
+  }
+
+  // Acceptance criterion 1 — the single most important one: distinct,
+  // non-identical keyframe/motion prompts, and a duration hint set. This is
+  // the test that would catch the two-register collapse M8's own docs warn
+  // against.
+  it("refines each approved panel into a distinct keyframe/motion split, with a duration hint set", async () => {
+    const project = await runThroughApprovedStoryboards();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "shot_list", needsApproval: false });
+
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "Her face lit by a guttering lantern.", motionPrompt: "Slow push in as the flame dies.", durationHintMs: 3500 } },
+          { json: { keyframePrompt: "A door frames her silhouette against the street.", motionPrompt: "She steps through and the door swings shut behind her.", durationHintMs: 5000 } },
+        ],
+      }),
+    );
+
+    const items = db
+      .select()
+      .from(shotListItems)
+      .where(eq(shotListItems.projectId, project.id))
+      .orderBy(shotListItems.index)
+      .all();
+    expect(items).toHaveLength(2);
+    for (const item of items) {
+      expect(item.keyframePrompt.length).toBeGreaterThan(0);
+      expect(item.motionPrompt.length).toBeGreaterThan(0);
+      expect(item.keyframePrompt).not.toBe(item.motionPrompt);
+      expect(item.durationHintMs).not.toBeNull();
+      expect(item.keyframeAssetId).not.toBeNull();
+    }
+    expect(items.map((i) => i.durationHintMs).sort()).toEqual([3500, 5000]);
+
+    const updated = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(updated.shotListApprovedAt).not.toBeNull();
+  });
+
+  it("defaults keyframeAssetId to the source storyboard panel's own image, without generating a new one", async () => {
+    const project = await runThroughApprovedStoryboards();
+    const panels = db
+      .select()
+      .from(storyboardPanels)
+      .where(eq(storyboardPanels.projectId, project.id))
+      .orderBy(storyboardPanels.index)
+      .all();
+
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } },
+          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 3000 } },
+        ],
+        onImageRequest: () => {
+          throw new Error("runShotList must never generate a new image");
+        },
+      }),
+    );
+
+    const items = db
+      .select()
+      .from(shotListItems)
+      .where(eq(shotListItems.projectId, project.id))
+      .orderBy(shotListItems.index)
+      .all();
+    expect(items.map((i) => i.keyframeAssetId)).toEqual(panels.map((p) => p.panelImageAssetId));
+  });
+
+  it("matches a mentioned cast member's name into characterIds, the same heuristic runStoryboards uses for locations/props", async () => {
+    const project = await runThroughApprovedStoryboards();
+    const reyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    expect(reyna.name).toBe("Reyna");
+
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } },
+          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 3000 } },
+        ],
+      }),
+    );
+
+    const items = db
+      .select()
+      .from(shotListItems)
+      .where(eq(shotListItems.projectId, project.id))
+      .all();
+    for (const item of items) {
+      expect(item.characterIds).toEqual([reyna.id]);
+    }
+  });
+
+  it("falls back to a default duration when the model's estimate is missing or out of range", async () => {
+    const project = await runThroughApprovedStoryboards();
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "k1", motionPrompt: "m1" } }, // no durationHintMs at all
+          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 999_999 } }, // absurdly long
+        ],
+      }),
+    );
+
+    const items = db
+      .select()
+      .from(shotListItems)
+      .where(eq(shotListItems.projectId, project.id))
+      .orderBy(shotListItems.index)
+      .all();
+    expect(items[0]!.durationHintMs).toBe(4000);
+    expect(items[1]!.durationHintMs).toBe(15_000);
+  });
+
+  it("refuses when a refinement returns an identical keyframe/motion split (the register-collapse failure mode)", async () => {
+    const project = await runThroughApprovedStoryboards();
+    await expect(
+      runShotList(
+        stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+          llm: [{ json: { keyframePrompt: "", motionPrompt: "", durationHintMs: 3000 } }],
+        }),
+      ),
+    ).rejects.toThrow(/keyframePrompt.*motionPrompt/);
+  });
+
+  it("is resumable — a panel that already has a shot list item is skipped on a second run", async () => {
+    const project = await runThroughApprovedStoryboards();
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } },
+          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 3000 } },
+        ],
+      }),
+    );
+
+    const secondRequests: Record<string, unknown>[] = [];
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        onChatJsonRequest: (r) => secondRequests.push(r),
+      }),
+    );
+    expect(secondRequests).toHaveLength(0);
+
+    const items = db.select().from(shotListItems).where(eq(shotListItems.projectId, project.id)).all();
+    expect(items).toHaveLength(2); // no duplicates written on the second pass
+  });
+
+  // Acceptance criterion 2: devNextStep advances storyboards -> shot_list ->
+  // previs -> the next unhandled interim state.
+  it("devNextStep advances shot_list -> previs -> the next unhandled interim state", async () => {
+    const project = await runThroughApprovedStoryboards();
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } },
+          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 3000 } },
+        ],
+      }),
+    );
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "previs", needsApproval: false });
+  });
+
+  // Acceptance criterion 4: redoing "shot_list" invalidates "previs" — the
+  // discard clears `projects.previsAssetId`, since previs has no dev_artifacts
+  // row or approvedAt column of its own to clear.
+  it("redoing shot_list invalidates previs, per ADR 0003 / INVALIDATION_CHAIN", async () => {
+    const project = await runThroughApprovedStoryboards();
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } },
+          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 3000 } },
+        ],
+      }),
+    );
+
+    const [asset] = db
+      .insert(assets)
+      .values({ kind: "video", path: "/tmp/previs.mp4", mimeType: "video/mp4", bytes: 1 })
+      .returning()
+      .all();
+    db.update(projects).set({ previsAssetId: asset!.id }).where(eq(projects.id, project.id)).run();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "complete" });
+
+    const job = regenerate(db, project.id, { target: "shot_list" });
+    expect(job.type).toBe("shot_list");
+
+    // `invalidateDownstreamOf` clears what comes *after* the redo target —
+    // "shot_list"'s own rows are untouched (the job just enqueued is what
+    // overwrites them, same as every other stage's own redo leaves its own
+    // output alone per ADR 0003); "previs", the one stage downstream of it,
+    // is what gets cleared.
+    const items = db.select().from(shotListItems).where(eq(shotListItems.projectId, project.id)).all();
+    expect(items).toHaveLength(2);
+
+    const updated = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(updated.previsAssetId).toBeNull();
+  });
+
+  it("uses resolveDevProvider, not the ordinary default llm provider", async () => {
+    const project = await runThroughApprovedStoryboards();
+
+    let seenModel: unknown;
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } },
+          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 3000 } },
+        ],
         onChatJsonRequest: (r) => {
           seenModel = r.model;
         },

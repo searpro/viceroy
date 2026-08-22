@@ -46,3 +46,27 @@ export const storyVideoSchema = z.object({
 export type StoryVideoProps = z.infer<typeof storyVideoSchema>;
 
 export const DEFAULT_CAPTION_STYLE: CaptionStyle = captionStyleSchema.parse({});
+
+// M7 PR11 — Preproduction's own previs animatic. Deliberately much simpler
+// than `storyVideoSchema` above: no audio track, no caption cues — a
+// Preproduction-only project has neither a voiceover nor word-timed
+// subtitles yet (previs runs off `shot_list_items`, well before either
+// exists). `fps` is carried as its own prop, not inferred from the
+// composition's own declared frame rate, because `runPrevis` computes each
+// shot's `durationInFrames` from `durationHintMs` the same way this schema's
+// consumer (`Previs.tsx`) does — the two need to agree on one fps, and
+// passing it explicitly is cheaper than keeping a second constant in sync.
+export const previsSchema = z.object({
+  shots: z.array(
+    z.object({
+      /** Filename inside the staging directory Remotion is bundled against. */
+      src: z.string(),
+      durationMs: z.number().positive(),
+    }),
+  ),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  fps: z.number().int().positive(),
+});
+
+export type PrevisProps = z.infer<typeof previsSchema>;
