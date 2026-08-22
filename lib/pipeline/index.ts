@@ -7,6 +7,7 @@ import { runRender } from "./render";
 import { runPrevis } from "./previs";
 import {
   runBeatSheet,
+  runCasting,
   runConcept,
   runConceptArt,
   runContinuity,
@@ -71,8 +72,10 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   production_design: runProductionDesign,
   concept_art: runConceptArt,
   storyboards: runStoryboards,
-  // Preproduction (M7 PR11) — stages 18-19, the last of the 11-21 range this
-  // milestone's own PR sequence scoped for Preproduction.
+  // Preproduction (M7 PR11) — stages 18-19.
   shot_list: runShotList,
   previs: runPrevis,
+  // Preproduction (M7 PR12) — stage 20, the second-to-last of the 11-21
+  // range this milestone's own PR sequence scoped for Preproduction.
+  casting: runCasting,
 };

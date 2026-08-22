@@ -49,6 +49,11 @@ export const REDO_CHAIN = [
   // Preproduction (M7 PR11) — same "listed but nothing calls it yet" story.
   "shot_list",
   "previs",
+  // Preproduction (M7 PR12) — same "listed but nothing calls it yet" story;
+  // see `castingLockReason` below for the one redo-warning affordance this
+  // PR does add (not a generic entry in `describeRedoLoss`, since a lock
+  // isn't a loss-to-weigh, it's a hard refusal).
+  "casting",
 ] as const;
 
 export type RedoTarget = (typeof REDO_CHAIN)[number];
@@ -109,6 +114,23 @@ export function describeRedoLoss(target: RedoTarget, detail: Detail): string[] {
   }
 
   return loss;
+}
+
+/**
+ * Why a locked character's portrait redo is refused, or null when it isn't
+ * locked.
+ *
+ * Deliberately its own function rather than folded into `describeRedoLoss`:
+ * a lock isn't a quantity of work to weigh against continuing ("this
+ * destroys 3 things"), it's a hard refusal with one fix — unlock first — so
+ * it gets its own message rather than being counted alongside a loss list.
+ * The server enforces this independently (`regenerate()`, lib/projects.ts);
+ * this is only the client-side surface of the same rule, per this project's
+ * own "a client warning is not a guard" discipline.
+ */
+export function castingLockReason(character: { name: string; castingLockedAt?: string | null }): string | null {
+  if (!character.castingLockedAt) return null;
+  return `${character.name}'s casting is locked. Unlock it first to redo their portrait or voice design.`;
 }
 
 /** The confirmation text, or null when a redo destroys nothing worth asking about. */

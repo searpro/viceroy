@@ -21,13 +21,14 @@ import {
   worldBuilding,
 } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
-import { createProject, regenerate, resolveContinuityFact } from "../projects";
+import { createProject, regenerate, resolveContinuityFact, unlockCasting } from "../projects";
 import { setPreference } from "../preferences";
 import { advance, nextStep } from "./chain";
 import { resolveProvider } from "./context";
 import {
   parseScreenplay,
   runBeatSheet,
+  runCasting,
   runConcept,
   runConceptArt,
   runContinuity,
@@ -2152,7 +2153,11 @@ describe("Preproduction stage 18 (M7 PR11 — shot list)", () => {
       .returning()
       .all();
     db.update(projects).set({ previsAssetId: asset!.id }).where(eq(projects.id, project.id)).run();
-    expect(nextStep(db, project.id)).toMatchObject({ kind: "complete" });
+    // "casting" (M7 PR12) is next, not "complete" — this project's cast has
+    // no locked (or even generated) portrait yet, the same "advances to the
+    // next unhandled interim state" pattern this suite's own
+    // "devNextStep advances shot_list -> previs -> ..." test already covers.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting" });
 
     const job = regenerate(db, project.id, { target: "shot_list" });
     expect(job.type).toBe("shot_list");
@@ -2187,6 +2192,205 @@ describe("Preproduction stage 18 (M7 PR11 — shot list)", () => {
 
     const devProvider = resolveProvider(db, "llm");
     expect(seenModel).toBe(devProvider.model);
+  });
+});
+
+describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
+  async function runThroughApprovedStoryboardsForCasting() {
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id); // approve visual_bible, enqueue production_design
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+      }),
+    );
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        // Same fixture as the "Preproduction stage 16" describe block's own
+        // `BEATS` — that constant is scoped to that block, so this is its own
+        // copy rather than reaching across describes for it.
+        llm: [
+          {
+            json: {
+              beats: [
+                {
+                  sceneId: "1",
+                  description: "Reyna kneels at the workbench, examining her father's pick set closely.",
+                  shotType: "close-up",
+                  cameraAngle: "high",
+                  cameraMovement: "static",
+                  lens: "telephoto",
+                },
+                {
+                  sceneId: "2",
+                  description: "Reyna kneels at a new door, her father's pick set glinting in low light.",
+                  shotType: "wide",
+                  cameraAngle: "eye-level",
+                  cameraMovement: "dolly",
+                  lens: "wide",
+                },
+              ],
+            },
+          },
+        ],
+        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+      }),
+    );
+    return project;
+  }
+
+  async function runThroughApprovedPrevis() {
+    const project = await runThroughApprovedStoryboardsForCasting();
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } },
+          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 3000 } },
+        ],
+      }),
+    );
+    // Previs has no separate approval column — setting `previsAssetId` IS
+    // the approval (see that column's own comment, schema.ts) — a fake
+    // `assets` row here stands in for a real Remotion render, the same way
+    // the "redoing shot_list invalidates previs" test above does; `runPrevis`
+    // itself is exercised in previs.test.ts, not here.
+    const [asset] = db
+      .insert(assets)
+      .values({ kind: "video", path: "/tmp/previs.mp4", mimeType: "video/mp4", bytes: 1 })
+      .returning()
+      .all();
+    db.update(projects).set({ previsAssetId: asset!.id }).where(eq(projects.id, project.id)).run();
+    return project;
+  }
+
+  // Acceptance criterion 1: a dev-format cast with no portraits gets one
+  // per character, and each is locked once its own portrait exists — closes
+  // the exact gap PR9 flagged and deferred (`runConceptArt`'s own doc
+  // comment).
+  it("generates a portrait for each cast member lacking one, locking each as it completes", async () => {
+    const project = await runThroughApprovedPrevis();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting", needsApproval: false });
+
+    const requests: Record<string, unknown>[] = [];
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+        onImageRequest: (r) => requests.push(r),
+      }),
+    );
+
+    // WORLD's own fixture cast is exactly one character, "Reyna" (see the
+    // top of this file).
+    expect(requests).toHaveLength(1);
+    const reyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    expect(reyna.imageAssetId).not.toBeNull();
+    expect(reyna.refInputName).toBe(`uploaded-${reyna.id}.png`);
+    expect(reyna.castingLockedAt).not.toBeNull();
+
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "complete" });
+  });
+
+  it("is resumable — a character that already has a portrait is skipped on a second run", async () => {
+    const project = await runThroughApprovedPrevis();
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+      }),
+    );
+    const firstAssetId = db
+      .select()
+      .from(characters)
+      .where(eq(characters.projectId, project.id))
+      .get()!.imageAssetId;
+
+    const secondRequests: Record<string, unknown>[] = [];
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        onImageRequest: (r) => secondRequests.push(r),
+      }),
+    );
+    expect(secondRequests).toHaveLength(0);
+
+    const stillReyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    expect(stillReyna.imageAssetId).toBe(firstAssetId);
+  });
+
+  // Acceptance criterion 2: devNextStep advances previs -> casting -> the
+  // next unhandled interim state ("complete", since nothing is scoped past
+  // casting yet).
+  it("devNextStep advances previs -> casting -> the next unhandled interim state", async () => {
+    const project = await runThroughApprovedPrevis();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting", needsApproval: false });
+
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+      }),
+    );
+
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "complete" });
+  });
+
+  // Acceptance criterion 5: "casting"'s own INVALIDATION_CHAIN entry must
+  // exist and sit in the right place, even though nothing follows it yet —
+  // exercised the same way every prior PR's own last-stage test is: by
+  // redoing the stage immediately *before* it ("previs") and checking the
+  // cascade reaches casting's locks. `invalidateDownstreamOf` leaves a
+  // target's own output alone (the redo job just enqueued is what overwrites
+  // it) — the same reason the shot_list suite's own "redoing shot_list
+  // invalidates previs" test redoes shot_list, not previs, to prove previs'
+  // own chain entry.
+  it("redoing previs invalidates casting, per ADR 0003 / INVALIDATION_CHAIN", async () => {
+    const project = await runThroughApprovedPrevis();
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+      }),
+    );
+    const locked = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    expect(locked.castingLockedAt).not.toBeNull();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "complete" });
+
+    const job = regenerate(db, project.id, { target: "previs" });
+    expect(job.type).toBe("previs");
+
+    const after = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    expect(after.castingLockedAt).toBeNull();
+    expect(after.imageAssetId).toBeNull();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting" });
+  });
+
+  // Acceptance criterion 3 (dev-chain half): a locked character's portrait
+  // redo is refused; unlocking first lets it proceed. lib/projects.test.ts
+  // covers the narrative-pipeline half (`character_images`) plus the
+  // regression check that an unlocked character is unaffected.
+  it("refuses a characterId-scoped redo of a locked character, and allows it again once unlocked", async () => {
+    const project = await runThroughApprovedPrevis();
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+      }),
+    );
+    const reyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    expect(reyna.castingLockedAt).not.toBeNull();
+
+    expect(() =>
+      regenerate(db, project.id, { target: "casting", characterId: reyna.id }),
+    ).toThrow(/cast-locked/);
+
+    unlockCasting(db, project.id, reyna.id);
+    const job = regenerate(db, project.id, { target: "casting", characterId: reyna.id });
+    expect(job.type).toBe("casting");
+
+    const cleared = db.select().from(characters).where(eq(characters.id, reyna.id)).get()!;
+    expect(cleared.imageAssetId).toBeNull();
+    expect(cleared.castingLockedAt).toBeNull();
   });
 });
 

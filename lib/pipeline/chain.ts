@@ -222,6 +222,23 @@ function devStageStatus(db: Db, projectId: string, stage: DevChainStage): DevSta
     return project?.previsAssetId ? "approved" : "empty";
   }
 
+  if (stage === "casting") {
+    // Same "no pending state" shape as "previs" above, for the same reason:
+    // a character is locked the moment its own portrait exists (see
+    // `runCasting`'s own doc comment, dev.ts), so there is nothing left for a
+    // separate approval click to mean. Empty until every character in the
+    // cast is locked — a cast with zero rows is "empty" too (chain order
+    // already guarantees "characters" is approved by the time this stage
+    // runs, so that should never actually happen, but reports the honest
+    // answer rather than a vacuous "approved" if it somehow does).
+    const cast = db
+      .select({ castingLockedAt: characters.castingLockedAt })
+      .from(characters)
+      .where(eq(characters.projectId, projectId))
+      .all();
+    return cast.length > 0 && cast.every((c) => c.castingLockedAt) ? "approved" : "empty";
+  }
+
   const latest = db
     .select()
     .from(devArtifacts)
@@ -340,6 +357,12 @@ function approveDevStage(db: Db, projectId: string, stage: DevChainStage): void 
     // "pending" (see its own comment above), so `advance` never reaches this
     // branch for it. Present anyway so `stage` narrows to `DevArtifactStage`
     // by the time it reaches the `devArtifacts` update below.
+    return;
+  }
+  if (stage === "casting") {
+    // Never actually called, for the same reason "previs" above never is —
+    // `devStageStatus` never reports "casting" as "pending" (see its own
+    // comment above).
     return;
   }
   db.update(devArtifacts)

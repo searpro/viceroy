@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { INVALIDATION_CHAIN } from "@/lib/projects";
 import type { Detail } from "./detail-types";
-import { REDO_CHAIN, describeRedoLoss, redoConfirmation } from "./redo-warning";
+import { REDO_CHAIN, castingLockReason, describeRedoLoss, redoConfirmation } from "./redo-warning";
 
 function detail(overrides: Partial<Detail> = {}): Detail {
   return {
@@ -43,7 +43,11 @@ const scene = (i: number, withImage = true) => ({
   imageAssetId: withImage ? `a${i}` : null,
 });
 
-const character = (i: number, imageSource: "generated" | "uploaded" = "generated") => ({
+const character = (
+  i: number,
+  imageSource: "generated" | "uploaded" = "generated",
+  castingLockedAt: string | null = null,
+) => ({
   id: `c${i}`,
   name: `Person ${i}`,
   description: "d",
@@ -52,6 +56,7 @@ const character = (i: number, imageSource: "generated" | "uploaded" = "generated
   imagePrompt: "p",
   imageAssetId: `ca${i}`,
   imageSource,
+  castingLockedAt,
 });
 
 // The warning is only honest if it lists what the server actually deletes.
@@ -139,5 +144,17 @@ describe("describeRedoLoss", () => {
       detail({ render: { id: "r", assetId: null, status: "failed" } }),
     );
     expect(loss).not.toContain("the finished video");
+  });
+});
+
+describe("castingLockReason", () => {
+  it("is null for a character who has never been cast-locked", () => {
+    expect(castingLockReason(character(0))).toBeNull();
+  });
+
+  it("names the character and the fix, for one who is locked", () => {
+    const reason = castingLockReason(character(0, "generated", "2026-01-01T00:00:00.000Z"));
+    expect(reason).toContain("Person 0");
+    expect(reason).toMatch(/unlock/i);
   });
 });

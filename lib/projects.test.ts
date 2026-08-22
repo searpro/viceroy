@@ -12,6 +12,7 @@ import {
   listAllJobs,
   regenerate,
   regenerateSchema,
+  unlockCasting,
 } from "./projects";
 
 let db: Db;
@@ -148,6 +149,85 @@ describe("regenerate — per-row scoping", () => {
     expect(db.select().from(scenes).where(eq(scenes.id, scene.id)).get()!.imagePrompt).toBe(
       "a prompt",
     );
+  });
+});
+
+// M7 PR12 — the identity lock. `castingLockedAt` is only ever set by the dev
+// chain's "casting" stage (lib/pipeline/dev.ts), never by anything in the
+// narrative pipeline — these tests exercise the guard from the narrative
+// side (`character_images`) specifically to prove that: acceptance criterion
+// 6 requires the narrative pipeline's own behaviour stay unchanged, and the
+// only way that's true is if a narrative-pipeline character is never locked
+// in the first place, not just that the guard "happens" to pass it through.
+describe("regenerate — casting lock (M7 PR12)", () => {
+  it("refuses a character_images redo for a cast-locked character, naming why", () => {
+    const { project, character } = projectWithSceneAndCharacter();
+    db.update(characters)
+      .set({ castingLockedAt: new Date() })
+      .where(eq(characters.id, character.id))
+      .run();
+
+    expect(() =>
+      regenerate(db, project.id, { target: "character_images", characterId: character.id }),
+    ).toThrow(/cast-locked/);
+
+    // Refused, not silently skipped — the character's portrait is untouched.
+    const after = db.select().from(characters).where(eq(characters.id, character.id)).get()!;
+    expect(after.imageAssetId).not.toBeNull();
+  });
+
+  it("allows the redo again once unlocked", () => {
+    const { project, character } = projectWithSceneAndCharacter();
+    db.update(characters)
+      .set({ castingLockedAt: new Date() })
+      .where(eq(characters.id, character.id))
+      .run();
+
+    unlockCasting(db, project.id, character.id);
+    regenerate(db, project.id, { target: "character_images", characterId: character.id });
+
+    const after = db.select().from(characters).where(eq(characters.id, character.id)).get()!;
+    expect(after.imageAssetId).toBeNull(); // cleared by the redo, same as the unlocked case below
+  });
+
+  // Regression check (acceptance criterion 6): an unlocked character's
+  // portrait redo behaves exactly as it did before this PR — the guard must
+  // never fire for the ordinary, unlocked case.
+  it("never blocks a character_images redo for a character that was never locked", () => {
+    const { project, character } = projectWithSceneAndCharacter();
+    regenerate(db, project.id, { target: "character_images", characterId: character.id });
+
+    const after = db.select().from(characters).where(eq(characters.id, character.id)).get()!;
+    expect(after.imageAssetId).toBeNull();
+    expect(after.imagePrompt).toBeNull();
+    expect(after.refInputName).toBeNull();
+  });
+
+  it("unlockCasting clears only the targeted character's lock", () => {
+    const { project, character } = projectWithSceneAndCharacter();
+    const [other] = db
+      .insert(characters)
+      .values({ projectId: project.id, name: "Other", description: "d" })
+      .returning()
+      .all();
+    db.update(characters)
+      .set({ castingLockedAt: new Date() })
+      .where(eq(characters.projectId, project.id))
+      .run();
+
+    unlockCasting(db, project.id, character.id);
+
+    expect(db.select().from(characters).where(eq(characters.id, character.id)).get()!.castingLockedAt).toBeNull();
+    expect(
+      db.select().from(characters).where(eq(characters.id, other!.id)).get()!.castingLockedAt,
+    ).not.toBeNull();
+  });
+
+  it("unlockCasting refuses a character that belongs to a different project", () => {
+    const { character } = projectWithSceneAndCharacter();
+    const otherProject = createProject(db, { idea: "an entirely different idea, unrelated" });
+
+    expect(() => unlockCasting(db, otherProject.id, character.id)).toThrow();
   });
 });
 
@@ -476,8 +556,8 @@ describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", ()
     expect(targets).toEqual(chain);
   });
 
-  it("includes all nineteen Development/Preproduction-chain stages in DEV_CHAIN_STAGES order", () => {
-    const devStages = INVALIDATION_CHAIN.slice(INVALIDATION_CHAIN.length - 19);
+  it("includes all twenty Development/Preproduction-chain stages in DEV_CHAIN_STAGES order", () => {
+    const devStages = INVALIDATION_CHAIN.slice(INVALIDATION_CHAIN.length - 20);
     expect(devStages).toEqual([
       "concept",
       "logline",
@@ -489,7 +569,7 @@ describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", ()
       "screenplay",
       "screenplay_revision",
       "story_bible",
-      // Preproduction (M7 PR6-PR11).
+      // Preproduction (M7 PR6-PR12).
       "script_breakdown",
       "scene_breakdown",
       "continuity",
@@ -499,6 +579,7 @@ describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", ()
       "storyboards",
       "shot_list",
       "previs",
+      "casting",
     ]);
   });
 });

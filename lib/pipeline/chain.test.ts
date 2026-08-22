@@ -347,6 +347,14 @@ describe("nextStep — Development chain", () => {
     }
     db.insert(characters).values({ projectId: project.id, name: "Hal", description: "d" }).run();
     db.update(projects).set({ charactersApprovedAt: new Date() }).where(eq(projects.id, project.id)).run();
+    // Preproduction (M7 PR12) — "casting" has no separate approval column
+    // either; locking every character IS the approval (see `devStageStatus`'s
+    // own comment on "casting"), so this is set directly rather than via a
+    // timestamp column on `projects`.
+    db.update(characters)
+      .set({ castingLockedAt: new Date() })
+      .where(eq(characters.projectId, project.id))
+      .run();
     db.insert(worldBuilding)
       .values({ projectId: project.id, content: "w", approvedAt: new Date() })
       .run();

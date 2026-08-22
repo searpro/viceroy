@@ -42,6 +42,11 @@ export type Character = {
   imagePrompt: string | null;
   imageAssetId: string | null;
   imageSource: "generated" | "uploaded";
+  // M7 PR12 (stage 20, "Casting"). Optional, not just nullable — same
+  // "existing fixtures don't need updating" reasoning `project.previsAssetId`
+  // above already gives; a serialized `Date` arrives as an ISO string here.
+  castingLockedAt?: string | null;
+  voiceDesignNotes?: string | null;
 };
 
 // One row per Development-chain stage that owns a `dev_artifacts` row —

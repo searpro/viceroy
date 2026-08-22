@@ -328,6 +328,27 @@ export const characters = sqliteTable(
     // pipeline's `elements` stage extracts, since that pipeline has no arc
     // concept and this column is nullable for exactly that reason.
     arc: text("arc"),
+    // M7 PR12 (stage 20, "Casting"). Set once this character's portrait/voice
+    // identity is formally locked — the M7 detail page's "Casting" section
+    // names this as the goal: identity promoted from "something that can
+    // silently drift" to "an explicit, approved, locked artifact". Null for
+    // every character until `runCasting` locks it, and for every
+    // narrative-pipeline project always (nothing outside the dev chain's
+    // "casting" stage ever sets it — see `regenerate()`'s own comment on why
+    // that makes the lock check there safe for the narrative pipeline).
+    // Redoing a locked character's portrait is refused until this is cleared
+    // by the explicit `unlockCasting` action (lib/projects.ts) — never a
+    // silent overwrite.
+    castingLockedAt: integer("casting_locked_at", { mode: "timestamp_ms" }),
+    // M7 PR12. Free-text voice/delivery notes for this character — the
+    // "voice design sign-off" half of stage 20's spec. Deliberately not a
+    // generated audio sample or a TTS call: no per-character voice mechanism
+    // exists anywhere in this codebase yet (the narrative pipeline's voice
+    // styles are project-level), and building one is unscoped beyond this
+    // PR's brief. This is just a data field for a human (or a future LLM
+    // stage) to fill in, so casting's lock has something real to gate on the
+    // voice side too, without over-building a system nothing yet consumes.
+    voiceDesignNotes: text("voice_design_notes"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -560,6 +581,16 @@ export const DEV_CHAIN_STAGES = [
   // set), not a `dev_artifacts` row or a boolean gate of its own — see that
   // column's own comment above.
   "previs",
+  // Stage 20 (M7 PR12) — "Casting": generates the portrait a dev-format
+  // project's cast has never had (PR9 scoped concept art to locations/props
+  // only and flagged this exact gap for later — this is that later PR), then
+  // locks each character's identity via `characters.castingLockedAt`. Writes
+  // to `characters` directly, not a `dev_artifacts` row — same shape as
+  // "characters"/"concept_art"/"storyboards" before it. Unlike those,
+  // "approved" here has no separate review click: locking a character *is*
+  // the stage completing for them (see `devStageStatus`'s own comment), so
+  // there is no "pending" state, the same shape "previs" already has.
+  "casting",
 ] as const;
 export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 
@@ -575,6 +606,7 @@ export const DEV_TABLE_STAGES = [
   "storyboards",
   "shot_list",
   "previs",
+  "casting",
 ] as const;
 export type DevTableStage = (typeof DEV_TABLE_STAGES)[number];
 

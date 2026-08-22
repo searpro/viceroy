@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { Fountain, type Script } from "fountain-js";
 import {
   characters,
@@ -2042,4 +2042,146 @@ export async function runShotList(ctx: StageContext): Promise<void> {
     return;
   }
   ctx.log("Shot list written — advance to previs next");
+}
+
+/**
+ * Stage 20 (M7 PR12) — "Casting": generate the portrait a dev-format
+ * project's cast has never had, then lock each character's identity.
+ *
+ * PR9 deliberately scoped concept art to locations/props only and left a
+ * dev-format cast with no portrait-generation path at all — `runDevCharacters`
+ * (stage 3) writes `name`/`description`/`arc` but never an `imageAssetId`.
+ * That gap is closed here, in the place the M7 detail page's own "Casting"
+ * section already named for it: "finalizing each character's visual
+ * reference... as a formal gate" requires generating the reference before it
+ * can be locked, so generation and lock are one coherent stage rather than
+ * two separately-numbered PRs.
+ *
+ * Reuses `runCharacterImages`' exact generation shape (lib/pipeline/images.ts)
+ * — same prompt assembly (Image Style's prefix/suffix wrapping the
+ * `character.portrait` template rendered from `appearanceTag`, never
+ * `description`, for the same reason that function's own doc comment gives),
+ * same `backend.generate()`/`storeAsset`/`uploadReference()` sequence — but
+ * with this chain's own tail (nothing auto-chains past an image-generation
+ * stage per finding F9, same as `runConceptArt`/`runStoryboards`), not the
+ * narrative pipeline's `setStage`/`enqueue("voiceover")`.
+ *
+ * Unlike every other table-stage above, there is no separate approval click:
+ * a character is locked the moment its own portrait exists, in the same loop
+ * iteration that generated it — "approved" (`devStageStatus`) simply means
+ * every character has `castingLockedAt` set, the way "previs" means
+ * `previsAssetId` is set. This is the mechanism the M7 detail page's
+ * "Casting" section already committed to: locking IS the stage completing,
+ * not a draft awaiting a separate sign-off. What a locked character then
+ * gates is a redo, not this stage's own first pass — see `regenerate()`'s
+ * casting-lock guard and `unlockCasting` in lib/projects.ts.
+ *
+ * Resumable per character (an `imageAssetId` already set is skipped) and
+ * per-character scoped via `payload.characterId`, the same "redo one
+ * portrait" shape `character_images` already has — used by a locked
+ * character's redo once it has been explicitly unlocked.
+ */
+export async function runCasting(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project, imageStyle } = bundle;
+  const imageProvider = resolveProvider(ctx.db, "image");
+  const backend = ctx.imageBackend();
+
+  const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
+  if (cast.length === 0) {
+    throw new Error(`Project ${projectId} has no characters to cast`);
+  }
+
+  const jobCharacterId =
+    typeof ctx.job.payload.characterId === "string" ? ctx.job.payload.characterId : undefined;
+
+  const pending = jobCharacterId
+    ? cast.filter((character) => character.id === jobCharacterId && !character.imageAssetId)
+    : cast.filter((character) => !character.imageAssetId);
+
+  for (const [position, character] of pending.entries()) {
+    checkAbort(ctx);
+
+    // `runCharacterImages` refuses to fall back to `description` here — for
+    // the narrative pipeline, `description` is narrative prose extracted
+    // alongside a separate, purely-visual `appearanceTag`, so a fallback
+    // would silently draw a portrait from a character's backstory. Neither
+    // half of that reasoning holds for the dev chain: its own "characters+
+    // arcs" stage (`runDevCharacters`) never populates `appearanceTag` at
+    // all (that column is a narrative-pipeline-only extraction — see its own
+    // comment, schema.ts), and `description` is the only descriptive field
+    // this stage has to work with — the "one paragraph of who they are"
+    // equivalent, not backstory. `description` is NOT NULL at the schema
+    // level, so this always has something to render.
+    const visualDescription = character.appearanceTag ?? character.description;
+
+    const prompt =
+      `${imageStyle.promptPrefix}` +
+      renderPrompt(ctx.db, "character.portrait", {
+        characterDescription: visualDescription,
+      }) +
+      `${imageStyle.promptSuffix}`;
+
+    ctx.log(`Generating portrait for ${character.name} (${position + 1}/${pending.length})`);
+    const bytes = await backend.generate(
+      {
+        prompt,
+        negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
+        width: ctx.config.sourceImage.width,
+        height: ctx.config.sourceImage.height,
+        references: [],
+      },
+      {
+        onProgress: (fraction) => ctx.progress((position + fraction) / Math.max(pending.length, 1)),
+        shouldAbort: ctx.shouldAbort,
+        log: ctx.log,
+      },
+    );
+
+    const asset = storeAsset(ctx.db, ctx.config, {
+      kind: "image",
+      bytes,
+      mimeType: "image/png",
+      projectId,
+      label: `character-${character.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      meta: { characterId: character.id, prompt },
+    });
+    const refInputName = await backend.uploadReference(bytes, `${character.id}.png`);
+
+    // Generation and lock happen together, deliberately — see this
+    // function's own doc comment on why casting has no separate approval
+    // step.
+    ctx.db
+      .update(characters)
+      .set({ imagePrompt: prompt, imageAssetId: asset.id, refInputName, castingLockedAt: new Date() })
+      .where(eq(characters.id, character.id))
+      .run();
+  }
+
+  // A whole-cast run also locks any character that already had a portrait
+  // coming in (e.g. one a redo left untouched) but wasn't locked yet — a
+  // per-character scoped run leaves the rest of the cast alone, same as
+  // `runCharacterImages`' own `jobCharacterId` scoping.
+  if (!jobCharacterId) {
+    ctx.db
+      .update(characters)
+      .set({ castingLockedAt: new Date() })
+      .where(and(eq(characters.projectId, projectId), isNull(characters.castingLockedAt)))
+      .run();
+  }
+
+  ctx.log(
+    pending.length === 0
+      ? "No portraits needed"
+      : `${pending.length} portrait(s) generated, uploaded as references, and locked`,
+  );
+
+  if (project.mode === "manual") {
+    awaitReview(ctx.db, projectId);
+    ctx.log("Stopping for review (manual mode)");
+    return;
+  }
+  if (jobCharacterId) return;
+  ctx.log("Casting locked");
 }

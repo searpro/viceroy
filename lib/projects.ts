@@ -584,6 +584,26 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
   previs: (db, projectId) => {
     db.update(projects).set({ previsAssetId: null }).where(eq(projects.id, projectId)).run();
   },
+  // Stage 20 (M7 PR12) — mirrors `character_images`' own discard shape
+  // exactly (same table, same fields), plus clearing `castingLockedAt`: a
+  // whole-stage redo starts every character's identity fresh, unlocked, the
+  // same way its first pass would have. This is the *cascade* path (fired
+  // when an earlier stage's redo invalidates everything after it) — a
+  // direct, scoped redo of one already-locked character's own portrait goes
+  // through `regenerate()`'s explicit lock guard below instead, which this
+  // does not duplicate.
+  casting: (db, projectId) => {
+    db.update(characters)
+      .set({
+        imageAssetId: null,
+        imagePrompt: null,
+        refInputName: null,
+        imageSource: "generated",
+        castingLockedAt: null,
+      })
+      .where(eq(characters.projectId, projectId))
+      .run();
+  },
 };
 
 /** `DISCARD`'s handler for one dev-artifact stage, covering every version. */
@@ -636,6 +656,32 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
     );
   }
 
+  // The identity lock (M7 PR12): once a character is cast-locked, a
+  // *per-character* redo of its portrait — whichever pipeline produced it,
+  // the narrative one's `character_images` or the dev chain's `casting` — is
+  // refused rather than silently overwriting a formally approved reference.
+  // Checked here, not only warned about client-side
+  // (app/projects/[id]/redo-warning.ts), per this project's own discipline
+  // that a client warning alone is not a guard. Scoped to `characterId`
+  // redos specifically: an unscoped "redo casting" (the whole stage) is a
+  // different, coarser action that already goes through the ordinary
+  // `INVALIDATION_CHAIN`/`DISCARD["casting"]` cascade every other stage's
+  // own redo does — gating that too would mean no upstream stage could ever
+  // cascade-clear a locked cast either, which is not what this PR's own
+  // acceptance bar asks for (that chain entry existing and firing in order).
+  // Safe for every narrative-pipeline project today: nothing outside the dev
+  // chain's "casting" stage ever sets `castingLockedAt`, so this never fires
+  // for one and never changes its behaviour (see
+  // `characters.castingLockedAt`'s own comment, lib/db/schema.ts).
+  if ((input.target === "character_images" || input.target === "casting") && input.characterId) {
+    const character = db.select().from(characters).where(eq(characters.id, input.characterId)).get();
+    if (character?.castingLockedAt) {
+      throw new Error(
+        `${character.name} is cast-locked — unlock casting for them before redoing their portrait`,
+      );
+    }
+  }
+
   const scoped = input.sceneId ?? input.characterId;
 
   if (!scoped) {
@@ -665,6 +711,15 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
       .where(eq(characters.id, input.characterId))
       .run();
   }
+  if (input.target === "casting" && input.characterId) {
+    // Mirrors `character_images` above exactly — the lock guard already ran
+    // (and would have thrown) if this character were still locked, so
+    // clearing here always starts from an unlocked row.
+    db.update(characters)
+      .set({ imageAssetId: null, imagePrompt: null, refInputName: null, imageSource: "generated" })
+      .where(eq(characters.id, input.characterId))
+      .run();
+  }
 
   db.update(projects)
     .set({ awaitingReview: false, failureReason: null })
@@ -681,4 +736,30 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
       ...(input.characterId ? { characterId: input.characterId } : {}),
     },
   });
+}
+
+/**
+ * Clear one character's casting lock — the deliberate, explicit action the
+ * M7 detail page's "Casting" section names as the alternative to a silent
+ * redo. Scoped to a single character (not the whole cast) since that is what
+ * `castingLockedAt` itself is scoped to; unlocking the whole cast is just
+ * calling this once per locked member.
+ *
+ * Does not touch the portrait/reference itself — unlocking only lifts the
+ * gate `regenerate()` checks. The subsequent redo (`character_images` or
+ * `casting`, `characterId`-scoped) is what actually clears and regenerates
+ * it, the same two-step "unlock, then redo" shape the API route pairs.
+ */
+export function unlockCasting(db: Db, projectId: string, characterId: string) {
+  const character = db.select().from(characters).where(eq(characters.id, characterId)).get();
+  if (!character || character.projectId !== projectId) {
+    throw new Error(`No such character: ${characterId}`);
+  }
+  const [updated] = db
+    .update(characters)
+    .set({ castingLockedAt: null })
+    .where(eq(characters.id, characterId))
+    .returning()
+    .all();
+  return updated!;
 }

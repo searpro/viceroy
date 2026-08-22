@@ -168,6 +168,20 @@ export function ProjectView({ initial }: { initial: Detail }) {
     setBusy(false);
   }
 
+  // M7 PR12. The explicit unlock a locked character's portrait/voice redo
+  // requires — see `unlockCasting` (lib/projects.ts) and
+  // `castingLockReason` (redo-warning.ts), which is what tells the user this
+  // button exists in the first place.
+  async function unlockCharacterCasting(characterId: string) {
+    setBusy(true);
+    await fetch(`/api/projects/${detail.project.id}/characters/${characterId}/unlock`, {
+      method: "POST",
+    });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
   async function continueProject() {
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
@@ -312,6 +326,7 @@ export function ProjectView({ initial }: { initial: Detail }) {
             busy={busy}
             onContinue={continueProject}
             onResolveContinuityFact={resolveContinuityFact}
+            onUnlockCasting={unlockCharacterCasting}
           />
         </div>
       ) : layout === "stepper" ? (

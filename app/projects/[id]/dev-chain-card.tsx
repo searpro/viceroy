@@ -2,6 +2,7 @@
 
 import { Panel } from "./steps/panel";
 import { ContinueBanner } from "./continue-banner";
+import { castingLockReason } from "./redo-warning";
 import type { Detail } from "./detail-types";
 
 /**
@@ -23,12 +24,14 @@ export function DevChainCard({
   busy,
   onContinue,
   onResolveContinuityFact,
+  onUnlockCasting,
 }: {
   detail: Detail;
   active: boolean;
   busy: boolean;
   onContinue: () => void;
   onResolveContinuityFact: (factId: string) => void;
+  onUnlockCasting: (characterId: string) => void;
 }) {
   const { nextStep } = detail;
 
@@ -38,7 +41,11 @@ export function DevChainCard({
         <Panel title="Development" empty={false} emptyText="">
           <p className="text-sm text-white/85">{nextStep.reason}</p>
         </Panel>
-        <DevChainHistory detail={detail} onResolveContinuityFact={onResolveContinuityFact} />
+        <DevChainHistory
+          detail={detail}
+          onResolveContinuityFact={onResolveContinuityFact}
+          onUnlockCasting={onUnlockCasting}
+        />
       </div>
     );
   }
@@ -52,7 +59,11 @@ export function DevChainCard({
       <Panel title={stage ?? "Development"} empty emptyText="Not yet generated.">
         <></>
       </Panel>
-      <DevChainHistory detail={detail} onResolveContinuityFact={onResolveContinuityFact} />
+      <DevChainHistory
+        detail={detail}
+        onResolveContinuityFact={onResolveContinuityFact}
+        onUnlockCasting={onUnlockCasting}
+      />
     </div>
   );
 }
@@ -80,6 +91,7 @@ const DEV_STAGE_LABELS: Record<string, string> = {
   storyboards: "Storyboards",
   shot_list: "Shot list",
   previs: "Previs",
+  casting: "Casting",
 };
 const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
 
@@ -94,9 +106,11 @@ const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
 function DevChainHistory({
   detail,
   onResolveContinuityFact,
+  onUnlockCasting,
 }: {
   detail: Detail;
   onResolveContinuityFact: (factId: string) => void;
+  onUnlockCasting: (characterId: string) => void;
 }) {
   const byStage = new Map(detail.devArtifacts.map((row) => [row.stage, row]));
   const hasCharacters = detail.characters.length > 0;
@@ -106,6 +120,9 @@ function DevChainHistory({
   const hasStoryboards = detail.storyboardPanels.length > 0;
   const hasShotList = detail.shotListItems.length > 0;
   const hasPrevis = Boolean(detail.project.previsAssetId);
+  // Same shape `hasConceptArt` uses for locations/props: a portrait, not just
+  // a cast row, is what makes this stage's own section worth showing.
+  const hasCasting = detail.characters.some((character) => character.imageAssetId);
 
   const stagesWithContent = DEV_CHAIN_ORDER.filter((stage) => {
     if (stage === "characters") return hasCharacters;
@@ -115,6 +132,7 @@ function DevChainHistory({
     if (stage === "storyboards") return hasStoryboards;
     if (stage === "shot_list") return hasShotList;
     if (stage === "previs") return hasPrevis;
+    if (stage === "casting") return hasCasting;
     return byStage.has(stage);
   });
 
@@ -147,6 +165,8 @@ function DevChainHistory({
                 <ShotListSection detail={detail} />
               ) : stage === "previs" ? (
                 <PrevisSection detail={detail} />
+              ) : stage === "casting" ? (
+                <CastingSection detail={detail} onUnlockCasting={onUnlockCasting} />
               ) : (
                 <StageContent
                   content={byStage.get(stage)?.content ?? ""}
@@ -368,6 +388,63 @@ function PrevisSection({ detail }: { detail: Detail }) {
       >
         download previs
       </a>
+    </div>
+  );
+}
+
+// M7 PR12. Same thumbnail-grid shape as `ConceptArtSection` above, plus a
+// lock indicator (this stage's whole point per the M7 detail page's own
+// "Casting" section) and voice design notes when present. A locked
+// character's redo affordance lives here rather than a bespoke screen, per
+// this PR's own explicit scope limit — an inline "Unlock" button plus
+// `castingLockReason`'s message, nothing more.
+function CastingSection({
+  detail,
+  onUnlockCasting,
+}: {
+  detail: Detail;
+  onUnlockCasting: (characterId: string) => void;
+}) {
+  const cast = detail.characters.filter((character) => character.imageAssetId);
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+      {cast.map((character) => {
+        const lockReason = castingLockReason(character);
+        return (
+          <figure key={character.id} className="space-y-1.5">
+            <img
+              src={`/api/assets/${character.imageAssetId}`}
+              alt={character.name}
+              className="aspect-[9/16] w-full rounded-md border border-white/10 object-cover"
+            />
+            <figcaption className="text-xs text-white/60">{character.name}</figcaption>
+            <span
+              className={`block text-[10px] uppercase tracking-wide ${
+                lockReason ? "text-emerald-400" : "text-white/40"
+              }`}
+            >
+              {lockReason ? "locked" : "unlocked"}
+            </span>
+            {character.voiceDesignNotes && (
+              <p className="text-[11px] text-white/60">
+                <span className="text-white/40">Voice: </span>
+                {character.voiceDesignNotes}
+              </p>
+            )}
+            {lockReason && (
+              <div>
+                <p className="text-[11px] text-amber-300">{lockReason}</p>
+                <button
+                  onClick={() => onUnlockCasting(character.id)}
+                  className="mt-1 rounded border border-amber-300/40 px-2 py-0.5 text-[11px] text-amber-300 transition hover:bg-amber-300/10"
+                >
+                  Unlock
+                </button>
+              </div>
+            )}
+          </figure>
+        );
+      })}
     </div>
   );
 }
