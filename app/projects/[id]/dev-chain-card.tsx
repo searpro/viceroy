@@ -76,6 +76,7 @@ const DEV_STAGE_LABELS: Record<string, string> = {
   continuity: "Continuity",
   visual_bible: "Visual bible",
   production_design: "Production design",
+  concept_art: "Concept art",
 };
 const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
 
@@ -98,11 +99,13 @@ function DevChainHistory({
   const hasCharacters = detail.characters.length > 0;
   const hasWorld = Boolean(detail.worldBuilding?.content) || detail.locations.length > 0 || detail.props.length > 0;
   const hasContinuity = detail.continuityFacts.length > 0;
+  const hasConceptArt = [...detail.locations, ...detail.props].some((entity) => entity.imageAssetId);
 
   const stagesWithContent = DEV_CHAIN_ORDER.filter((stage) => {
     if (stage === "characters") return hasCharacters;
     if (stage === "world_building") return hasWorld;
     if (stage === "continuity") return hasContinuity;
+    if (stage === "concept_art") return hasConceptArt;
     return byStage.has(stage);
   });
 
@@ -127,6 +130,8 @@ function DevChainHistory({
                 <WorldBuildingSection detail={detail} />
               ) : stage === "continuity" ? (
                 <ContinuitySection detail={detail} onResolveContinuityFact={onResolveContinuityFact} />
+              ) : stage === "concept_art" ? (
+                <ConceptArtSection detail={detail} />
               ) : (
                 <StageContent
                   content={byStage.get(stage)?.content ?? ""}
@@ -219,6 +224,27 @@ function WorldBuildingSection({ detail }: { detail: Detail }) {
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+// M7 PR9. The one stage in this history panel whose output is images rather
+// than text — every location/prop that has one gets a thumbnail, not just a
+// name in a list, since that's the entire point of reviewing this stage.
+function ConceptArtSection({ detail }: { detail: Detail }) {
+  const withImages = [...detail.locations, ...detail.props].filter((entity) => entity.imageAssetId);
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+      {withImages.map((entity) => (
+        <figure key={entity.id} className="space-y-1.5">
+          <img
+            src={`/api/assets/${entity.imageAssetId}`}
+            alt={entity.name}
+            className="aspect-[9/16] w-full rounded-md border border-white/10 object-cover"
+          />
+          <figcaption className="text-xs text-white/60">{entity.name}</figcaption>
+        </figure>
+      ))}
     </div>
   );
 }

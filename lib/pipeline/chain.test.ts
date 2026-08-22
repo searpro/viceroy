@@ -330,9 +330,9 @@ describe("nextStep — Development chain", () => {
       "screenplay",
       "screenplay_revision",
       "story_bible",
-      // Preproduction (M7 PR6/PR8) — the stages `DEV_CHAIN_STAGES` currently
-      // ends on ("continuity" is its own table, approved below like
-      // "characters"/"world_building").
+      // Preproduction (M7 PR6/PR8/PR9) — the stages `DEV_CHAIN_STAGES`
+      // currently ends on ("continuity"/"concept_art" are their own tables,
+      // approved below like "characters"/"world_building").
       "script_breakdown",
       "scene_breakdown",
       "visual_bible",
@@ -354,6 +354,11 @@ describe("nextStep — Development chain", () => {
       .values({ projectId: project.id, subjectType: "character", subjectId: "x", subjectName: "Hal", fact: "f" })
       .run();
     db.update(projects).set({ continuityApprovedAt: new Date() }).where(eq(projects.id, project.id)).run();
+    // Preproduction (M7 PR9) — same "own table, own approval mechanism"
+    // story as above; this project has no locations/props rows, so this is
+    // also exercising the "nothing to generate, still needs an explicit
+    // approval click" path rather than the "every row has an image" one.
+    db.update(projects).set({ conceptArtApprovedAt: new Date() }).where(eq(projects.id, project.id)).run();
 
     expect(nextStep(db, project.id)).toMatchObject({
       kind: "complete",

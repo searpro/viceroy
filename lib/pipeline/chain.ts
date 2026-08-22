@@ -6,7 +6,9 @@ import {
   DEV_CHAIN_STAGES,
   devArtifacts,
   evaluations,
+  locations,
   projects,
+  props,
   renders,
   scenes,
   subtitleCues,
@@ -150,6 +152,31 @@ function devStageStatus(db: Db, projectId: string, stage: DevChainStage): DevSta
     return project?.continuityApprovedAt ? "approved" : "pending";
   }
 
+  if (stage === "concept_art") {
+    // Unlike "characters" above, a project can legitimately reach this stage
+    // with zero locations and zero props (a story that needs none) — that is
+    // not "hasn't run yet", it's "nothing to generate", so it is treated as
+    // vacuously done rather than forced through a stage that has no work.
+    // Otherwise: any location/prop still missing an image means generation
+    // has not (fully) run — "empty" is used for that case regardless of
+    // whether it's a fresh run or a partial one resuming, since either way
+    // `runConceptArt` is what needs to happen next, not an approval click.
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+    if (project?.conceptArtApprovedAt) return "approved";
+    const locs = db
+      .select({ imageAssetId: locations.imageAssetId })
+      .from(locations)
+      .where(eq(locations.projectId, projectId))
+      .all();
+    const items = db
+      .select({ imageAssetId: props.imageAssetId })
+      .from(props)
+      .where(eq(props.projectId, projectId))
+      .all();
+    const stillPending = [...locs, ...items].some((row) => !row.imageAssetId);
+    return stillPending ? "empty" : "pending";
+  }
+
   const latest = db
     .select()
     .from(devArtifacts)
@@ -249,6 +276,10 @@ function approveDevStage(db: Db, projectId: string, stage: DevChainStage): void 
   }
   if (stage === "continuity") {
     db.update(projects).set({ continuityApprovedAt: new Date() }).where(eq(projects.id, projectId)).run();
+    return;
+  }
+  if (stage === "concept_art") {
+    db.update(projects).set({ conceptArtApprovedAt: new Date() }).where(eq(projects.id, projectId)).run();
     return;
   }
   db.update(devArtifacts)

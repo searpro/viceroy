@@ -9,6 +9,7 @@ import {
   devArtifacts,
   directionStyles,
   evaluations,
+  imageStyles,
   locations,
   productionDesignStyles,
   projects,
@@ -25,6 +26,7 @@ import {
   parseScreenplay,
   runBeatSheet,
   runConcept,
+  runConceptArt,
   runContinuity,
   runDevCharacters,
   runLogline,
@@ -879,6 +881,25 @@ describe("Development chain stages (M7 PR5 — screenplay revision & story bible
  * once Development is signed off — so `nextStep` lands on Preproduction's
  * first stage, "script_breakdown".
  */
+/** Drives a fresh project through an approved continuity pass. */
+async function runThroughApprovedContinuity() {
+  const project = await runThroughApprovedStoryBible();
+  await runScriptBreakdown(
+    stubContext(db, enqueue(db, { type: "script_breakdown", projectId: project.id }), {
+      llm: [SCRIPT_BREAKDOWN],
+    }),
+  );
+  await runSceneBreakdown(
+    stubContext(db, enqueue(db, { type: "scene_breakdown", projectId: project.id }), {
+      llm: [SCENE_BREAKDOWN],
+    }),
+  );
+  await runContinuity(
+    stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), { llm: [CONTINUITY_FACTS] }),
+  );
+  return project;
+}
+
 async function runThroughApprovedStoryBible(): Promise<Awaited<ReturnType<typeof newDevProject>>> {
   const project = await runThroughScreenplay();
   await runScreenplayRevision(
@@ -1276,25 +1297,6 @@ describe("Preproduction stages (M7 PR7 — continuity)", () => {
 });
 
 describe("Preproduction stages (M7 PR8 — visual bible & production design)", () => {
-  /** Drives a fresh project through an approved continuity pass. */
-  async function runThroughApprovedContinuity() {
-    const project = await runThroughApprovedStoryBible();
-    await runScriptBreakdown(
-      stubContext(db, enqueue(db, { type: "script_breakdown", projectId: project.id }), {
-        llm: [SCRIPT_BREAKDOWN],
-      }),
-    );
-    await runSceneBreakdown(
-      stubContext(db, enqueue(db, { type: "scene_breakdown", projectId: project.id }), {
-        llm: [SCENE_BREAKDOWN],
-      }),
-    );
-    await runContinuity(
-      stubContext(db, enqueue(db, { type: "continuity", projectId: project.id }), { llm: [CONTINUITY_FACTS] }),
-    );
-    return project;
-  }
-
   it("assembles a visual bible from production design style guidance, real locations/props and continuity facts, without calling the LLM provider", async () => {
     const project = await runThroughApprovedContinuity();
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "visual_bible", needsApproval: false });
@@ -1391,7 +1393,7 @@ describe("Preproduction stages (M7 PR8 — visual bible & production design)", (
     expect(row.approvedAt).not.toBeNull(); // auto mode auto-approves
   });
 
-  it("devNextStep advances visual_bible -> production_design -> the next unhandled interim state", async () => {
+  it("devNextStep advances visual_bible -> production_design -> concept_art -> the next unhandled interim state", async () => {
     const project = await runThroughApprovedContinuity();
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "visual_bible", needsApproval: false });
 
@@ -1407,9 +1409,22 @@ describe("Preproduction stages (M7 PR8 — visual bible & production design)", (
       }),
     );
 
-    // Nothing is defined past "production_design" in `DEV_CHAIN_STAGES" yet
-    // — the same "landed on the next PR's own terminal stage" interim state
-    // "continuity" sat in before this PR extended the chain further.
+    // "production_design" deliberately does not auto-chain into "concept_art"
+    // (see `runProductionDesign`'s own doc comment) — the generic "continue"
+    // mechanism is what starts it, same as it starts "visual_bible" after
+    // "continuity".
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art", needsApproval: false });
+    advance(db, project.id); // enqueue concept_art (nothing to approve — it was never generated)
+
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+      }),
+    );
+
+    // Nothing is defined past "concept_art" in `DEV_CHAIN_STAGES` yet — the
+    // same "landed on the next PR's own terminal stage" interim state
+    // "production_design" sat in before this PR extended the chain further.
     expect(nextStep(db, project.id)).toEqual({
       kind: "complete",
       reason: "every Development/Preproduction stage built so far is approved",
@@ -1425,10 +1440,9 @@ describe("Preproduction stages (M7 PR8 — visual bible & production design)", (
         llm: [{ content: "A production-design document." }],
       }),
     );
-    expect(nextStep(db, project.id)).toEqual({
-      kind: "complete",
-      reason: "every Development/Preproduction stage built so far is approved",
-    });
+    // "concept_art" is next, not "complete" — see the "advances ... -> the
+    // next unhandled interim state" test above for why.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art", needsApproval: false });
 
     const job = regenerate(db, project.id, { target: "visual_bible" });
     expect(job.type).toBe("visual_bible");
@@ -1447,6 +1461,230 @@ describe("Preproduction stages (M7 PR8 — visual bible & production design)", (
     expect(productionDesignRow.content).toBe("");
     expect(productionDesignRow.approvedAt).toBeNull();
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_design", needsApproval: false });
+  });
+});
+
+describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
+  async function runThroughApprovedProductionDesign() {
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id); // approve visual_bible, enqueue production_design
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+    return project;
+  }
+
+  it("generates one image per location and per prop lacking one, uploading each as a reference", async () => {
+    const project = await runThroughApprovedProductionDesign();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art", needsApproval: false });
+
+    const requests: Record<string, unknown>[] = [];
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+        onImageRequest: (r) => requests.push(r),
+      }),
+    );
+
+    // WORLD (the world-building fixture this suite runs every project
+    // through) writes exactly one location ("Reyna's shop") and one prop
+    // ("Her father's pick set") — see the top of this file.
+    expect(requests).toHaveLength(2);
+
+    const loc = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+    const prop = db.select().from(props).where(eq(props.projectId, project.id)).get()!;
+    expect(loc.imageAssetId).not.toBeNull();
+    expect(loc.refInputName).toBe(`uploaded-${loc.id}.png`);
+    expect(prop.imageAssetId).not.toBeNull();
+    expect(prop.refInputName).toBe(`uploaded-${prop.id}.png`);
+
+    // Auto mode auto-approves once the pass completes, same bar
+    // `continuityApprovedAt` clears — no per-image review UI exists yet.
+    const updated = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(updated.conceptArtApprovedAt).not.toBeNull();
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "every Development/Preproduction stage built so far is approved",
+    });
+  });
+
+  it("is resumable — a location/prop that already has an image is skipped on a second run", async () => {
+    const project = await runThroughApprovedProductionDesign();
+
+    const firstRequests: Record<string, unknown>[] = [];
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+        onImageRequest: (r) => firstRequests.push(r),
+      }),
+    );
+    expect(firstRequests).toHaveLength(2);
+
+    const loc = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+    const firstImageAssetId = loc.imageAssetId;
+
+    // A redo clears every image (whole-stage redo, per `DISCARD["concept_art"]`
+    // in lib/projects.ts) and re-enqueues — but a plain second run of the
+    // handler, with nothing cleared, must skip both rows: this is the
+    // "died partway through" resumability case, not the redo case.
+    const secondRequests: Record<string, unknown>[] = [];
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        onImageRequest: (r) => secondRequests.push(r),
+      }),
+    );
+    expect(secondRequests).toHaveLength(0);
+
+    const stillLoc = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+    expect(stillLoc.imageAssetId).toBe(firstImageAssetId);
+  });
+
+  it("resumes a partial run — only the entity still missing an image is regenerated", async () => {
+    const project = await runThroughApprovedProductionDesign();
+
+    // A full pass first, so the location's `imageAssetId` is a real `assets`
+    // row (the FK a hand-rolled fake id would violate) — then simulate a run
+    // that died after the location but before the prop by clearing just the
+    // prop's own fields back out.
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+      }),
+    );
+    const loc = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+    const locationImageAssetId = loc.imageAssetId;
+    db.update(props)
+      .set({ imageAssetId: null, refInputName: null })
+      .where(eq(props.projectId, project.id))
+      .run();
+    db.update(projects).set({ conceptArtApprovedAt: null }).where(eq(projects.id, project.id)).run();
+
+    const requests: Record<string, unknown>[] = [];
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("prop-bytes-2")],
+        onImageRequest: (r) => requests.push(r),
+      }),
+    );
+
+    expect(requests).toHaveLength(1); // only the prop, not the already-imaged location
+    const stillLoc = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+    expect(stillLoc.imageAssetId).toBe(locationImageAssetId); // untouched
+    const prop = db.select().from(props).where(eq(props.projectId, project.id)).get()!;
+    expect(prop.imageAssetId).not.toBeNull();
+  });
+
+  // The register-separation test: this is the one that would have caught a
+  // bug mixing Production Design Style's content into the rendering wrapper,
+  // or Image Style's rendering register into the content templates.
+  it("folds the entity's own description and Production Design Style's guidance into the prompt as content, wrapped by Image Style's rendering register", async () => {
+    const project = await runThroughApprovedProductionDesign();
+
+    const style = db
+      .select()
+      .from(productionDesignStyles)
+      .where(eq(productionDesignStyles.id, project.productionDesignStyleId!))
+      .get()!;
+    const projectRow = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    const imageStyle = db
+      .select()
+      .from(imageStyles)
+      .where(eq(imageStyles.id, projectRow.imageStyleId!))
+      .get()!;
+    const loc = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+
+    const prompts: string[] = [];
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+        onImageRequest: (r) => prompts.push(r.prompt as string),
+      }),
+    );
+
+    const locationPrompt = prompts.find((p) => p.includes(loc.name))!;
+    expect(locationPrompt).toBeDefined();
+
+    // Content: the location's own name/description.
+    expect(locationPrompt).toContain(loc.name);
+    expect(locationPrompt).toContain(loc.description);
+    // Content: Production Design Style's three guidance fields.
+    expect(locationPrompt).toContain(style.visualLanguageGuidance);
+    expect(locationPrompt).toContain(style.paletteGuidance);
+    expect(locationPrompt).toContain(style.textureGuidance);
+    // Rendering register: Image Style's prefix/suffix wrap the whole thing.
+    expect(locationPrompt.startsWith(imageStyle.promptPrefix)).toBe(true);
+    expect(locationPrompt.endsWith(imageStyle.promptSuffix)).toBe(true);
+    // The rendering register must never appear inside Production Design
+    // Style's own fields (would indicate a register leak the other way) —
+    // guarded here by asserting the prefix/suffix appear exactly once each,
+    // at the boundaries, not interleaved into the content in the middle.
+    expect(locationPrompt.indexOf(imageStyle.promptPrefix)).toBe(0);
+    expect(locationPrompt.lastIndexOf(imageStyle.promptSuffix)).toBe(
+      locationPrompt.length - imageStyle.promptSuffix.length,
+    );
+  });
+
+  // Acceptance criterion 4: `concept_art`'s own `INVALIDATION_CHAIN` entry
+  // must exist and sit in the right place, even though nothing follows it
+  // yet — exercised the same way as every prior PR's own redo test, by
+  // redoing the stage immediately *before* it (`production_design`, per
+  // `runProductionDesign`'s own doc comment on why it doesn't auto-chain into
+  // this one) and checking the cascade reaches concept_art's generated images.
+  it("redoing production_design invalidates concept_art, per ADR 0003 / INVALIDATION_CHAIN", async () => {
+    const project = await runThroughApprovedProductionDesign();
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+      }),
+    );
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "every Development/Preproduction stage built so far is approved",
+    });
+
+    const job = regenerate(db, project.id, { target: "production_design" });
+    expect(job.type).toBe("production_design");
+
+    const loc = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+    const prop = db.select().from(props).where(eq(props.projectId, project.id)).get()!;
+    // Cleared, not deleted — the row itself (and the world it describes)
+    // survives; only the generated image and its reference are gone, same
+    // shape `DISCARD["character_images"]` already has for `characters`.
+    expect(loc.name).toBe("Reyna's shop");
+    expect(loc.imageAssetId).toBeNull();
+    expect(loc.refInputName).toBeNull();
+    expect(prop.imageAssetId).toBeNull();
+
+    const updated = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(updated.conceptArtApprovedAt).toBeNull();
+    // `invalidateDownstreamOf` clears what comes *after* the redo target —
+    // "production_design"'s own (still-approved) row is untouched (the job
+    // just enqueued is what overwrites it), so `devStageStatus` still reports
+    // it approved and `nextStep` already lands on the now-cleared
+    // "concept_art" rather than back on "production_design".
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art", needsApproval: false });
+  });
+
+  it("uses the image provider (resolveProvider), not resolveDevProvider — no LLM call is ever made", async () => {
+    const project = await runThroughApprovedProductionDesign();
+
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+        onChatRequest: () => {
+          throw new Error("concept_art must never call the LLM provider (chat)");
+        },
+        onChatJsonRequest: () => {
+          throw new Error("concept_art must never call the LLM provider (chatJson)");
+        },
+      }),
+    );
+
+    const loc = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+    expect(loc.imageAssetId).not.toBeNull();
   });
 });
 

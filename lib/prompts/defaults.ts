@@ -108,6 +108,24 @@ const STORY_VARS = [
       "The Preproduction chain's approved visual bible — production design style guidance plus every " +
       "approved location/prop and continuity fact, assembled",
   },
+  // Preproduction (M7 PR9) — this stage's own image-prompt variable fold, per
+  // the comment on `visualLanguageGuidance` above: a diffusion prompt wants
+  // comma-separated phrases, not the prose `visualLanguageGuidance`/
+  // `paletteGuidance`/`textureGuidance` are written for, so PR9 folds those
+  // three into `productionDesignGuidance` itself rather than reusing the
+  // prose variables here.
+  {
+    name: "subjectDescription",
+    description: "A location's or prop's own name and description, folded into one phrase",
+  },
+  {
+    name: "productionDesignGuidance",
+    description:
+      "Production Design Style's visual-language/palette/texture guidance, folded into " +
+      "comma-separated phrases for a diffusion prompt — content, not the rendering register " +
+      "(that's Image Style's promptPrefix/promptSuffix, applied around this template's output, " +
+      "not inside it)",
+  },
 ];
 
 function pick(...names: string[]) {
@@ -526,6 +544,37 @@ what the array is for — the prompt itself describes them without naming them.`
 most of the frame, {{characterDescription}}, neutral expression, facing
 camera, plain uncluttered background, evenly lit, full face clearly visible
 and unobstructed`,
+  },
+  {
+    key: "concept_art.location",
+    section: "Preproduction",
+    label: "Location concept art prompt",
+    description: "Builds the concept-art prompt for one location (M7 PR9, stage 16).",
+    // Same discipline as `character.portrait` above: this goes straight to
+    // the diffusion model with no LLM in between, so it stays comma-separated
+    // phrases, never prose. `{{subjectDescription}}` and
+    // `{{productionDesignGuidance}}` are both CONTENT — what is physically in
+    // the world (materials, construction, what's actually there) — never the
+    // rendering register. The rendering register is Image Style's own
+    // `promptPrefix`/`promptSuffix`, applied by `runConceptArt` around this
+    // template's output, the same wrapper every other image-generation call
+    // in this codebase gets (ADR 0002; see `runConceptArt`'s own doc comment
+    // in dev.ts for why getting this split backwards here specifically is
+    // costly).
+    variables: pick("subjectDescription", "productionDesignGuidance"),
+    template: `wide establishing shot of a real location, no people, {{subjectDescription}},
+{{productionDesignGuidance}}, natural environmental detail, believable scale`,
+  },
+  {
+    key: "concept_art.prop",
+    section: "Preproduction",
+    label: "Prop concept art prompt",
+    description: "Builds the concept-art prompt for one prop (M7 PR9, stage 16).",
+    // Same register discipline as `concept_art.location` above.
+    variables: pick("subjectDescription", "productionDesignGuidance"),
+    template: `product-style concept photograph of a single object, no people, no hands,
+{{subjectDescription}}, {{productionDesignGuidance}}, plain uncluttered background, evenly lit,
+object fills most of the frame`,
   },
   /* ------------------------------------------------------- Development (M7) */
   // Each of these five is deliberately scoped to one stage's own output plus

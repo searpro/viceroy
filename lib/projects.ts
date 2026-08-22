@@ -521,6 +521,21 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
   // latter still cascades into clearing the former (ADR 0003).
   visual_bible: devArtifactDiscard("visual_bible"),
   production_design: devArtifactDiscard("production_design"),
+  // Stage 16 (M7 PR9) — clears the generated images, not the location/prop
+  // rows themselves (those belong to "world_building"'s own redo, above); a
+  // concept-art redo should not lose the world it's illustrating. Mirrors
+  // `character_images`' own discard shape exactly.
+  concept_art: (db, projectId) => {
+    db.update(locations)
+      .set({ imageAssetId: null, refInputName: null, imageSource: "generated" })
+      .where(eq(locations.projectId, projectId))
+      .run();
+    db.update(props)
+      .set({ imageAssetId: null, refInputName: null, imageSource: "generated" })
+      .where(eq(props.projectId, projectId))
+      .run();
+    db.update(projects).set({ conceptArtApprovedAt: null }).where(eq(projects.id, projectId)).run();
+  },
 };
 
 /** `DISCARD`'s handler for one dev-artifact stage, covering every version. */

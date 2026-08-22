@@ -248,6 +248,14 @@ export const projects = sqliteTable(
     // extraction ran and a human clicked continue", the same bar `characters`
     // and `world_building` clear — see `devStageStatus` in chain.ts.
     continuityApprovedAt: integer("continuity_approved_at", { mode: "timestamp_ms" }),
+    // M7 PR9. The "concept_art" stage's equivalent of `charactersApprovedAt`/
+    // `continuityApprovedAt` above — it writes to `locations.imageAssetId`/
+    // `props.imageAssetId`, not a row of its own, so it has nowhere else to
+    // record approval. Set once the generation pass completes (auto mode) or
+    // once a human clicks continue past it (manual mode) — not gated on
+    // per-image review, since there is no review UI for individual concept
+    // art yet, the same bar `continuity`'s own approval clears.
+    conceptArtApprovedAt: integer("concept_art_approved_at", { mode: "timestamp_ms" }),
     // Nullable, like captionStyleId: a project created before this column
     // existed has no way to have one set. render.ts falls back to
     // config.video's dimensions when either is null.
@@ -504,6 +512,14 @@ export const DEV_CHAIN_STAGES = [
   // `DEV_ARTIFACT_STAGES` above.
   "visual_bible",
   "production_design",
+  // Stage 16 (M7 PR9) — the first stage in this whole chain that generates
+  // images rather than text. Writes to `locations`/`props` directly, not a
+  // `dev_artifacts` row (see `DEV_TABLE_STAGES` below) — same shape as
+  // "characters"/"world_building"/"continuity" before it. Character
+  // portraits are deliberately out of scope here (see `runConceptArt`'s own
+  // comment in dev.ts) — the M7 detail page's stage list puts identity-lock
+  // casting at stage 20, not here.
+  "concept_art",
 ] as const;
 export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 
@@ -511,7 +527,7 @@ export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 // `DEV_CHAIN_STAGES` above) — pulled out as their own type so job dispatch and
 // `DISCARD` can be exhaustive over them without re-deriving the split from
 // `DEV_CHAIN_STAGES` minus `DEV_ARTIFACT_STAGES` by hand.
-export const DEV_TABLE_STAGES = ["characters", "world_building", "continuity"] as const;
+export const DEV_TABLE_STAGES = ["characters", "world_building", "continuity", "concept_art"] as const;
 export type DevTableStage = (typeof DEV_TABLE_STAGES)[number];
 
 export const devArtifacts = sqliteTable(

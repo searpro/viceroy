@@ -13,6 +13,7 @@ import {
   type ContinuitySubjectType,
   type DevArtifactStage,
 } from "../db/schema";
+import { storeAsset } from "../assets";
 import { renderPrompt } from "../prompts";
 import { enqueue } from "../queue";
 import type { Db } from "../db/client";
@@ -25,8 +26,10 @@ import {
   requireProductionDesignStyle,
   requireProjectId,
   resolveDevProvider,
+  resolveProvider,
   type StageContext,
 } from "./context";
+import { negativePromptFor } from "./images";
 import { parseEvaluation, type EvaluationPayload } from "./story";
 
 /**
@@ -1405,5 +1408,195 @@ export async function runProductionDesign(ctx: StageContext): Promise<void> {
     ctx.log("Stopping for review (manual mode)");
     return;
   }
-  ctx.log("Production design is the last Preproduction stage defined so far — nothing further to enqueue");
+  // Deliberately does NOT `continueDevChain` into "concept_art", unlike every
+  // other dev_artifacts generation stage above hand off to what's next in
+  // auto mode. Image generation is the one CPU-bound stage in this whole
+  // chain — ~65s/frame measured (finding F9) — and auto-chaining straight
+  // from an LLM call into a run that can take minutes removes the only
+  // natural pause point a user currently gets before something that
+  // expensive starts. "continuity" set this precedent already, for a
+  // different reason (facts need a human's eyes before the visual bible
+  // trusts them) — this is the same non-auto-chaining choice for a different
+  // one. The generic "continue" mechanism (chain.ts's `advance`) is what
+  // starts "concept_art", same as it starts "visual_bible" after continuity.
+  ctx.log("Production design written — advance to concept art next");
+}
+
+/**
+ * Stage 16 (M7 PR9) — the first stage in this whole chain that generates
+ * images rather than text: one concept-art image per location and per prop
+ * that doesn't already have one.
+ *
+ * Scoped to locations/props only, per the M7 detail page's own stage list —
+ * character identity-lock is stage 20 ("Casting"), not this one, and a
+ * character's own portrait is Development's concern (stage 3's
+ * `runDevCharacters`), not Preproduction's. That said: `runDevCharacters`
+ * writes character rows with no `imageAssetId`/`appearanceTag`-driven
+ * portrait generation of its own — a dev-format project's cast currently has
+ * no portrait-generation path at all. That gap is real but out of this
+ * stage's scope; it is not this stage's job to fill it.
+ *
+ * Reuses `runCharacterImages`'s exact shape: resumable (an entity that
+ * already has an `imageAssetId` is skipped, so a run that dies partway
+ * resumes rather than restarts), uploads the result as a reference the same
+ * way (`backend.uploadReference`), and negative-prompts the same way
+ * (`negativePromptFor`). Deliberately does NOT call `filterLiveRefs` here —
+ * that function degrades a *consumer's* prompt when a reference it wants has
+ * gone missing, and concept art doesn't consume any reference (it produces
+ * one); it's PR10's storyboards that will call `filterLiveRefs` against
+ * these rows, the same way `runSceneImages` already calls it against
+ * `characters`.
+ *
+ * The prompt's register split (ADR 0002, and see this repo's own notes on
+ * why getting it backwards here specifically is the costly mistake): the
+ * entity's own `name`/`description` and Production Design Style's three
+ * guidance fields are CONTENT — what is physically in the world, the same
+ * category as a scene's `imagePrompt` describing what's in frame. Image
+ * Style's `promptPrefix`/`promptSuffix` are the RENDERING register — film
+ * stock, grade, lighting quality — and wrap the whole assembled content
+ * exactly the way they wrap every other image-generation call in this
+ * codebase (`runSceneImages`, `runCharacterImages`). Production Design
+ * Style's guidance never touches the prefix/suffix, and Image Style's
+ * guidance never enters the content templates below — mixing those two is
+ * exactly the register-leak class of bug this project's Prompt & Flow Audit
+ * flagged repeatedly.
+ */
+export async function runConceptArt(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project, imageStyle } = bundle;
+  const productionDesignStyle = requireProductionDesignStyle(bundle);
+  const imageProvider = resolveProvider(ctx.db, "image");
+  const backend = ctx.imageBackend();
+
+  // Content, not rendering — see this function's own doc comment. Folded
+  // into comma-separated phrases because this prompt goes straight to the
+  // diffusion model with no LLM in between (same discipline as
+  // `character.portrait`'s own template comment), unlike `productionDesignSummary`
+  // above, which formats the same three fields as prose for an LLM prompt.
+  const guidance = [
+    productionDesignStyle.visualLanguageGuidance,
+    productionDesignStyle.paletteGuidance,
+    productionDesignStyle.textureGuidance,
+  ]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(", ");
+
+  const locs = ctx.db.select().from(locations).where(eq(locations.projectId, projectId)).all();
+  const items = ctx.db.select().from(props).where(eq(props.projectId, projectId)).all();
+
+  const pendingLocations = locs.filter((l) => !l.imageAssetId);
+  const pendingProps = items.filter((p) => !p.imageAssetId);
+  const total = pendingLocations.length + pendingProps.length;
+
+  if (total === 0) {
+    ctx.log("Every location/prop already has concept art");
+  }
+
+  let done = 0;
+  for (const location of pendingLocations) {
+    checkAbort(ctx);
+    ctx.log(`Generating concept art for location "${location.name}" (${done + 1}/${total})`);
+
+    const prompt =
+      `${imageStyle.promptPrefix}` +
+      renderPrompt(ctx.db, "concept_art.location", {
+        subjectDescription: `${location.name}, ${location.description}`,
+        productionDesignGuidance: guidance,
+      }) +
+      `${imageStyle.promptSuffix}`;
+
+    const bytes = await backend.generate(
+      {
+        prompt,
+        negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
+        width: ctx.config.sourceImage.width,
+        height: ctx.config.sourceImage.height,
+        references: [],
+      },
+      {
+        onProgress: (fraction) => ctx.progress((done + fraction) / Math.max(total, 1)),
+        shouldAbort: ctx.shouldAbort,
+        log: ctx.log,
+      },
+    );
+
+    const asset = storeAsset(ctx.db, ctx.config, {
+      kind: "image",
+      bytes,
+      mimeType: "image/png",
+      projectId,
+      label: `location-${location.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      meta: { locationId: location.id, prompt },
+    });
+    const refInputName = await backend.uploadReference(bytes, `${location.id}.png`);
+
+    ctx.db
+      .update(locations)
+      .set({ imageAssetId: asset.id, refInputName })
+      .where(eq(locations.id, location.id))
+      .run();
+    done++;
+  }
+
+  for (const prop of pendingProps) {
+    checkAbort(ctx);
+    ctx.log(`Generating concept art for prop "${prop.name}" (${done + 1}/${total})`);
+
+    const prompt =
+      `${imageStyle.promptPrefix}` +
+      renderPrompt(ctx.db, "concept_art.prop", {
+        subjectDescription: `${prop.name}, ${prop.description}`,
+        productionDesignGuidance: guidance,
+      }) +
+      `${imageStyle.promptSuffix}`;
+
+    const bytes = await backend.generate(
+      {
+        prompt,
+        negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
+        width: ctx.config.sourceImage.width,
+        height: ctx.config.sourceImage.height,
+        references: [],
+      },
+      {
+        onProgress: (fraction) => ctx.progress((done + fraction) / Math.max(total, 1)),
+        shouldAbort: ctx.shouldAbort,
+        log: ctx.log,
+      },
+    );
+
+    const asset = storeAsset(ctx.db, ctx.config, {
+      kind: "image",
+      bytes,
+      mimeType: "image/png",
+      projectId,
+      label: `prop-${prop.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      meta: { propId: prop.id, prompt },
+    });
+    const refInputName = await backend.uploadReference(bytes, `${prop.id}.png`);
+
+    ctx.db.update(props).set({ imageAssetId: asset.id, refInputName }).where(eq(props.id, prop.id)).run();
+    done++;
+  }
+
+  ctx.log(total === 0 ? "No concept art needed" : `${total} concept art image(s) generated and uploaded as references`);
+
+  // Same "no rich review UI yet" approval bar `continuity` already clears —
+  // approval means "the generation pass ran (or had nothing to do) and a
+  // human reached this point", not per-image sign-off, since no UI for that
+  // exists yet.
+  ctx.db
+    .update(projects)
+    .set({ conceptArtApprovedAt: project.mode === "auto" ? new Date() : null })
+    .where(eq(projects.id, projectId))
+    .run();
+
+  if (project.mode === "manual") {
+    awaitReview(ctx.db, projectId);
+    ctx.log("Stopping for review (manual mode)");
+    return;
+  }
+  ctx.log("Concept art is the last Preproduction stage defined so far — nothing further to enqueue");
 }
