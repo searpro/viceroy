@@ -17,6 +17,7 @@ import {
   runScreenplayRevision,
   runScriptBreakdown,
   runStoryBible,
+  runStoryboards,
   runStoryStructure,
   runTreatment,
   runVisualBible,
@@ -58,8 +59,8 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   screenplay: runScreenplay,
   screenplay_revision: runScreenplayRevision,
   story_bible: runStoryBible,
-  // Preproduction (M7 PR6-PR9) — stages 11-16 of the full 11-21 range. Stage
-  // 17+ has no entry yet; the worker refuses those job types the same way it
+  // Preproduction (M7 PR6-PR10) — stages 11-17 of the full 11-21 range. Stage
+  // 18+ has no entry yet; the worker refuses those job types the same way it
   // refuses any other unimplemented one, until a later PR adds them.
   script_breakdown: runScriptBreakdown,
   scene_breakdown: runSceneBreakdown,
@@ -67,4 +68,5 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   visual_bible: runVisualBible,
   production_design: runProductionDesign,
   concept_art: runConceptArt,
+  storyboards: runStoryboards,
 };

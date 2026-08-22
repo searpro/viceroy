@@ -9,6 +9,11 @@ import {
   locations,
   projects,
   props,
+  storyboardPanels,
+  STORYBOARD_CAMERA_ANGLES,
+  STORYBOARD_CAMERA_MOVEMENTS,
+  STORYBOARD_LENSES,
+  STORYBOARD_SHOT_TYPES,
   worldBuilding,
   type ContinuitySubjectType,
   type DevArtifactStage,
@@ -29,7 +34,7 @@ import {
   resolveProvider,
   type StageContext,
 } from "./context";
-import { negativePromptFor } from "./images";
+import { filterLiveRefs, negativePromptFor } from "./images";
 import { parseEvaluation, type EvaluationPayload } from "./story";
 
 /**
@@ -1598,5 +1603,264 @@ export async function runConceptArt(ctx: StageContext): Promise<void> {
     ctx.log("Stopping for review (manual mode)");
     return;
   }
-  ctx.log("Concept art is the last Preproduction stage defined so far — nothing further to enqueue");
+  // Deliberately does NOT `continueDevChain` into "storyboards", same reason
+  // `runProductionDesign` doesn't auto-chain into this stage: storyboards is
+  // itself image generation (per-panel, and a scene breakdown can have many
+  // beats — finding F9's CPU-bound cost applies just as much here as it did
+  // to concept art). The generic "continue" mechanism starts it.
+  ctx.log("Concept art written — advance to storyboards next");
+}
+
+/**
+ * Stage 17 (M7 PR10) — one storyboard panel per beat in the approved scene
+ * breakdown, each with its own independently-editable shotType/cameraAngle/
+ * cameraMovement/lens rather than one prose paragraph — the structured
+ * cinematography fields the M7 detail page's Style-system section scoped
+ * ahead of time, once "scenes exist in Preproduction" (they do, as of
+ * `scene_breakdown`).
+ *
+ * Beat extraction is an LLM call (`chatJson`) rather than a parser over
+ * `scene_breakdown`'s own "SCENE <n>" headers — the same "turn prose into
+ * structured rows" choice `runContinuity`'s own extraction and elements.ts's
+ * cast/beat extraction already make. A parser keyed to the literal "SCENE
+ * <n>" / blank-line format would also only ever produce one panel per scene,
+ * never per beat, since nothing in that document's own structure marks where
+ * a busy scene's visually distinct beats fall — deciding that split is
+ * exactly the kind of judgment call an extraction pass, not a regex, is
+ * suited to. See `dev.storyboards`'s own prompt for what a "beat" means here.
+ *
+ * Reuses `runConceptArt`'s image-generation shape (resumable, `storeAsset`,
+ * the same register split: the beat's own visual content and Production
+ * Design Style's guidance are CONTENT; Image Style's prefix/suffix are the
+ * RENDERING register) but is the first Preproduction stage to call
+ * `filterLiveRefs` for real, against `locations`/`props`: a panel whose beat
+ * text mentions a known location or prop by name gets that entity's
+ * concept-art reference passed as `references`, the same way
+ * `runSceneImages` (images.ts) references character portraits. The matching
+ * heuristic is a simple case-insensitive substring check of the entity's
+ * name against the beat's description — good enough for continuity between a
+ * panel and the concept art it's meant to be consistent with, without a
+ * second extraction pass just to name which entities a beat "is about".
+ *
+ * Resumable per panel, matched by (projectId, sceneId, index): a beat whose
+ * row already carries a `panelImageAssetId` is skipped, the same "a crash
+ * partway through costs one frame, not the whole run" shape
+ * `runConceptArt`/`runSceneImages` already have. Beat extraction itself
+ * re-runs every call — it is comparatively cheap next to image generation
+ * (finding F9), and the alternative (caching the beat list) would need its
+ * own invalidation story for a `scene_breakdown` redo that this stage's
+ * `DISCARD` entry doesn't currently track separately.
+ */
+export async function runStoryboards(ctx: StageContext): Promise<void> {
+  const projectId = requireProjectId(ctx.job);
+  const bundle = loadProject(ctx.db, projectId);
+  const { project, imageStyle } = bundle;
+  const productionDesignStyle = requireProductionDesignStyle(bundle);
+  const provider = resolveDevProvider(ctx.db);
+  const imageProvider = resolveProvider(ctx.db, "image");
+  const backend = ctx.imageBackend();
+
+  const sceneBreakdown = requireDevArtifactContent(ctx.db, projectId, "scene_breakdown");
+  const direction = pendingDirection(ctx);
+
+  ctx.log(`Extracting storyboard beats with ${provider.model}`);
+  ctx.progress(0.05);
+  checkAbort(ctx);
+
+  const payload = await ctx.sdApi.llm.chatJson<StoryboardBeatsPayload>({
+    model: provider.model,
+    messages: [
+      {
+        role: "user",
+        content: renderPrompt(ctx.db, "dev.storyboards", {
+          sceneBreakdown,
+          castSummary: castSummary(ctx.db, projectId),
+          worldSummary: worldSummary(ctx.db, projectId),
+          direction: directionBlock(direction),
+          groundingInstruction: groundingInstruction(project),
+        }),
+      },
+    ],
+    temperature: 0.4,
+  });
+
+  const beats = (payload.beats ?? [])
+    .filter(
+      (b): b is StoryboardBeatCandidate & { sceneId: string; description: string } =>
+        typeof b?.sceneId === "string" &&
+        b.sceneId.trim().length > 0 &&
+        typeof b?.description === "string" &&
+        b.description.trim().length > 0,
+    )
+    .map((b, i) => ({
+      sceneId: b.sceneId.trim(),
+      description: b.description.trim(),
+      shotType: coerceVocab(b.shotType, STORYBOARD_SHOT_TYPES, "medium"),
+      cameraAngle: coerceVocab(b.cameraAngle, STORYBOARD_CAMERA_ANGLES, "eye-level"),
+      cameraMovement: coerceVocab(b.cameraMovement, STORYBOARD_CAMERA_MOVEMENTS, "static"),
+      lens: coerceVocab(b.lens, STORYBOARD_LENSES, "standard"),
+      index: i,
+    }));
+
+  if (beats.length === 0) {
+    throw new Error(`Project ${projectId} — storyboard beat extraction returned no usable beats`);
+  }
+
+  const locs = ctx.db.select().from(locations).where(eq(locations.projectId, projectId)).all();
+  const items = ctx.db.select().from(props).where(eq(props.projectId, projectId)).all();
+  const liveLocationRefs = await filterLiveRefs(backend, locs, ctx.log);
+  const livePropRefs = await filterLiveRefs(backend, items, ctx.log);
+
+  // Content, not rendering — same discipline `runConceptArt` already applies
+  // to these same three fields.
+  const guidance = [
+    productionDesignStyle.visualLanguageGuidance,
+    productionDesignStyle.paletteGuidance,
+    productionDesignStyle.textureGuidance,
+  ]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(", ");
+
+  const existing = ctx.db
+    .select()
+    .from(storyboardPanels)
+    .where(eq(storyboardPanels.projectId, projectId))
+    .all();
+  const existingByKey = new Map(existing.map((p) => [`${p.sceneId}::${p.index}`, p]));
+
+  const pending = beats.filter((beat) => {
+    const row = existingByKey.get(`${beat.sceneId}::${beat.index}`);
+    return !row?.panelImageAssetId;
+  });
+
+  if (pending.length === 0) {
+    ctx.log("Every storyboard beat already has a panel");
+  }
+
+  let done = 0;
+  for (const beat of pending) {
+    checkAbort(ctx);
+    ctx.log(
+      `Generating storyboard panel for scene ${beat.sceneId}, beat ${beat.index + 1} (${done + 1}/${pending.length})`,
+    );
+
+    // Simple name-mention matching against concept-art references — keeps a
+    // panel visually consistent with the world a human already generated,
+    // without a second extraction pass to identify which entities a beat "is
+    // about". See this function's own doc comment.
+    const mentioned = [...locs, ...items].filter((entity) =>
+      beat.description.toLowerCase().includes(entity.name.toLowerCase()),
+    );
+    const refs = mentioned
+      .map((entity) => liveLocationRefs.get(entity.id) ?? livePropRefs.get(entity.id))
+      .filter((name): name is string => Boolean(name));
+
+    const shotDescriptor = [
+      `${beat.shotType} shot`,
+      `${beat.cameraAngle} angle`,
+      `${beat.cameraMovement} camera`,
+      `${beat.lens} lens`,
+    ].join(", ");
+
+    const prompt =
+      `${imageStyle.promptPrefix}` +
+      renderPrompt(ctx.db, "storyboard.panel", {
+        shotDescriptor,
+        subjectDescription: beat.description,
+        productionDesignGuidance: guidance,
+      }) +
+      `${imageStyle.promptSuffix}`;
+
+    const bytes = await backend.generate(
+      {
+        prompt,
+        negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
+        width: ctx.config.sourceImage.width,
+        height: ctx.config.sourceImage.height,
+        references: refs,
+      },
+      {
+        onProgress: (fraction) => ctx.progress((done + fraction) / Math.max(pending.length, 1)),
+        shouldAbort: ctx.shouldAbort,
+        log: ctx.log,
+      },
+    );
+
+    const asset = storeAsset(ctx.db, ctx.config, {
+      kind: "image",
+      bytes,
+      mimeType: "image/png",
+      projectId,
+      label: `storyboard-scene${beat.sceneId}-${String(beat.index).padStart(3, "0")}`,
+      meta: { sceneId: beat.sceneId, index: beat.index, prompt },
+    });
+
+    const row = existingByKey.get(`${beat.sceneId}::${beat.index}`);
+    const values = {
+      panelImagePrompt: prompt,
+      shotType: beat.shotType,
+      cameraAngle: beat.cameraAngle,
+      cameraMovement: beat.cameraMovement,
+      lens: beat.lens,
+      panelImageAssetId: asset.id,
+    };
+    if (row) {
+      ctx.db.update(storyboardPanels).set(values).where(eq(storyboardPanels.id, row.id)).run();
+    } else {
+      ctx.db
+        .insert(storyboardPanels)
+        .values({ projectId, sceneId: beat.sceneId, index: beat.index, ...values })
+        .run();
+    }
+    done++;
+  }
+
+  ctx.log(
+    pending.length === 0 ? "No storyboard panels needed" : `${done} storyboard panel(s) generated`,
+  );
+
+  // Same "no rich review UI yet" approval bar `concept_art` already clears —
+  // approval means "the generation pass ran (or had nothing to do) and a
+  // human reached this point", not per-panel sign-off (finding F9: this can
+  // be the most expensive stage yet, one panel per beat across every scene).
+  ctx.db
+    .update(projects)
+    .set({ storyboardsApprovedAt: project.mode === "auto" ? new Date() : null })
+    .where(eq(projects.id, projectId))
+    .run();
+
+  if (project.mode === "manual") {
+    awaitReview(ctx.db, projectId);
+    ctx.log("Stopping for review (manual mode)");
+    return;
+  }
+  ctx.log("Storyboards is the last Preproduction stage defined so far — nothing further to enqueue");
+}
+
+type StoryboardBeatCandidate = {
+  sceneId?: unknown;
+  description?: unknown;
+  shotType?: unknown;
+  cameraAngle?: unknown;
+  cameraMovement?: unknown;
+  lens?: unknown;
+};
+type StoryboardBeatsPayload = { beats?: StoryboardBeatCandidate[] };
+
+/**
+ * Coerce a model-supplied field value into one of a fixed vocabulary,
+ * defaulting rather than failing the stage over one malformed field — the
+ * same graceful-degradation posture `resolveSubject`'s dangling-reference
+ * handling above already takes, just for a closed enum instead of a lookup.
+ * Normalizes case and internal whitespace/underscores to hyphens first
+ * ("Close Up", "close_up" -> "close-up") since a model asked for one of a
+ * few fixed strings drifts in formatting more often than in substance.
+ */
+function coerceVocab<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase().replace(/[\s_]+/g, "-") as T;
+    if ((allowed as readonly string[]).includes(normalized)) return normalized;
+  }
+  return fallback;
 }

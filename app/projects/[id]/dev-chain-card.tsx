@@ -77,6 +77,7 @@ const DEV_STAGE_LABELS: Record<string, string> = {
   visual_bible: "Visual bible",
   production_design: "Production design",
   concept_art: "Concept art",
+  storyboards: "Storyboards",
 };
 const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
 
@@ -100,12 +101,14 @@ function DevChainHistory({
   const hasWorld = Boolean(detail.worldBuilding?.content) || detail.locations.length > 0 || detail.props.length > 0;
   const hasContinuity = detail.continuityFacts.length > 0;
   const hasConceptArt = [...detail.locations, ...detail.props].some((entity) => entity.imageAssetId);
+  const hasStoryboards = detail.storyboardPanels.length > 0;
 
   const stagesWithContent = DEV_CHAIN_ORDER.filter((stage) => {
     if (stage === "characters") return hasCharacters;
     if (stage === "world_building") return hasWorld;
     if (stage === "continuity") return hasContinuity;
     if (stage === "concept_art") return hasConceptArt;
+    if (stage === "storyboards") return hasStoryboards;
     return byStage.has(stage);
   });
 
@@ -132,6 +135,8 @@ function DevChainHistory({
                 <ContinuitySection detail={detail} onResolveContinuityFact={onResolveContinuityFact} />
               ) : stage === "concept_art" ? (
                 <ConceptArtSection detail={detail} />
+              ) : stage === "storyboards" ? (
+                <StoryboardsSection detail={detail} />
               ) : (
                 <StageContent
                   content={byStage.get(stage)?.content ?? ""}
@@ -243,6 +248,45 @@ function ConceptArtSection({ detail }: { detail: Detail }) {
             className="aspect-[9/16] w-full rounded-md border border-white/10 object-cover"
           />
           <figcaption className="text-xs text-white/60">{entity.name}</figcaption>
+        </figure>
+      ))}
+    </div>
+  );
+}
+
+// M7 PR10. Same thumbnail-grid shape as `ConceptArtSection` above, plus the
+// four cinematography fields surfaced as visible labels alongside each
+// thumbnail — the acceptance bar this stage exists to clear is that
+// shotType/cameraAngle/cameraMovement/lens are independently visible, not
+// baked into `panelImagePrompt` as prose only.
+function StoryboardsSection({ detail }: { detail: Detail }) {
+  const panels = [...detail.storyboardPanels].sort((a, b) =>
+    a.sceneId === b.sceneId ? a.index - b.index : a.sceneId.localeCompare(b.sceneId),
+  );
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+      {panels.map((panel) => (
+        <figure key={panel.id} className="space-y-1.5">
+          {panel.panelImageAssetId ? (
+            <img
+              src={`/api/assets/${panel.panelImageAssetId}`}
+              alt={`Scene ${panel.sceneId}, beat ${panel.index + 1}`}
+              className="aspect-[9/16] w-full rounded-md border border-white/10 object-cover"
+            />
+          ) : (
+            <div className="flex aspect-[9/16] w-full items-center justify-center rounded-md border border-white/10 text-xs text-white/40">
+              not yet generated
+            </div>
+          )}
+          <figcaption className="text-xs text-white/60">
+            Scene {panel.sceneId} · beat {panel.index + 1}
+          </figcaption>
+          <ul className="flex flex-wrap gap-1 text-[10px] uppercase tracking-wide text-white/40">
+            <li className="rounded border border-white/10 px-1.5 py-0.5">{panel.shotType}</li>
+            <li className="rounded border border-white/10 px-1.5 py-0.5">{panel.cameraAngle}</li>
+            <li className="rounded border border-white/10 px-1.5 py-0.5">{panel.cameraMovement}</li>
+            <li className="rounded border border-white/10 px-1.5 py-0.5">{panel.lens}</li>
+          </ul>
         </figure>
       ))}
     </div>

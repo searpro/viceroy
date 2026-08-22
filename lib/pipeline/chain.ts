@@ -11,6 +11,7 @@ import {
   props,
   renders,
   scenes,
+  storyboardPanels,
   subtitleCues,
   voiceovers,
   worldBuilding,
@@ -177,6 +178,25 @@ function devStageStatus(db: Db, projectId: string, stage: DevChainStage): DevSta
     return stillPending ? "empty" : "pending";
   }
 
+  if (stage === "storyboards") {
+    // Unlike "concept_art", there is no cheap "is every panel done" check
+    // here — the target panel count is only known after beat extraction runs
+    // (an LLM call), not derivable from a fixed row set the way
+    // locations/props are. So this is simpler than "concept_art"'s own
+    // status check: zero panels means the stage hasn't run yet; any panel at
+    // all means it has (a `runStoryboards` retry after a partial failure is
+    // still "pending" here, same as any other in-progress table stage) —
+    // `runStoryboards` itself is what's resumable, per its own doc comment.
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+    if (project?.storyboardsApprovedAt) return "approved";
+    const panels = db
+      .select({ id: storyboardPanels.id })
+      .from(storyboardPanels)
+      .where(eq(storyboardPanels.projectId, projectId))
+      .all();
+    return panels.length === 0 ? "empty" : "pending";
+  }
+
   const latest = db
     .select()
     .from(devArtifacts)
@@ -280,6 +300,10 @@ function approveDevStage(db: Db, projectId: string, stage: DevChainStage): void 
   }
   if (stage === "concept_art") {
     db.update(projects).set({ conceptArtApprovedAt: new Date() }).where(eq(projects.id, projectId)).run();
+    return;
+  }
+  if (stage === "storyboards") {
+    db.update(projects).set({ storyboardsApprovedAt: new Date() }).where(eq(projects.id, projectId)).run();
     return;
   }
   db.update(devArtifacts)

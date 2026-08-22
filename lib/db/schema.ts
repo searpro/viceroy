@@ -256,6 +256,12 @@ export const projects = sqliteTable(
     // per-image review, since there is no review UI for individual concept
     // art yet, the same bar `continuity`'s own approval clears.
     conceptArtApprovedAt: integer("concept_art_approved_at", { mode: "timestamp_ms" }),
+    // M7 PR10. The "storyboards" stage's equivalent of `conceptArtApprovedAt`
+    // above — it writes `storyboard_panels` rows, not a row of its own on
+    // `projects`, so it has nowhere else to record approval. Same "the pass
+    // ran (or had nothing to do) and a human reached this point" bar, not
+    // per-panel sign-off — see `runStoryboards`'s own doc comment (dev.ts).
+    storyboardsApprovedAt: integer("storyboards_approved_at", { mode: "timestamp_ms" }),
     // Nullable, like captionStyleId: a project created before this column
     // existed has no way to have one set. render.ts falls back to
     // config.video's dimensions when either is null.
@@ -520,6 +526,11 @@ export const DEV_CHAIN_STAGES = [
   // comment in dev.ts) — the M7 detail page's stage list puts identity-lock
   // casting at stage 20, not here.
   "concept_art",
+  // Stage 17 (M7 PR10) — one generated panel per beat in the approved scene
+  // breakdown. Writes to `storyboardPanels` directly, not a `dev_artifacts`
+  // row — same shape as "characters"/"world_building"/"continuity"/
+  // "concept_art" before it.
+  "storyboards",
 ] as const;
 export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 
@@ -527,7 +538,13 @@ export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 // `DEV_CHAIN_STAGES` above) — pulled out as their own type so job dispatch and
 // `DISCARD` can be exhaustive over them without re-deriving the split from
 // `DEV_CHAIN_STAGES` minus `DEV_ARTIFACT_STAGES` by hand.
-export const DEV_TABLE_STAGES = ["characters", "world_building", "continuity", "concept_art"] as const;
+export const DEV_TABLE_STAGES = [
+  "characters",
+  "world_building",
+  "continuity",
+  "concept_art",
+  "storyboards",
+] as const;
 export type DevTableStage = (typeof DEV_TABLE_STAGES)[number];
 
 export const devArtifacts = sqliteTable(
@@ -690,6 +707,75 @@ export const continuityFacts = sqliteTable(
   (t) => [
     index("continuity_facts_project_idx").on(t.projectId),
     index("continuity_facts_subject_idx").on(t.projectId, t.subjectId),
+  ],
+);
+
+// Stage 17 (M7 PR10). The four structured cinematography fields the M7
+// detail page's Style-system section scoped ahead of time ("Cinematography
+// becomes structured per-scene fields, not prose... each independently
+// editable and redoable, not baked into one paragraph") — the same "select,
+// not prose" discipline `captionStyles`' own fields already apply, just as a
+// closed-vocabulary DB enum rather than a numeric/colour one. A production
+// would actually work off a set this size; a richer vocabulary can grow
+// these lists later (the column stays a closed enum, just a longer one) —
+// migrations are append-only, so widening a `text({enum})` list is exactly
+// the kind of change that stays cheap.
+export const STORYBOARD_SHOT_TYPES = ["wide", "medium", "close-up", "extreme-close-up"] as const;
+export type StoryboardShotType = (typeof STORYBOARD_SHOT_TYPES)[number];
+
+export const STORYBOARD_CAMERA_ANGLES = ["eye-level", "high", "low", "dutch"] as const;
+export type StoryboardCameraAngle = (typeof STORYBOARD_CAMERA_ANGLES)[number];
+
+export const STORYBOARD_CAMERA_MOVEMENTS = ["static", "pan", "tilt", "dolly", "handheld"] as const;
+export type StoryboardCameraMovement = (typeof STORYBOARD_CAMERA_MOVEMENTS)[number];
+
+export const STORYBOARD_LENSES = ["wide", "standard", "telephoto"] as const;
+export type StoryboardLens = (typeof STORYBOARD_LENSES)[number];
+
+// Stage 17 (M7 PR10). One row per generated panel, one panel per beat in the
+// approved scene breakdown — a scene can want more than one panel if it
+// contains more than one visually distinct beat, so this is not simply
+// "one row per scene" (see `runStoryboards`'s doc comment, dev.ts, for why
+// beat extraction is an LLM call rather than a parse of `scene_breakdown`'s
+// own "SCENE <n>" headers).
+//
+// `sceneId` is free text, not a `scenes` FK — same reasoning as
+// `continuityFacts.sceneId` above: the dev chain's scene breakdown is a
+// prose document, not `scenes` rows (those are the narrative pipeline's own
+// table), so a panel anchored to one carries whatever scene number the LLM
+// extracted it against, not a foreign key into an unrelated table.
+export const storyboardPanels = sqliteTable(
+  "storyboard_panels",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id").notNull(),
+    // Ordering across the whole project's panel list — not scoped per scene,
+    // since a beat's position within the full extracted sequence is what
+    // `runStoryboards`'s resumability check (project + sceneId + index) and
+    // the review UI's display order both key off.
+    index: integer("index").notNull(),
+    // The assembled/rendered prompt actually sent to the image backend,
+    // stored for reference — same as every other image-generation stage in
+    // this chain (`concept_art`'s own `meta.prompt`, `character.portrait`'s
+    // `characters.imagePrompt`).
+    panelImagePrompt: text("panel_image_prompt").notNull().default(""),
+    shotType: text("shot_type", { enum: STORYBOARD_SHOT_TYPES }).notNull().default("medium"),
+    cameraAngle: text("camera_angle", { enum: STORYBOARD_CAMERA_ANGLES }).notNull().default("eye-level"),
+    cameraMovement: text("camera_movement", { enum: STORYBOARD_CAMERA_MOVEMENTS })
+      .notNull()
+      .default("static"),
+    lens: text("lens", { enum: STORYBOARD_LENSES }).notNull().default("standard"),
+    panelImageAssetId: text("panel_image_asset_id").references(() => assets.id),
+    approvedAt: integer("approved_at", { mode: "timestamp_ms" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("storyboard_panels_project_idx").on(t.projectId),
+    index("storyboard_panels_project_scene_idx").on(t.projectId, t.sceneId),
   ],
 );
 
@@ -958,6 +1044,7 @@ export const schema = {
   locations,
   props,
   continuityFacts,
+  storyboardPanels,
   assets,
   jobs,
   jobLogs,

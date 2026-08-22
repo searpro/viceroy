@@ -12,6 +12,7 @@ import {
   projects,
   renders,
   scenes,
+  storyboardPanels,
   subtitleCues,
   voiceovers,
   worldBuilding,
@@ -359,6 +360,10 @@ describe("nextStep — Development chain", () => {
     // also exercising the "nothing to generate, still needs an explicit
     // approval click" path rather than the "every row has an image" one.
     db.update(projects).set({ conceptArtApprovedAt: new Date() }).where(eq(projects.id, project.id)).run();
+    // Preproduction (M7 PR10) — same "own table, own approval mechanism"
+    // story as "continuity"/"concept_art" above.
+    db.insert(storyboardPanels).values({ projectId: project.id, sceneId: "1", index: 0 }).run();
+    db.update(projects).set({ storyboardsApprovedAt: new Date() }).where(eq(projects.id, project.id)).run();
 
     expect(nextStep(db, project.id)).toMatchObject({
       kind: "complete",

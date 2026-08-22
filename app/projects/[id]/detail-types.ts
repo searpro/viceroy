@@ -81,6 +81,25 @@ export type ContinuityFact = {
   resolvedAt: string | null;
 };
 
+// M7 PR10. Same "own table, not a `dev_artifacts` row" story as
+// `ContinuityFact`/`LocationOrProp` above — "storyboards" is a
+// `DEV_CHAIN_STAGES` entry that writes `storyboard_panels` directly. The four
+// cinematography fields are surfaced independently, per the M7 detail page's
+// own "selects, not prose" acceptance bar — never baked into
+// `panelImagePrompt` as the only place they show up.
+export type StoryboardPanel = {
+  id: string;
+  sceneId: string;
+  index: number;
+  panelImagePrompt: string;
+  shotType: string;
+  cameraAngle: string;
+  cameraMovement: string;
+  lens: string;
+  panelImageAssetId: string | null;
+  approvedAt: string | null;
+};
+
 export type Cue = {
   id: string;
   index: number;
@@ -120,6 +139,7 @@ export type Detail = {
   locations: LocationOrProp[];
   props: LocationOrProp[];
   continuityFacts: ContinuityFact[];
+  storyboardPanels: StoryboardPanel[];
   render?: { id: string; assetId: string | null; status: string } | null;
   voiceover?: {
     id: string;

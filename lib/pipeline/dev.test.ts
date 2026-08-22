@@ -15,6 +15,7 @@ import {
   projects,
   props,
   providers,
+  storyboardPanels,
   worldBuilding,
 } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
@@ -36,6 +37,7 @@ import {
   runScreenplayRevision,
   runScriptBreakdown,
   runStoryBible,
+  runStoryboards,
   runStoryStructure,
   runTreatment,
   runVisualBible,
@@ -1393,7 +1395,7 @@ describe("Preproduction stages (M7 PR8 — visual bible & production design)", (
     expect(row.approvedAt).not.toBeNull(); // auto mode auto-approves
   });
 
-  it("devNextStep advances visual_bible -> production_design -> concept_art -> the next unhandled interim state", async () => {
+  it("devNextStep advances visual_bible -> production_design -> concept_art -> storyboards", async () => {
     const project = await runThroughApprovedContinuity();
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "visual_bible", needsApproval: false });
 
@@ -1422,13 +1424,11 @@ describe("Preproduction stages (M7 PR8 — visual bible & production design)", (
       }),
     );
 
-    // Nothing is defined past "concept_art" in `DEV_CHAIN_STAGES` yet — the
-    // same "landed on the next PR's own terminal stage" interim state
-    // "production_design" sat in before this PR extended the chain further.
-    expect(nextStep(db, project.id)).toEqual({
-      kind: "complete",
-      reason: "every Development/Preproduction stage built so far is approved",
-    });
+    // "concept_art" deliberately does not auto-chain into "storyboards"
+    // either (see `runConceptArt`'s own doc comment) — same non-auto-chaining
+    // reasoning `production_design` above already has, one image-generation
+    // stage after another.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "storyboards", needsApproval: false });
   });
 
   it("redoing visual_bible invalidates production_design, per ADR 0003 / INVALIDATION_CHAIN", async () => {
@@ -1505,10 +1505,7 @@ describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
     // `continuityApprovedAt` clears — no per-image review UI exists yet.
     const updated = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
     expect(updated.conceptArtApprovedAt).not.toBeNull();
-    expect(nextStep(db, project.id)).toEqual({
-      kind: "complete",
-      reason: "every Development/Preproduction stage built so far is approved",
-    });
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "storyboards", needsApproval: false });
   });
 
   it("is resumable — a location/prop that already has an image is skipped on a second run", async () => {
@@ -1640,10 +1637,7 @@ describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
         images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
       }),
     );
-    expect(nextStep(db, project.id)).toEqual({
-      kind: "complete",
-      reason: "every Development/Preproduction stage built so far is approved",
-    });
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "storyboards", needsApproval: false });
 
     const job = regenerate(db, project.id, { target: "production_design" });
     expect(job.type).toBe("production_design");
@@ -1685,6 +1679,247 @@ describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
 
     const loc = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
     expect(loc.imageAssetId).not.toBeNull();
+  });
+});
+
+describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
+  async function runThroughApprovedConceptArt() {
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id); // approve visual_bible, enqueue production_design
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+      }),
+    );
+    return project;
+  }
+
+  // Both beats mention "Her father's pick set" by name (the WORLD fixture's
+  // one prop) so the reference-matching test below has something real to
+  // match against; each carries its own distinct cinematography fields so
+  // "independently editable, not one paragraph" has something to assert on.
+  const BEATS = {
+    json: {
+      beats: [
+        {
+          sceneId: "1",
+          description: "Reyna kneels at the workbench, examining her father's pick set closely.",
+          shotType: "close-up",
+          cameraAngle: "high",
+          cameraMovement: "static",
+          lens: "telephoto",
+        },
+        {
+          sceneId: "2",
+          description: "Reyna kneels at a new door, her father's pick set glinting in low light.",
+          shotType: "wide",
+          cameraAngle: "eye-level",
+          cameraMovement: "dolly",
+          lens: "wide",
+        },
+      ],
+    },
+  };
+
+  it("generates one panel per extracted beat with independently-set cinematography fields, not baked only into the prompt as prose", async () => {
+    const project = await runThroughApprovedConceptArt();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "storyboards", needsApproval: false });
+
+    const requests: Record<string, unknown>[] = [];
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [BEATS],
+        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+        onImageRequest: (r) => requests.push(r),
+      }),
+    );
+
+    expect(requests).toHaveLength(2);
+    const panels = db
+      .select()
+      .from(storyboardPanels)
+      .where(eq(storyboardPanels.projectId, project.id))
+      .all();
+    expect(panels).toHaveLength(2);
+    // The typed columns, not just the prompt string, carry each field —
+    // this is the acceptance bar this stage exists to clear.
+    expect(panels.map((p) => p.shotType).sort()).toEqual(["close-up", "wide"]);
+    expect(panels.map((p) => p.cameraAngle).sort()).toEqual(["eye-level", "high"]);
+    expect(panels.map((p) => p.cameraMovement).sort()).toEqual(["dolly", "static"]);
+    expect(panels.map((p) => p.lens).sort()).toEqual(["telephoto", "wide"]);
+    for (const panel of panels) {
+      expect(panel.panelImageAssetId).not.toBeNull();
+      expect(panel.panelImagePrompt).toContain(panel.shotType);
+    }
+
+    // Same "the pass ran and a human reached this point" approval bar
+    // `conceptArtApprovedAt` already clears — no per-panel review UI exists
+    // yet (finding F9: this can be the most expensive stage in the chain).
+    const updated = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(updated.storyboardsApprovedAt).not.toBeNull();
+  });
+
+  it("matches a beat's mentioned prop to its concept-art reference and passes it as references", async () => {
+    const project = await runThroughApprovedConceptArt();
+    const prop = db.select().from(props).where(eq(props.projectId, project.id)).get()!;
+    expect(prop.refInputName).toBe(`uploaded-${prop.id}.png`);
+
+    const requests: Record<string, unknown>[] = [];
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [BEATS],
+        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+        onImageRequest: (r) => requests.push(r),
+      }),
+    );
+
+    // Both beats mention "her father's pick set" — each generation should
+    // carry that prop's concept-art reference, the same way `runSceneImages`
+    // threads a character's reference into every scene that mentions them.
+    for (const request of requests) {
+      expect(request.references).toEqual([prop.refInputName]);
+    }
+  });
+
+  it("degrades to no reference when a beat mentions nothing by name, without failing the stage", async () => {
+    const project = await runThroughApprovedConceptArt();
+    const NO_MENTION_BEATS = {
+      json: {
+        beats: [
+          {
+            sceneId: "3",
+            description: "A quiet street at dusk, no one in frame.",
+            shotType: "wide",
+            cameraAngle: "eye-level",
+            cameraMovement: "static",
+            lens: "standard",
+          },
+        ],
+      },
+    };
+
+    const requests: Record<string, unknown>[] = [];
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [NO_MENTION_BEATS],
+        images: [Buffer.from("panel-1")],
+        onImageRequest: (r) => requests.push(r),
+      }),
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.references).toEqual([]);
+  });
+
+  it("is resumable — a beat that already has a panel image is skipped on a second run", async () => {
+    const project = await runThroughApprovedConceptArt();
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [BEATS],
+        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+      }),
+    );
+
+    const secondRequests: Record<string, unknown>[] = [];
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [BEATS],
+        onImageRequest: (r) => secondRequests.push(r),
+      }),
+    );
+    expect(secondRequests).toHaveLength(0);
+
+    const panels = db
+      .select()
+      .from(storyboardPanels)
+      .where(eq(storyboardPanels.projectId, project.id))
+      .all();
+    expect(panels).toHaveLength(2); // no duplicates written on the second pass
+  });
+
+  it("devNextStep advances concept_art -> storyboards -> the next unhandled interim state", async () => {
+    const project = await runThroughApprovedConceptArt();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "storyboards", needsApproval: false });
+
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [BEATS],
+        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+      }),
+    );
+
+    // Nothing is defined past "storyboards" in `DEV_CHAIN_STAGES` yet — the
+    // same "landed on the next PR's own terminal stage" interim state
+    // "concept_art" sat in before this PR extended the chain further.
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "every Development/Preproduction stage built so far is approved",
+    });
+  });
+
+  // Acceptance criterion 4: `storyboards`' own `INVALIDATION_CHAIN` entry
+  // must exist and sit in the right place — exercised the same way as every
+  // prior PR's own redo test, by redoing the stage immediately before it
+  // (`concept_art`) and checking the cascade reaches storyboards' generated
+  // panels.
+  it("redoing concept_art invalidates storyboards, per ADR 0003 / INVALIDATION_CHAIN", async () => {
+    const project = await runThroughApprovedConceptArt();
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [BEATS],
+        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+      }),
+    );
+    expect(nextStep(db, project.id)).toEqual({
+      kind: "complete",
+      reason: "every Development/Preproduction stage built so far is approved",
+    });
+
+    const job = regenerate(db, project.id, { target: "concept_art" });
+    expect(job.type).toBe("concept_art");
+
+    // Deleted outright, not cleared — per `DISCARD["storyboards"]`'s own
+    // comment: there is no upstream row here to preserve the way
+    // `locations`/`props` preserve concept art's.
+    const panels = db
+      .select()
+      .from(storyboardPanels)
+      .where(eq(storyboardPanels.projectId, project.id))
+      .all();
+    expect(panels).toHaveLength(0);
+
+    const updated = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(updated.storyboardsApprovedAt).toBeNull();
+    // `invalidateDownstreamOf` clears what comes *after* the redo target —
+    // "concept_art"'s own (still-approved) row is untouched (the job just
+    // enqueued is what overwrites it), so `devStageStatus` still reports it
+    // approved and `nextStep` already lands on the now-cleared "storyboards"
+    // rather than back on "concept_art".
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "storyboards", needsApproval: false });
+  });
+
+  it("uses both providers — resolveDevProvider for beat extraction, resolveProvider('image') for generation", async () => {
+    const project = await runThroughApprovedConceptArt();
+
+    let seenModel: unknown;
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [BEATS],
+        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+        onChatJsonRequest: (r) => {
+          seenModel = r.model;
+        },
+      }),
+    );
+
+    const devProvider = resolveProvider(db, "llm");
+    expect(seenModel).toBe(devProvider.model);
   });
 });
 

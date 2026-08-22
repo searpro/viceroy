@@ -20,6 +20,7 @@ import {
   props,
   renders,
   scenes,
+  storyboardPanels,
   subtitleCues,
   voiceovers,
   voiceStyles,
@@ -300,6 +301,15 @@ export function getProjectDetail(db: Db, projectId: string) {
       .where(eq(continuityFacts.projectId, projectId))
       .orderBy(desc(continuityFacts.createdAt))
       .all(),
+    // M7 PR10. Every generated panel, in the same project-wide order
+    // `runStoryboards` assigns via `index` — the review UI groups them by
+    // `sceneId` itself rather than this query doing it.
+    storyboardPanels: db
+      .select()
+      .from(storyboardPanels)
+      .where(eq(storyboardPanels.projectId, projectId))
+      .orderBy(asc(storyboardPanels.index))
+      .all(),
   };
 }
 
@@ -535,6 +545,16 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
       .where(eq(props.projectId, projectId))
       .run();
     db.update(projects).set({ conceptArtApprovedAt: null }).where(eq(projects.id, projectId)).run();
+  },
+  // Stage 17 (M7 PR10) — a storyboard redo deletes every panel outright,
+  // unlike `concept_art`'s "clear the image, keep the row": there is no
+  // upstream row here to preserve (`locations`/`props` own that role for
+  // concept art) — the panel row itself, cinematography fields included, is
+  // this stage's whole output, so a redo starts beat extraction fresh rather
+  // than trying to line new beats back up against old rows.
+  storyboards: (db, projectId) => {
+    db.delete(storyboardPanels).where(eq(storyboardPanels.projectId, projectId)).run();
+    db.update(projects).set({ storyboardsApprovedAt: null }).where(eq(projects.id, projectId)).run();
   },
 };
 

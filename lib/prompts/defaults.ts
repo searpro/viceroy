@@ -126,6 +126,17 @@ const STORY_VARS = [
       "(that's Image Style's promptPrefix/promptSuffix, applied around this template's output, " +
       "not inside it)",
   },
+  // Preproduction (M7 PR10) — the structured shotType/cameraAngle/cameraMovement/lens
+  // fields, folded into one comma-separated phrase for the diffusion prompt, same
+  // fold-not-prose discipline `productionDesignGuidance` above already applies. The
+  // four fields also live independently as `storyboard_panels` columns — this is
+  // just their rendering into the one image-generation call, not their source of
+  // truth.
+  {
+    name: "shotDescriptor",
+    description:
+      "A storyboard panel's shotType/cameraAngle/cameraMovement/lens, folded into one phrase",
+  },
 ];
 
 function pick(...names: string[]) {
@@ -575,6 +586,24 @@ and unobstructed`,
     template: `product-style concept photograph of a single object, no people, no hands,
 {{subjectDescription}}, {{productionDesignGuidance}}, plain uncluttered background, evenly lit,
 object fills most of the frame`,
+  },
+  {
+    key: "storyboard.panel",
+    section: "Preproduction",
+    label: "Storyboard panel prompt",
+    description: "Builds the image prompt for one storyboard panel (M7 PR10, stage 17).",
+    // Same discipline as `concept_art.location`/`concept_art.prop` above: no
+    // LLM between this and the diffusion model, so comma-separated phrases,
+    // never prose. `{{shotDescriptor}}` (the panel's own shotType/cameraAngle/
+    // cameraMovement/lens, folded) and `{{subjectDescription}}` (the beat's
+    // visual content) and `{{productionDesignGuidance}}` are all CONTENT —
+    // what the frame depicts and how it's staged, never the rendering
+    // register. Image Style's promptPrefix/promptSuffix wrap this template's
+    // output the same way they wrap every other image-generation call in
+    // this codebase (ADR 0002).
+    variables: pick("shotDescriptor", "subjectDescription", "productionDesignGuidance"),
+    template: `storyboard frame, cinematic composition, {{shotDescriptor}}, {{subjectDescription}},
+{{productionDesignGuidance}}, film production concept art, believable scale`,
   },
   /* ------------------------------------------------------- Development (M7) */
   // Each of these five is deliberately scoped to one stage's own output plus
@@ -1061,6 +1090,55 @@ aspect of it). Leave "conflict" false otherwise; do not resolve a
 contradiction yourself by picking one side or blending the two — flagging it
 is your whole job here, not correcting it. Output only the JSON object, no
 commentary before or after it.`,
+  },
+  {
+    key: "dev.storyboards",
+    section: "Preproduction",
+    label: "Extract storyboard beats",
+    description:
+      "Splits the approved scene breakdown into one visually distinct beat per storyboard panel, " +
+      "each with a shot-list-worthy visual description and suggested shotType/cameraAngle/" +
+      "cameraMovement/lens.",
+    // Cast/world summaries, not the story bible or script breakdown a second
+    // time — same 4096-token-cap discipline (finding F10) `dev.continuity`
+    // already applies, and the scene breakdown alone already carries forward
+    // what those two established.
+    variables: pick("sceneBreakdown", "castSummary", "worldSummary", "direction", "groundingInstruction"),
+    template: `You are a storyboard artist breaking the scene breakdown below into
+individual panels. A scene can need more than one panel if it contains more
+than one visually distinct beat (an entrance, then a confrontation, then an
+exit are three panels, not one) — read for where the image would actually
+have to change, not just where a SCENE header falls.
+
+Scene breakdown:
+{{sceneBreakdown}}
+
+Cast:
+{{castSummary}}
+
+World (locations and props):
+{{worldSummary}}
+{{groundingInstruction}}
+{{direction}}
+
+Output a JSON object of this exact shape:
+
+{"beats": [{"sceneId": "<the scene number this beat belongs to, exactly as
+it appears in the scene breakdown above, e.g. \\"1\\">", "description": "<what
+this panel shows — the specific action, staging and any location/prop/
+character visibly in frame, one or two sentences, concrete enough to
+generate an image from>", "shotType": "wide" | "medium" | "close-up" |
+"extreme-close-up", "cameraAngle": "eye-level" | "high" | "low" | "dutch",
+"cameraMovement": "static" | "pan" | "tilt" | "dolly" | "handheld", "lens":
+"wide" | "standard" | "telephoto"}]}
+
+List beats in the same scene order the scene breakdown uses. Invent nothing
+the scene breakdown, cast or world do not support — every location, prop or
+character named in "description" must actually appear in the material
+above. Choose shotType/cameraAngle/cameraMovement/lens for what best serves
+the beat (a confrontation reads differently in a wide static shot than a
+handheld close-up), not the same four values for every panel. Output only
+the JSON object, no commentary before or after it.`,
   },
   {
     key: "dev.production_design",
