@@ -34,25 +34,56 @@ type ScenePayload = {
 // compliance; this strip is the guarantee that does not depend on it.
 const NEGATED_PHRASE = /^(no|not|without)\b/i;
 
+// Matches the framing rule restated as if it were a description of the
+// frame, rather than applied to it — "The composition is vertical 9:16,
+// with the man placed centrally for a tall frame" (BUG-24). The instruction
+// sits in the rules block as a comma-phrase ("vertical 9:16 composition,
+// subject placed for a tall frame"), one short step from being copied as
+// content, same as the negation rule. It is redundant even when copied
+// correctly: the real 9:16 frame comes from the width/height the image
+// stage passes to the provider (see `runSceneImages`), not from tokens in
+// the prompt, so any phrase naming the aspect ratio or restating "tall
+// frame"/"portrait orientation" is noise to strip rather than a
+// legitimate compositional instruction like "wide shot" or "close-up".
+const FRAMING_RESTATEMENT = /\d{1,2}\s*:\s*\d{1,2}|aspect ratio|tall frame|portrait orientation/i;
+
 /**
- * Drops any comma-separated phrase of an image prompt that opens with a
- * negation, mirroring `styles.ts`'s `refuseNegations` guard on style
- * prefix/suffix text — same failure class, but this prompt is model-authored
- * rather than user-authored, so the pipeline strips and logs instead of
- * rejecting outright: failing the whole scene over one clause the model
- * shouldn't have written just forces an identical retry.
+ * Drops any phrase of an image prompt matching `pattern`, mirroring
+ * `styles.ts`'s `refuseNegations` guard on style prefix/suffix text — same
+ * failure class, but this prompt is model-authored rather than
+ * user-authored, so the pipeline strips and logs instead of rejecting
+ * outright: failing the whole scene over one clause the model shouldn't
+ * have written just forces an identical retry.
+ *
+ * Splits on both commas and periods: the template asks for comma-separated
+ * phrases, but the failure this guards is the model dropping into a full
+ * sentence to restate an instruction (BUG-24) rather than obeying that
+ * format, so a stray period is exactly where a copied instruction is likely
+ * to sit and cannot be assumed away.
  */
-export function stripNegatedPhrases(prompt: string): { prompt: string; stripped: string[] } {
+function stripPhrasesMatching(prompt: string, pattern: RegExp): { prompt: string; stripped: string[] } {
   const stripped: string[] = [];
-  const kept = prompt.split(",").filter((phrase) => {
-    const trimmed = phrase.trim();
-    if (trimmed && NEGATED_PHRASE.test(trimmed)) {
-      stripped.push(trimmed);
-      return false;
-    }
-    return true;
-  });
-  return { prompt: kept.join(",").trim(), stripped };
+  const kept = prompt
+    .split(/[,.]+/)
+    .map((phrase) => phrase.trim())
+    .filter((phrase) => {
+      if (!phrase) return false;
+      if (pattern.test(phrase)) {
+        stripped.push(phrase);
+        return false;
+      }
+      return true;
+    });
+  return { prompt: kept.join(", "), stripped };
+}
+
+export function stripNegatedPhrases(prompt: string): { prompt: string; stripped: string[] } {
+  return stripPhrasesMatching(prompt, NEGATED_PHRASE);
+}
+
+/** See `FRAMING_RESTATEMENT` above. */
+export function stripFramingRestatements(prompt: string): { prompt: string; stripped: string[] } {
+  return stripPhrasesMatching(prompt, FRAMING_RESTATEMENT);
 }
 
 /**
@@ -236,15 +267,23 @@ export async function runElements(ctx: StageContext): Promise<void> {
       throw new Error(`Scene ${scene.index} came back without an image prompt`);
     }
 
-    const { prompt: imagePrompt, stripped } = stripNegatedPhrases(rawImagePrompt);
-    if (stripped.length > 0) {
+    const negationPass = stripNegatedPhrases(rawImagePrompt);
+    if (negationPass.stripped.length > 0) {
       ctx.log(
-        `Scene ${scene.index + 1}: stripped negated phrase(s) from image prompt: ${stripped.join("; ")}`,
+        `Scene ${scene.index + 1}: stripped negated phrase(s) from image prompt: ${negationPass.stripped.join("; ")}`,
+        "warn",
+      );
+    }
+
+    const { prompt: imagePrompt, stripped: framingStripped } = stripFramingRestatements(negationPass.prompt);
+    if (framingStripped.length > 0) {
+      ctx.log(
+        `Scene ${scene.index + 1}: stripped framing restatement(s) from image prompt: ${framingStripped.join("; ")}`,
         "warn",
       );
     }
     if (!imagePrompt) {
-      throw new Error(`Scene ${scene.index}'s image prompt was entirely negation after stripping`);
+      throw new Error(`Scene ${scene.index}'s image prompt was entirely negation/framing restatement after stripping`);
     }
 
     const named = Array.isArray(payload.characters)

@@ -470,6 +470,38 @@ describe("runElements", () => {
       true,
     );
   });
+
+  it("strips a framing rule the model restated as prompt content, and logs it", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    const restated = {
+      json: {
+        storyboard: "A man stands alone in a doorway.",
+        imagePrompt:
+          "a man standing in a doorway, warm evening light. The composition is vertical 9:16, with the man placed centrally for a tall frame.",
+        characters: [],
+      },
+    };
+    const logs: [string, string | undefined][] = [];
+    await runElements(
+      stubContext(db, job, {
+        llm: [CAST, BEATS, restated, sceneDetail(2), sceneDetail(3)],
+        onLog: (message, level) => logs.push([message, level]),
+      }),
+    );
+
+    const rows = db
+      .select()
+      .from(scenes)
+      .where(eq(scenes.projectId, project.id))
+      .orderBy(asc(scenes.index))
+      .all();
+    expect(rows[0]!.imagePrompt).toBe("a man standing in a doorway, warm evening light");
+    expect(rows[0]!.imagePrompt).not.toMatch(/9:16|tall frame/i);
+    expect(
+      logs.some(([message, level]) => level === "warn" && message.includes("vertical 9:16")),
+    ).toBe(true);
+  });
 });
 
 describe("stripNegatedPhrases", () => {

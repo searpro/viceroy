@@ -450,7 +450,12 @@ Rules for "imagePrompt":
 - **state only what IS in the frame.** Never write "no X", "without X" or
   "not X": there is no negation here, so "no fantasy elements" asks for
   fantasy elements
-- vertical 9:16 composition, subject placed for a tall frame
+- keep the subject centred with vertical headroom, so it reads well once
+  cropped to a tall frame. **Never write the aspect ratio, or the words
+  "9:16", "vertical composition", "portrait orientation" or "tall frame"
+  themselves** — the frame shape comes from the image generator's output
+  size, not from words in the prompt, so naming it is not describing the
+  image, it is restating this rule
 
 Put the names of the characters who appear in the "characters" array. That is
 what the array is for — the prompt itself describes them without naming them.`,
