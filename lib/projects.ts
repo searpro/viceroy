@@ -32,7 +32,12 @@ import {
 } from "./db/schema";
 import { enqueue, listJobs } from "./queue";
 import { advance, isStalled, nextStep } from "./pipeline/chain";
-import { RESOLUTION_KEYS, resolvePresetDimensions } from "./resolution";
+import {
+  ASPECT_RATIO_KEYS,
+  defaultAspectFor,
+  RESOLUTION_KEYS,
+  resolvePresetDimensions,
+} from "./resolution";
 
 // A sane UX ceiling, not a measured model token-budget limit (Finding F10
 // covers the actual, model-dependent context window) — see VIC-003.
@@ -57,6 +62,8 @@ export const createProjectSchema = z
     // `directionStyleId` — see `createProject`'s resolution below.
     productionDesignStyleId: z.string().optional(),
     resolutionKey: z.enum(RESOLUTION_KEYS).optional(),
+    /** M7.1 PR-E — omitted falls back to the format's own default shape. */
+    aspectRatio: z.enum(ASPECT_RATIO_KEYS).optional(),
     mode: z.enum(["auto", "manual"]).default("auto"),
   })
   .superRefine((data, ctx) => {
@@ -169,7 +176,11 @@ export function createProject(db: Db, raw: CreateProjectInput) {
           preferenceValue(db, "defaultProductionDesignStyle"),
           "production design style",
         );
-  const resolution = resolvePresetDimensions(resolveConfig(), input.resolutionKey);
+  // A movie defaults to landscape and a short to vertical, rather than every
+  // format inheriting whatever `VIDEO_*` happens to say — that global default
+  // is what had `short_movie` projects rendering portrait.
+  const aspectRatio = input.aspectRatio ?? defaultAspectFor(input.format);
+  const resolution = resolvePresetDimensions(resolveConfig(), input.resolutionKey, aspectRatio);
 
   // `idea` stays NOT NULL either way — rather than a nullability change, a
   // Context-mode project gets a short label derived from its context, which
@@ -194,6 +205,7 @@ export function createProject(db: Db, raw: CreateProjectInput) {
       productionDesignStyleId: productionDesign?.id,
       width: resolution.width,
       height: resolution.height,
+      aspectRatio,
     })
     .returning()
     .all();

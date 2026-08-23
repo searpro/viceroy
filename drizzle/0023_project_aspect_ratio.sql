@@ -1,0 +1,13 @@
+-- M7.1 PR-E — per-project aspect ratio.
+--
+-- Every project rendered 9:16 because the shape lived in `SOURCE_IMAGE_*`/
+-- `VIDEO_*`, which are process-wide. That was right while the only format was
+-- a vertical short; it is wrong now that a `short_movie` exists, and it was
+-- quietly wrong in a way nobody would notice until a finished film turned out
+-- to be portrait.
+--
+-- Nullable, with null meaning "9:16". Every project that exists today was
+-- generated vertical, so backfilling a value would be inventing history — and
+-- `aspectRatioValue`'s fallback resolves null to exactly the ratio those
+-- projects were actually rendered at.
+ALTER TABLE `projects` ADD `aspect_ratio` text;

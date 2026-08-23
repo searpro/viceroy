@@ -2,9 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
+import { ASPECT_RATIOS, defaultAspectFor, resolutionPresetsFor } from "@/lib/resolution";
 
 type Style = { id: string; name: string; description: string };
-type ResolutionPreset = { key: string; label: string };
 
 // Mirrors PROJECT_FORMATS in lib/db/schema.ts. `short_video_narrative` stays
 // first and is the <select>'s default, so a user who never touches this
@@ -30,7 +30,7 @@ export function NewProjectForm({
   captionStyles,
   directionStyles,
   productionDesignStyles,
-  resolutionPresets,
+  basePixels,
   defaultMode,
   defaultNarrativeStyleName,
   defaultVoiceStyleName,
@@ -45,7 +45,8 @@ export function NewProjectForm({
   captionStyles: Style[];
   directionStyles: Style[];
   productionDesignStyles: Style[];
-  resolutionPresets: ResolutionPreset[];
+  /** Pixel budget of the configured base output, for labelling presets. */
+  basePixels: number;
   defaultMode: "auto" | "manual";
   defaultNarrativeStyleName?: string;
   defaultVoiceStyleName?: string;
@@ -62,6 +63,15 @@ export function NewProjectForm({
   const [context, setContext] = useState("");
   const [format, setFormat] = useState("short_video_narrative");
   const isDevFormat = format !== "short_video_narrative";
+  // M7.1 PR-E. Follows the format until the user touches it: picking "Short
+  // movie" should not silently leave the project vertical, but having chosen a
+  // shape deliberately, changing format must not overwrite that choice.
+  const [aspectTouched, setAspectTouched] = useState(false);
+  const [aspect, setAspect] = useState(defaultAspectFor("short_video_narrative"));
+  const effectiveAspect = aspectTouched ? aspect : defaultAspectFor(format);
+  // Labels carry real pixel dimensions, which depend on the chosen shape, so
+  // they are derived here rather than passed in already-rendered.
+  const presets = resolutionPresetsFor(basePixels, effectiveAspect);
 
   async function submit(formData: FormData) {
     setError(null);
@@ -92,6 +102,7 @@ export function NewProjectForm({
               captionStyleId: formData.get("captionStyleId"),
             }),
         resolutionKey: formData.get("resolutionKey"),
+        aspectRatio: effectiveAspect,
         mode: formData.get("mode"),
       }),
     });
@@ -255,6 +266,28 @@ export function NewProjectForm({
       )}
 
       <div>
+        <label htmlFor="aspectRatio" className="block text-sm font-medium">
+          Aspect ratio
+        </label>
+        <select
+          id="aspectRatio"
+          name="aspectRatio"
+          value={effectiveAspect}
+          onChange={(event) => {
+            setAspectTouched(true);
+            setAspect(event.target.value as typeof aspect);
+          }}
+          className="mt-2 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none focus:border-white/25 sm:w-56"
+        >
+          {ASPECT_RATIOS.map((option) => (
+            <option key={option.key} value={option.key} className="bg-neutral-900">
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div>
         <label htmlFor="resolutionKey" className="block text-sm font-medium">
           Resolution
         </label>
@@ -264,7 +297,7 @@ export function NewProjectForm({
           defaultValue="hd"
           className="mt-2 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none focus:border-white/25 sm:w-56"
         >
-          {resolutionPresets.map((preset) => (
+          {presets.map((preset) => (
             <option key={preset.key} value={preset.key} className="bg-neutral-900">
               {preset.label}
             </option>

@@ -113,11 +113,21 @@ export function resolveConfig(env: Record<string, string | undefined> = process.
   // A source frame at a different aspect ratio than the output can only be
   // letterboxed or cropped, and both are silent quality losses discovered at
   // render time rather than at configuration time.
+  //
+  // Still checked, but it now guards the *default* shape only. Since M7.1 PR-E
+  // a project carries its own aspect, and both its output dimensions and its
+  // source-frame size are derived from that one value by `resolutionPresets`
+  // and `sourceImageFor` — so for any project they agree by construction and
+  // this check has nothing to say. What these two env pairs still jointly
+  // define is the fallback a project with no aspect uses, and the pixel budget
+  // each derivation scales to; a mismatch between them there would put the
+  // budget and the fallback shape in disagreement, which is worth refusing at
+  // startup exactly as before.
   if (Math.abs(sourceRatio - videoRatio) > 0.001) {
     throw new Error(
       `Source image ${source.width}x${source.height} (${sourceRatio.toFixed(4)}) does not match ` +
         `video ${parsed.VIDEO_WIDTH}x${parsed.VIDEO_HEIGHT} (${videoRatio.toFixed(4)}). ` +
-        `Source frames are upscaled, never reframed.`,
+        `These define the default shape and the pixel budget together, so they must agree.`,
     );
   }
 

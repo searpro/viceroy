@@ -2,6 +2,7 @@ import { asc, eq } from "drizzle-orm";
 import { storeAsset } from "../assets";
 import { characters, projects, scenes } from "../db/schema";
 import { renderPrompt } from "../prompts";
+import { sourceImageFor } from "../resolution";
 import { enqueue } from "../queue";
 import type { ImageBackend } from "../backends/types";
 import {
@@ -97,7 +98,11 @@ export function negativePromptFor(
  */
 export async function runSceneImages(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
-  const { imageStyle } = loadProject(ctx.db, projectId);
+  const { project, imageStyle } = loadProject(ctx.db, projectId);
+  // The frame's shape is the project's, not the machine's (M7.1 PR-E) — the
+  // pixel budget stays global, which is the part that genuinely is a property
+  // of this hardware.
+  const sourceSize = sourceImageFor(ctx.config, project.aspectRatio);
   const imageProvider = resolveProvider(ctx.db, "image");
 
   const all = ctx.db
@@ -160,8 +165,8 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
       {
         prompt: `${imageStyle.promptPrefix}${scene.imagePrompt}${direction}${imageStyle.promptSuffix}`,
         negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
-        width: ctx.config.sourceImage.width,
-        height: ctx.config.sourceImage.height,
+        width: sourceSize.width,
+        height: sourceSize.height,
         references: refs,
       },
       {
@@ -189,8 +194,8 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
   if (!jobSceneId) setStage(ctx.db, projectId, "scene_images");
   ctx.log(`All ${all.length} scene image(s) ready`);
 
-  const project = ctx.db.select().from(projects).where(eq(projects.id, projectId)).get()!;
-  if (project.mode === "manual") {
+  const current = ctx.db.select().from(projects).where(eq(projects.id, projectId)).get()!;
+  if (current.mode === "manual") {
     awaitReview(ctx.db, projectId);
     ctx.log("Stopping for image review (manual mode)");
     return;
@@ -216,6 +221,11 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
 export async function runCharacterImages(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
   const { project, imageStyle } = loadProject(ctx.db, projectId);
+  // A narrative-pipeline portrait is both a reference and, effectively, a
+  // frame of the same shape as the scenes it anchors, so it follows the
+  // project's aspect. The Development chain's own portraits are pure
+  // reference material and take `referenceImage` instead (M7.1 PR-A3).
+  const sourceSize = sourceImageFor(ctx.config, project.aspectRatio);
   const imageProvider = resolveProvider(ctx.db, "image");
   const backend = ctx.imageBackend();
 
@@ -266,8 +276,8 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
       {
         prompt,
         negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
-        width: ctx.config.sourceImage.width,
-        height: ctx.config.sourceImage.height,
+        width: sourceSize.width,
+        height: sourceSize.height,
         // A portrait is the reference; it has none of its own.
         references: [],
       },

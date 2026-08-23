@@ -11,7 +11,6 @@ import {
 } from "@/lib/db/schema";
 import { listPreferences } from "@/lib/preferences";
 import { listProjects } from "@/lib/projects";
-import { resolutionPresets } from "@/lib/resolution";
 import { createSdApi } from "@/lib/sdapi";
 import { NewProjectForm } from "./new-project-form";
 
@@ -74,7 +73,7 @@ export default async function Home() {
         <section className="mt-10 rounded-lg border border-white/10 bg-white/[0.02] p-6">
           <NewProjectForm
             {...styles}
-            resolutionPresets={resolutionPresets(config)}
+            basePixels={config.video.width * config.video.height}
             defaultMode={defaultMode}
             defaultNarrativeStyleName={prefs.defaultNarrativeStyle}
             defaultVoiceStyleName={prefs.defaultVoiceStyle}

@@ -162,6 +162,13 @@
       "when": 1788082000000,
       "tag": "0022_wardrobe_variants",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1788168400000,
+      "tag": "0023_project_aspect_ratio",
+      "breakpoints": true
     }
   ]
 }

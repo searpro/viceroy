@@ -282,6 +282,16 @@ export const projects = sqliteTable(
     // config.video's dimensions when either is null.
     width: integer("width"),
     height: integer("height"),
+    // M7.1 PR-E. The project's shape, from `ASPECT_RATIOS` (lib/resolution.ts).
+    // Nullable and null-means-9:16: every project predating this column was
+    // generated vertical, so a backfill would invent history, and the fallback
+    // resolves to the ratio they were actually rendered at.
+    //
+    // Both `width`/`height` above and the per-project source-frame size are
+    // derived from this one value, which is what makes them agree by
+    // construction — `resolveConfig` used to enforce that agreement with a
+    // startup check because there was only ever one global shape to check.
+    aspectRatio: text("aspect_ratio"),
 
     createdAt: createdAt(),
     updatedAt: updatedAt(),

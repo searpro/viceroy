@@ -1793,12 +1793,16 @@ describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
     );
 
     expect(requests).toHaveLength(2);
-    // Panels stay on `sourceImage`, unlike the reference plates M7.1 PR-A3
-    // moved to `referenceImage`: `runShotList` defaults a shot's keyframe to
-    // the panel image and `runPrevis` renders those at the project's video
-    // dimensions, so a panel's aspect reaches the animatic.
+    // Panels take the project's own frame shape, unlike the reference plates
+    // M7.1 PR-A3 moved to `referenceImage`: `runShotList` defaults a shot's
+    // keyframe to the panel image and `runPrevis` renders those at the
+    // project's video dimensions, so a panel's aspect reaches the animatic.
+    //
+    // 768x432, not 432x768 — this fixture is a `short_movie`, and as of M7.1
+    // PR-E a movie format defaults to landscape. Before that every format
+    // inherited the global 9:16 and movie projects drew portrait panels.
     for (const request of requests) {
-      expect(request).toMatchObject({ width: 432, height: 768 });
+      expect(request).toMatchObject({ width: 768, height: 432 });
     }
 
     const panels = db
