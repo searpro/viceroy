@@ -22,7 +22,7 @@ import {
   timelines,
 } from "../db/schema";
 import { resolveConfig } from "../config";
-import { resolvePresetDimensions } from "../resolution";
+import { aspectRatioValue, dimensionsForAspect, projectAspect, resolvePresetDimensions } from "../resolution";
 import { buildTimeline, type TimelineSegmentRow } from "./build";
 import { findTarget, resolveTarget, TIMELINE_TARGETS, TIMELINE_TARGET_IDS } from "./targets";
 import type { Timeline, TimelineIssue } from "./types";
@@ -94,17 +94,26 @@ export function loadTimeline(db: Db, projectId: string): Timeline | undefined {
 
   // The project's own delivery size, not the source-frame size the keyframes
   // were generated at: a timeline describes the finished film. Falls back the
-  // same way render.ts does for a project predating those columns.
-  const fallback = resolvePresetDimensions(resolveConfig(), undefined, project.aspectRatio);
+  // same way render.ts does for a project predating those columns — through
+  // `projectAspect`, so a movie with no stored shape falls back to landscape
+  // rather than to the shorts pipeline's vertical.
+  const aspectRatio = projectAspect(project);
+  const fallback = resolvePresetDimensions(resolveConfig(), undefined, aspectRatio);
+  const frame = frameForTarget(
+    project.width ?? fallback.width,
+    project.height ?? fallback.height,
+    aspectRatio,
+    row.targetId,
+  );
 
   return buildTimeline(
     {
       projectId,
       targetId: row.targetId,
       fps: row.fps,
-      width: project.width ?? fallback.width,
-      height: project.height ?? fallback.height,
-      aspectRatio: project.aspectRatio ?? "9:16",
+      width: frame.width,
+      height: frame.height,
+      aspectRatio,
       globalPrompt: row.globalPrompt,
       // Null until the Development chain generates narration of its own —
       // see `Timeline["audio"]`'s own comment (types.ts).
@@ -112,6 +121,45 @@ export function loadTimeline(db: Db, projectId: string): Timeline | undefined {
     },
     segments.map(toSegmentRow),
   );
+}
+
+/**
+ * The project's delivery size, re-cut to whatever grid the target insists on.
+ *
+ * The project stores width/height on the encoder's multiple-of-2 grid, which
+ * is right for Remotion and wrong for a diffusion target: LTX refuses anything
+ * that is not a multiple of 32, so every movie project reached the timeline
+ * screen reporting "Width 1080 is not a multiple of 32" — an error the user
+ * could see and had no control to fix, since the frame is derived and not an
+ * editable field.
+ *
+ * Re-cut rather than rounded. Nudging 1080 up to 1088 keeps the width and
+ * changes the *shape*, which is the silent quality loss `resolveConfig`'s own
+ * source-vs-video guard exists to prevent; `dimensionsForAspect` instead finds
+ * the best-fitting pair on the target's grid at the same pixel budget, so the
+ * ratio survives and the size moves.
+ *
+ * `validate()` still runs and still owns the verdict — this only stops the
+ * timeline from being born failing a rule the target stated up front. That is
+ * also why a failed re-cut hands back the stored size rather than propagating:
+ * `dimensionsForAspect` throws when no size on the grid lands within its pixel
+ * tolerance, and `loadTimeline` is called by `getProjectDetail`, so a throw
+ * here would 500 the whole project page over a frame the target is perfectly
+ * capable of complaining about itself.
+ */
+function frameForTarget(
+  width: number,
+  height: number,
+  aspectRatio: string,
+  targetId: string,
+): { width: number; height: number } {
+  const multiple = findTarget(targetId)?.constraints.dimensionMultiple;
+  if (!multiple || (width % multiple === 0 && height % multiple === 0)) return { width, height };
+  try {
+    return dimensionsForAspect(aspectRatioValue(aspectRatio, "16:9"), width * height, multiple);
+  } catch {
+    return { width, height };
+  }
 }
 
 /**

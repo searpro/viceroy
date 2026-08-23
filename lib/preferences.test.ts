@@ -4,7 +4,7 @@ import { seed } from "./db/seed";
 import type { Db } from "./db/client";
 import { listPreferences, setPreference } from "./preferences";
 import { createProject } from "./projects";
-import { directionStyles, narrativeStyles } from "./db/schema";
+import { directionStyles, narrativeStyles, productionDesignStyles } from "./db/schema";
 
 let db: Db;
 let close: () => void;
@@ -59,5 +59,39 @@ describe("setPreference", () => {
   it("accepts a defaultDevLlmProvider value (a provider id, not a name)", () => {
     setPreference(db, "defaultDevLlmProvider", "some-provider-id");
     expect(listPreferences(db).defaultDevLlmProvider).toBe("some-provider-id");
+  });
+
+  // The three keys the Preferences screen gained so a movie project's defaults
+  // could be set at all. Each names a closed vocabulary, and each is checked
+  // here rather than only in the form — a value stored outside its set makes
+  // `resolutionPresets`/`aspectRatioValue` throw at project-creation time,
+  // which is a long way from the control that set it.
+  it("accepts and refuses defaultResolution against the preset list", () => {
+    setPreference(db, "defaultResolution", "draft");
+    expect(listPreferences(db).defaultResolution).toBe("draft");
+    expect(() => setPreference(db, "defaultResolution", "imax")).toThrow(/defaultResolution must be/);
+  });
+
+  it("accepts and refuses defaultAspectRatio against the ratio list", () => {
+    setPreference(db, "defaultAspectRatio", "2.39:1");
+    expect(listPreferences(db).defaultAspectRatio).toBe("2.39:1");
+    expect(() => setPreference(db, "defaultAspectRatio", "21:9")).toThrow(/defaultAspectRatio must be/);
+  });
+
+  it("accepts and refuses defaultFormat against the format list", () => {
+    setPreference(db, "defaultFormat", "short_movie");
+    expect(listPreferences(db).defaultFormat).toBe("short_movie");
+    expect(() => setPreference(db, "defaultFormat", "podcast")).toThrow(/defaultFormat must be/);
+  });
+
+  it("changes which production design style a new movie resolves to by default", () => {
+    const other = db.select().from(productionDesignStyles).all()[1]!;
+    setPreference(db, "defaultProductionDesignStyle", other.name);
+
+    const project = createProject(db, {
+      idea: "a plumber became mayor by wits",
+      format: "short_movie",
+    });
+    expect(project.productionDesignStyleId).toBe(other.id);
   });
 });

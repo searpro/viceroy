@@ -14,6 +14,7 @@ import {
   log,
   reclaimStale,
   remove,
+  removeFinished,
   requestAbort,
   retry,
   succeed,
@@ -253,5 +254,59 @@ describe("logs and listing", () => {
 
     expect(getJob(db, job.id)).toBeUndefined();
     expect(getJobLogs(db, job.id)).toHaveLength(0);
+  });
+});
+
+describe("removeFinished", () => {
+  /**
+   * One statement, not one request per row. The Jobs screen's "clear finished"
+   * button used to fire a DELETE per job, which on a database with several
+   * hundred of them is several hundred writers contending for one sqlite lock.
+   */
+  function queueOneOfEach() {
+    const queued = enqueue(db, { type: "synopsis" });
+    const running = enqueue(db, { type: "story" });
+    const succeeded = enqueue(db, { type: "elements" });
+    const failed = enqueue(db, { type: "render" });
+    const aborted = enqueue(db, { type: "voiceover" });
+
+    db.update(schemaJobs).set({ status: "running" }).where(eq(schemaJobs.id, running.id)).run();
+    db.update(schemaJobs).set({ status: "succeeded" }).where(eq(schemaJobs.id, succeeded.id)).run();
+    db.update(schemaJobs).set({ status: "failed" }).where(eq(schemaJobs.id, failed.id)).run();
+    db.update(schemaJobs).set({ status: "aborted" }).where(eq(schemaJobs.id, aborted.id)).run();
+
+    return { queued, running, succeeded, failed, aborted };
+  }
+
+  it("removes succeeded, failed and aborted jobs and reports how many", () => {
+    const { succeeded, failed, aborted } = queueOneOfEach();
+    expect(removeFinished(db)).toBe(3);
+    for (const job of [succeeded, failed, aborted]) {
+      expect(getJob(db, job.id)).toBeUndefined();
+    }
+  });
+
+  it("never removes work the worker may be part way through", () => {
+    const { queued, running } = queueOneOfEach();
+    removeFinished(db);
+    expect(getJob(db, queued.id)).toBeDefined();
+    expect(getJob(db, running.id)).toBeDefined();
+  });
+
+  it("scopes to one project when asked, leaving other projects' history alone", () => {
+    const [mine] = db.insert(schemaProjects).values({ idea: "mine" }).returning().all();
+    const [theirs] = db.insert(schemaProjects).values({ idea: "theirs" }).returning().all();
+
+    const a = enqueue(db, { type: "synopsis", projectId: mine!.id });
+    const b = enqueue(db, { type: "synopsis", projectId: theirs!.id });
+    db.update(schemaJobs).set({ status: "succeeded" }).run();
+
+    expect(removeFinished(db, { projectId: mine!.id })).toBe(1);
+    expect(getJob(db, a.id)).toBeUndefined();
+    expect(getJob(db, b.id)).toBeDefined();
+  });
+
+  it("is a no-op on an empty queue", () => {
+    expect(removeFinished(db)).toBe(0);
   });
 });

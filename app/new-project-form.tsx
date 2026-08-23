@@ -2,21 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
+import { PROJECT_FORMATS } from "@/lib/labels";
 import { ASPECT_RATIOS, defaultAspectFor, resolutionPresetsFor } from "@/lib/resolution";
 
 type Style = { id: string; name: string; description: string };
-
-// Mirrors PROJECT_FORMATS in lib/db/schema.ts. `short_video_narrative` stays
-// first and is the <select>'s default, so a user who never touches this
-// control keeps starting today's narrative flow exactly as before.
-const PROJECT_FORMATS: { value: string; label: string }[] = [
-  { value: "short_video_narrative", label: "Short video (narrative slideshow)" },
-  { value: "short_movie", label: "Short movie" },
-  { value: "short_film", label: "Short film" },
-  { value: "short_series", label: "Short series" },
-  { value: "series", label: "Series" },
-  { value: "feature_film", label: "Feature film" },
-];
 
 // Mirrors CONTEXT_MAX in lib/projects.ts — a sane UX ceiling, not a measured
 // model token-budget limit. Enforced again server-side, since a client check
@@ -32,6 +21,9 @@ export function NewProjectForm({
   productionDesignStyles,
   basePixels,
   defaultMode,
+  defaultFormat,
+  defaultAspectRatio,
+  defaultResolutionKey,
   defaultNarrativeStyleName,
   defaultVoiceStyleName,
   defaultImageStyleName,
@@ -48,6 +40,11 @@ export function NewProjectForm({
   /** Pixel budget of the configured base output, for labelling presets. */
   basePixels: number;
   defaultMode: "auto" | "manual";
+  /** From Preferences. Absent keeps the historical `short_video_narrative` opening. */
+  defaultFormat?: string;
+  /** Absent means "follow the format", which is what most people mean. */
+  defaultAspectRatio?: string;
+  defaultResolutionKey?: string;
   defaultNarrativeStyleName?: string;
   defaultVoiceStyleName?: string;
   defaultImageStyleName?: string;
@@ -61,13 +58,16 @@ export function NewProjectForm({
   const [inputMode, setInputMode] = useState<"idea" | "context">("idea");
   const [idea, setIdea] = useState("");
   const [context, setContext] = useState("");
-  const [format, setFormat] = useState("short_video_narrative");
+  const [format, setFormat] = useState(defaultFormat ?? "short_video_narrative");
   const isDevFormat = format !== "short_video_narrative";
   // M7.1 PR-E. Follows the format until the user touches it: picking "Short
   // movie" should not silently leave the project vertical, but having chosen a
-  // shape deliberately, changing format must not overwrite that choice.
-  const [aspectTouched, setAspectTouched] = useState(false);
-  const [aspect, setAspect] = useState(defaultAspectFor("short_video_narrative"));
+  // shape deliberately, changing format must not overwrite that choice. A
+  // pinned preference counts as having chosen.
+  const [aspectTouched, setAspectTouched] = useState(Boolean(defaultAspectRatio));
+  const [aspect, setAspect] = useState(
+    (defaultAspectRatio as ReturnType<typeof defaultAspectFor>) ?? defaultAspectFor(format),
+  );
   const effectiveAspect = aspectTouched ? aspect : defaultAspectFor(format);
   // Labels carry real pixel dimensions, which depend on the chosen shape, so
   // they are derived here rather than passed in already-rendered.
@@ -216,8 +216,8 @@ export function NewProjectForm({
           ))}
         </select>
         <p className="mt-1.5 text-xs text-white/40">
-          Anything other than a short video runs the newer Development chain: concept through
-          treatment generate today, screenplay onward is still being built.
+          Anything other than a short video runs the Development chain — 22 stages from concept
+          through screenplay, storyboards and shot list to a production timeline.
         </p>
       </div>
 
@@ -294,7 +294,7 @@ export function NewProjectForm({
         <select
           id="resolutionKey"
           name="resolutionKey"
-          defaultValue="hd"
+          defaultValue={defaultResolutionKey ?? "hd"}
           className="mt-2 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none focus:border-white/25 sm:w-56"
         >
           {presets.map((preset) => (

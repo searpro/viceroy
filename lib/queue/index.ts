@@ -209,6 +209,24 @@ export function remove(db: Db, jobId: string): void {
   db.delete(jobs).where(eq(jobs.id, jobId)).run();
 }
 
+/**
+ * Delete every job that has stopped, optionally within one project.
+ *
+ * One statement, because the alternative the Jobs screen was reaching for was
+ * a `DELETE` request per row — on a database with several hundred finished
+ * jobs that is several hundred round trips racing each other for the same
+ * sqlite write lock, to do what one `WHERE status IN (...)` does.
+ *
+ * Queued and running jobs are never touched: deleting a row the worker is
+ * mid-way through executing is how you get a job that finishes and writes its
+ * result against nothing.
+ */
+export function removeFinished(db: Db, opts: { projectId?: string } = {}): number {
+  const finished = inArray(jobs.status, ["succeeded", "failed", "aborted"]);
+  const where = opts.projectId ? and(finished, eq(jobs.projectId, opts.projectId)) : finished;
+  return db.delete(jobs).where(where).run().changes;
+}
+
 export function getJob(db: Db, jobId: string): Job | undefined {
   return db.select().from(jobs).where(eq(jobs.id, jobId)).get();
 }

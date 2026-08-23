@@ -21,11 +21,15 @@ import { listJobs } from "./queue";
 import {
   createProject,
   createProjectSchema,
+  currentResolutionKey,
+  jobCounts,
   INVALIDATION_CHAIN,
   listAllJobs,
+  projectSettingsSchema,
   regenerate,
   regenerateSchema,
   unlockCasting,
+  updateProjectSettings,
 } from "./projects";
 
 let db: Db;
@@ -862,5 +866,125 @@ describe("regenerate — the reference pack goes with the identity (M7.1 PR-B)",
     const after = db.select().from(characters).where(eq(characters.id, character.id)).get()!;
     expect(after.imageAssetId).toBeNull();
     expect(db.select().from(characterReferenceImages).all()).toHaveLength(0);
+  });
+});
+
+describe("updateProjectSettings", () => {
+  /**
+   * The reason this exists at all: `aspect_ratio` arrived in M7.1 PR-E, so
+   * every project made before it stores no shape and the global 1080x1920
+   * default — which means every movie in an existing database is a vertical
+   * short on disk, with no control anywhere to say otherwise.
+   */
+  function legacyMovie() {
+    const project = createProject(db, {
+      idea: "a lighthouse keeper finds the storms are deliberate",
+      format: "short_movie",
+    });
+    db.update(projects)
+      .set({ aspectRatio: null, width: 1080, height: 1920 })
+      .where(eq(projects.id, project.id))
+      .run();
+    return project.id;
+  }
+
+  it("stores the shape and re-derives both dimensions from it", () => {
+    const id = legacyMovie();
+    const result = updateProjectSettings(db, id, { aspectRatio: "16:9" });
+
+    expect(result.aspectRatio).toBe("16:9");
+    expect(result.width / result.height).toBeCloseTo(16 / 9, 2);
+
+    const row = db.select().from(projects).where(eq(projects.id, id)).get()!;
+    expect(row.aspectRatio).toBe("16:9");
+    expect(row.width).toBe(result.width);
+    expect(row.height).toBe(result.height);
+  });
+
+  it("keeps the shape when only the size changes", () => {
+    const id = legacyMovie();
+    updateProjectSettings(db, id, { aspectRatio: "2.39:1" });
+    const smaller = updateProjectSettings(db, id, { resolutionKey: "draft" });
+
+    expect(smaller.aspectRatio).toBe("2.39:1");
+    expect(smaller.width / smaller.height).toBeCloseTo(2.39, 1);
+  });
+
+  it("keeps the size tier when only the shape changes", () => {
+    const id = legacyMovie();
+    updateProjectSettings(db, id, { aspectRatio: "16:9", resolutionKey: "low" });
+    const rotated = updateProjectSettings(db, id, { aspectRatio: "1:1" });
+
+    // Same tier means the same amount of work, not the same width — that is
+    // the whole point of scaling presets by area rather than by dimension.
+    expect(rotated.resolutionKey).toBe("low");
+    expect(rotated.width).toBe(rotated.height);
+  });
+
+  it("does not touch anything already generated", () => {
+    const id = legacyMovie();
+    const asset = imageAsset();
+    db.insert(storyboardPanels)
+      .values({ projectId: id, sceneId: "1", index: 0, panelImageAssetId: asset.id })
+      .run();
+
+    updateProjectSettings(db, id, { aspectRatio: "16:9" });
+
+    const panels = db.select().from(storyboardPanels).where(eq(storyboardPanels.projectId, id)).all();
+    expect(panels).toHaveLength(1);
+    expect(panels[0]!.panelImageAssetId).toBe(asset.id);
+  });
+
+  it("refuses a patch that names neither field", () => {
+    expect(projectSettingsSchema.safeParse({}).success).toBe(false);
+  });
+
+  it("refuses an unknown project", () => {
+    expect(() => updateProjectSettings(db, "nope", { aspectRatio: "16:9" })).toThrow(/No such project/);
+  });
+});
+
+describe("currentResolutionKey", () => {
+  it("recognises a project stored at an exact preset", () => {
+    const project = createProject(db, {
+      idea: "a plumber became mayor by wits",
+      resolutionKey: "standard",
+    });
+    expect(currentResolutionKey(project)).toBe("standard");
+  });
+
+  it("picks the nearest tier for a project whose shape was never set", () => {
+    // 1080x1920 is the vertical HD preset; read as a *landscape* movie it
+    // matches no preset exactly, and falling straight to "hd" regardless would
+    // make the control open on the wrong tier.
+    const key = currentResolutionKey({
+      format: "short_movie",
+      aspectRatio: null,
+      width: 1080,
+      height: 1920,
+    });
+    expect(key).toBe("hd");
+  });
+
+  it("falls back to hd when there are no dimensions at all", () => {
+    expect(currentResolutionKey({ format: "short_movie" })).toBe("hd");
+  });
+});
+
+describe("jobCounts", () => {
+  // The nav badge polls this every few seconds on every open tab, so it is a
+  // GROUP BY rather than `listAllJobs(...).filter(...)`. It must also count
+  // every job, not the newest window — a badge that says "nothing running"
+  // because the running job fell outside a limit is worse than no badge.
+  it("counts queued and running together, and failed separately", () => {
+    const project = createProject(db, { idea: "a plumber became mayor by wits" });
+    const queued = listJobs(db, { projectId: project.id });
+    expect(queued.length).toBeGreaterThan(0);
+
+    expect(jobCounts(db)).toEqual({ active: queued.length, failed: 0 });
+  });
+
+  it("is zero on an empty queue", () => {
+    expect(jobCounts(db)).toEqual({ active: 0, failed: 0 });
   });
 });

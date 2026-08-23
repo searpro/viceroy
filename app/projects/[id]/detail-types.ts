@@ -185,6 +185,12 @@ export type Detail = {
     // the narrative pipeline every other field/step here still describes.
     format: string;
     mode: string;
+    // M7.1 PR-E. Nullable in the schema and null for every project that
+    // predates it — read through `projectAspect`, never directly, or a movie
+    // made before that column existed comes back vertical.
+    aspectRatio?: string | null;
+    width?: number | null;
+    height?: number | null;
     awaitingReview: boolean;
     failureReason: string | null;
     // M7 PR11. Set once the previs render exists — no separate approval
@@ -196,6 +202,10 @@ export type Detail = {
   };
   narrativeStyle?: { name: string };
   voiceStyle?: { name: string };
+  // The Development chain's own pair. A movie project reads these; the
+  // narrative pair above is assigned to it at creation and never used.
+  directionStyle?: { name: string };
+  productionDesignStyle?: { name: string };
   evaluations: Evaluation[];
   // "dev" is the Development chain's counterpart to "run" — it names a
   // dev_artifacts stage instead of a job type, because that chain has no

@@ -3,17 +3,19 @@ import { eq } from "drizzle-orm";
 import { createTestDb } from "../db/testing";
 import { seed } from "../db/seed";
 import type { Db } from "../db/client";
-import { assets, locations, shotListItems, timelines } from "../db/schema";
+import { assets, locations, projects, shotListItems, timelines } from "../db/schema";
 import { enqueue } from "../queue";
 import { createProject, getProjectDetail } from "../projects";
 import { stubContext } from "../pipeline/test-support";
 import { runTimeline } from "../pipeline/timeline-stage";
 import {
   loadTimeline,
+  timelineIssues,
   timelineSegmentPatchSchema,
   updateTimelineSegment,
   updateTimelineSettings,
 } from "./store";
+import { findTarget } from "./targets";
 
 let db: Db;
 let close: () => void;
@@ -88,6 +90,69 @@ describe("loadTimeline", () => {
     // A short_movie defaults to landscape (M7.1 PR-E), which is what makes
     // the target's multiple-of-32 check meaningful here rather than academic.
     expect(timeline.aspectRatio).toBe("16:9");
+  });
+});
+
+describe("loadTimeline — the target's dimension grid", () => {
+  /**
+   * LTX refuses a dimension that is not a multiple of 32, and the project's
+   * stored size is on the encoder's multiple-of-2 grid. Every movie therefore
+   * reached the review screen already failing its own target's stated rule —
+   * "Width 1080 is not a multiple of 32" — against a frame the screen derives
+   * and offers no control to change.
+   */
+  it("re-cuts the frame onto the target's grid instead of shipping one it refuses", async () => {
+    const project = await projectWithTimeline();
+    const multiple = findTarget("ltx-director")!.constraints.dimensionMultiple;
+
+    // The state every pre-M7.1-PR-E project is actually in.
+    db.update(projects)
+      .set({ aspectRatio: null, width: 1080, height: 1920 })
+      .where(eq(projects.id, project.id))
+      .run();
+
+    const timeline = loadTimeline(db, project.id)!;
+    expect(timeline.width % multiple).toBe(0);
+    expect(timeline.height % multiple).toBe(0);
+    // Scoped to dimension complaints: this fixture's later segments have no
+    // keyframe, which is a real and unrelated error the target also reports.
+    const dimensionErrors = timelineIssues(timeline).filter((issue) =>
+      /multiple of/.test(issue.message),
+    );
+    expect(dimensionErrors).toEqual([]);
+  });
+
+  it("re-cuts by shape, not by rounding the stored width up", async () => {
+    const project = await projectWithTimeline();
+    db.update(projects)
+      .set({ aspectRatio: "16:9", width: 1920, height: 1080 })
+      .where(eq(projects.id, project.id))
+      .run();
+
+    const timeline = loadTimeline(db, project.id)!;
+    // 1080 is not a multiple of 32. Nudging it to 1088 would keep the width and
+    // silently change the ratio; re-deriving keeps the ratio and moves both.
+    expect(timeline.width / timeline.height).toBeCloseTo(16 / 9, 3);
+  });
+
+  it("leaves a frame that already fits the grid exactly alone", async () => {
+    const project = await projectWithTimeline();
+    db.update(projects)
+      .set({ aspectRatio: "16:9", width: 1024, height: 576 })
+      .where(eq(projects.id, project.id))
+      .run();
+
+    const timeline = loadTimeline(db, project.id)!;
+    expect({ width: timeline.width, height: timeline.height }).toEqual({ width: 1024, height: 576 });
+  });
+
+  it("falls back to landscape for a movie with no stored shape", async () => {
+    const project = await projectWithTimeline();
+    db.update(projects).set({ aspectRatio: null }).where(eq(projects.id, project.id)).run();
+
+    // The bug: the fallback was a hardcoded "9:16", so a movie's timeline
+    // reported a vertical frame and every downstream consumer believed it.
+    expect(loadTimeline(db, project.id)!.aspectRatio).toBe("16:9");
   });
 });
 

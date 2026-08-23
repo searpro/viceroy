@@ -1,6 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { Markdown } from "@/app/components/markdown";
+import { DEV_STAGE_PHASES } from "@/lib/labels";
+import { looksLikeMarkdown } from "@/lib/markdown";
+import { aspectCss, projectAspect } from "@/lib/resolution";
 import { Panel } from "./steps/panel";
 import { ContinueBanner } from "./continue-banner";
 import { castingLockReason } from "./redo-warning";
@@ -87,7 +91,7 @@ export function DevChainCard({
           />
         </Panel>
       ) : (
-        <Panel title={stage ?? "Development"} empty emptyText="Not yet generated.">
+        <Panel title={stage ? (DEV_STAGE_LABELS[stage] ?? stage) : "Development"} empty emptyText="Not yet generated.">
           <></>
         </Panel>
       )}
@@ -162,9 +166,35 @@ function DevChainHistory({
 
   return (
     <section className="mt-6">
-      <h2 className="text-sm font-medium uppercase tracking-wide text-white/40">Generated so far</h2>
-      <div className="mt-3 space-y-2">
-        {stagesWithContent.map((stage) => (
+      <div className="flex items-baseline justify-between gap-4">
+        <h2 className="text-sm font-medium uppercase tracking-wide text-white/40">Generated so far</h2>
+        <span className="text-xs text-white/30">
+          {stagesWithContent.length} of {DEV_CHAIN_ORDER.length} stages
+        </span>
+      </div>
+
+      {/* Grouped by phase rather than listed flat. Twenty-two identical
+          collapsed rows is not a list anyone reads — the phase headings are
+          what let you find "the storyboards" without counting down from the
+          top, and the per-phase count says at a glance how far the chain got
+          before it stopped. */}
+      <div className="mt-3 space-y-4">
+        {DEV_STAGE_PHASES.map((phase) => {
+          const stages = phase.stages.filter((stage) => stagesWithContent.includes(stage));
+          if (stages.length === 0) return null;
+          return (
+            <div key={phase.key}>
+              <div className="flex items-center gap-2">
+                <h3 className="text-[11px] font-medium uppercase tracking-wide text-white/35">
+                  {phase.label}
+                </h3>
+                <span className="text-[11px] text-white/20">
+                  {stages.length}/{phase.stages.length}
+                </span>
+                <span className="h-px flex-1 bg-white/5" />
+              </div>
+              <div className="mt-2 space-y-2">
+                {stages.map((stage) => (
           <details
             key={stage}
             className="rounded-lg border border-white/10 bg-white/[0.02] p-4 open:pb-4"
@@ -209,7 +239,11 @@ function DevChainHistory({
               )}
             </div>
           </details>
-        ))}
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
@@ -239,7 +273,18 @@ function StageContent({
           </a>
         )}
       </div>
-      <p className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap text-sm text-white/75">{content}</p>
+      <div className="mt-2 max-h-[32rem] overflow-y-auto pr-1">
+        {/* Every text stage emits markdown — `##` act headings in a story
+            bible, `**bold**` slug lines in a screenplay, numbered beats in a
+            beat sheet — and this printed the punctuation. `looksLikeMarkdown`
+            is the guard for the case the prompts ask for and sometimes get:
+            plain, whitespace-significant text, which a renderer would reflow. */}
+        {looksLikeMarkdown(content) ? (
+          <Markdown source={content} />
+        ) : (
+          <p className="whitespace-pre-wrap text-sm text-white/75">{content}</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -250,8 +295,13 @@ function CharactersSection({ detail }: { detail: Detail }) {
       {detail.characters.map((character) => (
         <li key={character.id} className="text-sm">
           <p className="font-medium text-white/85">{character.name}</p>
-          <p className="mt-1 text-white/70">{character.description}</p>
-          {character.arc && <p className="mt-1 text-white/50">Arc: {character.arc}</p>}
+          <Markdown source={character.description} className="mt-1" />
+          {character.arc && (
+            <p className="mt-1 text-white/50">
+              <span className="text-white/35">Arc: </span>
+              {character.arc}
+            </p>
+          )}
         </li>
       ))}
     </ul>
@@ -261,9 +311,7 @@ function CharactersSection({ detail }: { detail: Detail }) {
 function WorldBuildingSection({ detail }: { detail: Detail }) {
   return (
     <div className="space-y-4 text-sm">
-      {detail.worldBuilding?.content && (
-        <p className="whitespace-pre-wrap text-white/75">{detail.worldBuilding.content}</p>
-      )}
+      {detail.worldBuilding?.content && <Markdown source={detail.worldBuilding.content} />}
       {detail.locations.length > 0 && (
         <div>
           <p className="text-xs uppercase tracking-wide text-white/40">Locations</p>
@@ -288,6 +336,39 @@ function WorldBuildingSection({ detail }: { detail: Detail }) {
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A thumbnail box at the project's own frame shape.
+ *
+ * Every image grid in this file was `aspect-[9/16]`, hardcoded — so a
+ * landscape movie's storyboard panels, concept art, cast portraits and previs
+ * were all drawn into vertical boxes and `object-cover` cropped the sides off
+ * to fit. The shape is a property of the project (M7.1 PR-E), read through
+ * `projectAspect` so a project created before that column existed falls back
+ * to its format's shape rather than to the shorts pipeline's.
+ *
+ * An inline `style` rather than a Tailwind class because the value is dynamic:
+ * `aspect-[${ratio}]` cannot be generated at build time, and the JIT compiler
+ * would leave it unstyled.
+ */
+function Frame({
+  aspect,
+  className = "",
+  children,
+}: {
+  aspect: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      style={{ aspectRatio: aspect }}
+      className={`w-full overflow-hidden rounded-md border border-white/10 ${className}`}
+    >
+      {children}
     </div>
   );
 }
@@ -410,15 +491,19 @@ function ConceptArtSection({
     ...detail.props.map((entity) => ({ entity, scope: { propId: entity.id } as DevItemScope })),
   ].filter(({ entity }) => entity.imageAssetId);
 
+  const aspect = aspectCss(detail.project.aspectRatio, detail.project.format);
+
   return (
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
       {entities.map(({ entity, scope }) => (
         <figure key={entity.id} className="space-y-1.5">
-          <img
-            src={`/api/assets/${entity.imageAssetId}`}
-            alt={entity.name}
-            className="aspect-[9/16] w-full rounded-md border border-white/10 object-cover"
-          />
+          <Frame aspect={aspect}>
+            <img
+              src={`/api/assets/${entity.imageAssetId}`}
+              alt={entity.name}
+              className="h-full w-full object-cover"
+            />
+          </Frame>
           <figcaption className="text-xs text-white/60">{entity.name}</figcaption>
           <RerollControl busy={busy} onRedo={(direction) => onRedo(scope, direction)} />
         </figure>
@@ -448,24 +533,23 @@ function StoryboardsSection({
     id: variant.id,
     label: `${nameById.get(variant.characterId) ?? "?"} — ${variant.name}`,
   }));
-  const panels = [...detail.storyboardPanels].sort((a, b) =>
-    a.sceneId === b.sceneId ? a.index - b.index : a.sceneId.localeCompare(b.sceneId),
-  );
+  const panels = [...detail.storyboardPanels].sort(compareByScene);
+  const aspect = aspectCss(detail.project.aspectRatio, detail.project.format);
   return (
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
       {panels.map((panel) => (
         <figure key={panel.id} className="space-y-1.5">
-          {panel.panelImageAssetId ? (
-            <img
-              src={`/api/assets/${panel.panelImageAssetId}`}
-              alt={`Scene ${panel.sceneId}, beat ${panel.index + 1}`}
-              className="aspect-[9/16] w-full rounded-md border border-white/10 object-cover"
-            />
-          ) : (
-            <div className="flex aspect-[9/16] w-full items-center justify-center rounded-md border border-white/10 text-xs text-white/40">
-              not yet generated
-            </div>
-          )}
+          <Frame aspect={aspect} className={panel.panelImageAssetId ? "" : "flex items-center justify-center"}>
+            {panel.panelImageAssetId ? (
+              <img
+                src={`/api/assets/${panel.panelImageAssetId}`}
+                alt={`Scene ${panel.sceneId}, beat ${panel.index + 1}`}
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <span className="text-xs text-white/40">not yet generated</span>
+            )}
+          </Frame>
           <figcaption className="text-xs text-white/60">
             Scene {panel.sceneId} · beat {panel.index + 1}
           </figcaption>
@@ -493,24 +577,23 @@ function StoryboardsSection({
 // lines rather than one — the acceptance bar this stage exists to clear is
 // that the two registers stay visibly distinct, never baked into one field.
 function ShotListSection({ detail }: { detail: Detail }) {
-  const items = [...detail.shotListItems].sort((a, b) =>
-    a.sceneId === b.sceneId ? a.index - b.index : a.sceneId.localeCompare(b.sceneId),
-  );
+  const items = [...detail.shotListItems].sort(compareByScene);
+  const aspect = aspectCss(detail.project.aspectRatio, detail.project.format);
   return (
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
       {items.map((item) => (
         <figure key={item.id} className="space-y-1.5">
-          {item.keyframeAssetId ? (
-            <img
-              src={`/api/assets/${item.keyframeAssetId}`}
-              alt={`Scene ${item.sceneId}, shot ${item.index + 1}`}
-              className="aspect-[9/16] w-full rounded-md border border-white/10 object-cover"
-            />
-          ) : (
-            <div className="flex aspect-[9/16] w-full items-center justify-center rounded-md border border-white/10 text-xs text-white/40">
-              no keyframe
-            </div>
-          )}
+          <Frame aspect={aspect} className={item.keyframeAssetId ? "" : "flex items-center justify-center"}>
+            {item.keyframeAssetId ? (
+              <img
+                src={`/api/assets/${item.keyframeAssetId}`}
+                alt={`Scene ${item.sceneId}, shot ${item.index + 1}`}
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <span className="text-xs text-white/40">no keyframe</span>
+            )}
+          </Frame>
           <figcaption className="text-xs text-white/60">
             Scene {item.sceneId} · shot {item.index + 1}
             {item.durationHintMs ? ` · ~${(item.durationHintMs / 1000).toFixed(1)}s` : ""}
@@ -544,7 +627,8 @@ function PrevisSection({ detail }: { detail: Detail }) {
       <video
         src={`/api/assets/${assetId}`}
         controls
-        className="aspect-[9/16] w-full max-w-xs rounded-md border border-white/10"
+        style={{ aspectRatio: aspectCss(detail.project.aspectRatio, detail.project.format) }}
+        className="w-full max-w-lg rounded-md border border-white/10 bg-black"
       />
       <a
         href={`/api/assets/${assetId}`}
@@ -577,11 +661,16 @@ function CastingSection({
         const lockReason = castingLockReason(character);
         return (
           <figure key={character.id} className="space-y-1.5">
-            <img
-              src={`/api/assets/${character.imageAssetId}`}
-              alt={character.name}
-              className="aspect-[9/16] w-full rounded-md border border-white/10 object-cover"
-            />
+            {/* Square, not the project's shape: a cast portrait is reference
+                material generated at `REFERENCE_IMAGE_*` (512x512) and never
+                reaches a frame — see that env var's own comment in config.ts. */}
+            <Frame aspect="1 / 1">
+              <img
+                src={`/api/assets/${character.imageAssetId}`}
+                alt={character.name}
+                className="h-full w-full object-cover"
+              />
+            </Frame>
             <figcaption className="text-xs text-white/60">{character.name}</figcaption>
             <span
               className={`block text-[10px] uppercase tracking-wide ${
@@ -666,4 +755,24 @@ function ContinuitySection({
       ))}
     </ul>
   );
+}
+
+/**
+ * Scene order, numerically.
+ *
+ * `sceneId` here is the identifier the scene-breakdown stage assigned ("1",
+ * "2", "10", sometimes "3A") — not a UUID. Sorting it with `localeCompare` put
+ * scene 10 between 1 and 2, so a movie with ten or more scenes listed its
+ * storyboards and shots in an order that was not the order of the film.
+ */
+function compareByScene<T extends { sceneId: string; index: number }>(a: T, b: T): number {
+  if (a.sceneId !== b.sceneId) {
+    const left = Number.parseInt(a.sceneId, 10);
+    const right = Number.parseInt(b.sceneId, 10);
+    if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
+    // Same leading number ("3" vs "3A"), or not numeric at all: fall back to a
+    // natural-order string compare so the ordering is at least stable.
+    return a.sceneId.localeCompare(b.sceneId, undefined, { numeric: true });
+  }
+  return a.index - b.index;
 }

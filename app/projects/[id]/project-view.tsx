@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { Detail } from "./detail-types";
 import { ACTIVE_JOB_STATUSES } from "./detail-types";
@@ -20,12 +19,13 @@ import { ScenesStep } from "./steps/scenes-step";
 import { NarrationStep } from "./steps/narration-step";
 import { VideoStep } from "./steps/video-step";
 import { DevChainCard } from "./dev-chain-card";
+import { ProjectHeader } from "./project-header";
 import { redoConfirmation } from "./redo-warning";
 
 const LAYOUT_KEY = "viceroy.layout";
 type Layout = "stepper" | "legacy";
 
-export function ProjectView({ initial }: { initial: Detail }) {
+export function ProjectView({ initial, basePixels }: { initial: Detail; basePixels: number }) {
   const [detail, setDetail] = useState(initial);
   const [direction, setDirection] = useState("");
   const [busy, setBusy] = useState(false);
@@ -245,6 +245,23 @@ export function ProjectView({ initial }: { initial: Detail }) {
     setBusy(false);
   }
 
+  /**
+   * Frame shape/size. Refetches the whole detail rather than merging: the
+   * timeline's reported frame is derived from these two columns, so a merged
+   * response would leave the header saying one thing and the timeline another.
+   */
+  async function patchSettings(patch: { aspectRatio?: string; resolutionKey?: string }) {
+    setBusy(true);
+    await fetch(`/api/projects/${detail.project.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
   async function continueProject() {
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
@@ -340,34 +357,29 @@ export function ProjectView({ initial }: { initial: Detail }) {
   };
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-14 pb-24">
-      <div className="flex items-center justify-between">
-        <Link href="/" className="text-xs text-white/40 transition hover:text-white/70">
-          ← all projects
-        </Link>
-        <button
-          onClick={() => setLayoutAndPersist(layout === "stepper" ? "legacy" : "stepper")}
-          className="text-xs text-white/30 transition hover:text-white/60"
-        >
-          {layout === "stepper" ? "switch to single-page view" : "switch to step view"}
-        </button>
-      </div>
+    <main className="mx-auto max-w-3xl px-6 py-8 pb-24">
+      {/* The layout toggle only governs the narrative stepper. A movie project
+          has no stepper for it to switch, and a control that does nothing is
+          worse than no control. The "all projects" link that sat beside it is
+          now the nav's Projects entry, on every screen rather than this one. */}
+      {project.format === "short_video_narrative" && (
+        <div className="flex justify-end">
+          <button
+            onClick={() => setLayoutAndPersist(layout === "stepper" ? "legacy" : "stepper")}
+            className="text-xs text-white/30 transition hover:text-white/60"
+          >
+            {layout === "stepper" ? "switch to single-page view" : "switch to step view"}
+          </button>
+        </div>
+      )}
 
-      <header className="mt-4">
-        <h1 className="line-clamp-2 text-xl font-semibold leading-snug" title={project.idea}>
-          {project.idea}
-        </h1>
-        <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-white/40">
-          <span>{detail.narrativeStyle?.name}</span>
-          <span>·</span>
-          <span>{detail.voiceStyle?.name}</span>
-          <span>·</span>
-          <span>{project.mode} mode</span>
-          <span>·</span>
-          <span className="font-mono">{project.stage}</span>
-          {active && <span className="text-amber-300">working…</span>}
-        </p>
-      </header>
+      <ProjectHeader
+        detail={detail}
+        basePixels={basePixels}
+        active={active}
+        busy={busy}
+        onPatchSettings={patchSettings}
+      />
 
       {project.failureReason && (
         <p className="mt-6 rounded-md bg-amber-400/10 px-4 py-3 text-sm text-amber-200">

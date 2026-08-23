@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { resolveConfig } from "./config";
 import type { Db } from "./db/client";
@@ -12,6 +12,7 @@ import {
   directionStyles,
   evaluations,
   imageStyles,
+  jobs,
   locations,
   narrativeStyles,
   preferences,
@@ -43,7 +44,9 @@ import { advance, isStalled, nextStep } from "./pipeline/chain";
 import {
   ASPECT_RATIO_KEYS,
   defaultAspectFor,
+  projectAspect,
   RESOLUTION_KEYS,
+  resolutionPresets,
   resolvePresetDimensions,
 } from "./resolution";
 
@@ -95,6 +98,89 @@ export const createProjectSchema = z
 // `z.input` rather than `z.infer`, so callers may omit anything with a default
 // — the function parses what it is given rather than trusting it.
 export type CreateProjectInput = z.input<typeof createProjectSchema>;
+
+/**
+ * The frame settings a project can change after it has been created.
+ *
+ * Only shape and size, deliberately. Format is not editable — the two
+ * pipelines share no stage vocabulary, so "turn this short video into a
+ * movie" is a new project, not a setting. Styles are not editable either:
+ * every stage that has already run baked its style into its output, and a
+ * control that changed the label without changing the artifacts would be
+ * lying.
+ *
+ * Shape and size *are* editable, because they had to become so. Every project
+ * created before M7.1 PR-E has `aspect_ratio` NULL and `width`/`height` from
+ * the global 1080x1920 default — so every movie made before that column
+ * existed is stored as a vertical short, generates portrait panels, and
+ * reports a 9:16 frame on its timeline, with no way to say otherwise.
+ * `projectAspect` fixes what is *derived* from a null; this fixes what is
+ * *stored*.
+ *
+ * Nothing already generated is re-rendered or discarded. Panels drawn at the
+ * old shape keep their pixels, and a redo picks up the new one — which is why
+ * the caller warns before letting this be used on a project with images.
+ */
+export const projectSettingsSchema = z
+  .object({
+    aspectRatio: z.enum(ASPECT_RATIO_KEYS).optional(),
+    resolutionKey: z.enum(RESOLUTION_KEYS).optional(),
+  })
+  .refine((data) => data.aspectRatio !== undefined || data.resolutionKey !== undefined, {
+    message: "Give an aspect ratio, a resolution, or both",
+  });
+
+export type ProjectSettingsInput = z.infer<typeof projectSettingsSchema>;
+
+export function updateProjectSettings(db: Db, projectId: string, input: ProjectSettingsInput) {
+  const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+  if (!project) throw new Error("No such project");
+
+  // Both dimensions come from one derivation whichever field moved: changing
+  // the shape at a fixed pixel budget changes width *and* height, and changing
+  // the size has to keep the shape. Deriving them separately is how the two
+  // end up disagreeing.
+  const aspectRatio = input.aspectRatio ?? projectAspect(project);
+  const resolutionKey = input.resolutionKey ?? currentResolutionKey(project);
+  const { width, height } = resolvePresetDimensions(resolveConfig(), resolutionKey, aspectRatio);
+
+  db.update(projects).set({ aspectRatio, width, height }).where(eq(projects.id, projectId)).run();
+  return { aspectRatio, resolutionKey, width, height };
+}
+
+/**
+ * Which preset a project's stored dimensions correspond to.
+ *
+ * `resolution_key` is not a column — only the resolved width/height are stored
+ * — so this matches back by pixel count at the project's own shape. An exact
+ * match is expected for anything created through the form; a project whose
+ * dimensions predate a preset change matches nothing and falls back to "hd",
+ * which is the same fallback `resolvePresetDimensions` already applies.
+ */
+export function currentResolutionKey(project: {
+  format: string;
+  aspectRatio?: string | null;
+  width?: number | null;
+  height?: number | null;
+}): (typeof RESOLUTION_KEYS)[number] {
+  if (!project.width || !project.height) return "hd";
+  const presets = resolutionPresets(resolveConfig(), projectAspect(project));
+  const exact = presets.find((p) => p.width === project.width && p.height === project.height);
+  if (exact) return exact.key as (typeof RESOLUTION_KEYS)[number];
+
+  // A project whose shape has never been set has dimensions from a *different*
+  // shape's preset table, so an exact match is impossible — nearest by pixel
+  // count is what makes the control open on something sensible rather than
+  // always on "HD".
+  const pixels = project.width * project.height;
+  let nearest = presets[0]!;
+  for (const preset of presets) {
+    if (Math.abs(preset.width * preset.height - pixels) < Math.abs(nearest.width * nearest.height - pixels)) {
+      nearest = preset;
+    }
+  }
+  return nearest.key as (typeof RESOLUTION_KEYS)[number];
+}
 
 function preferenceValue(db: Db, key: string): string | undefined {
   const row = db.select().from(preferences).where(eq(preferences.key, key)).get();
@@ -250,7 +336,15 @@ export function listAllJobs(db: Db, opts: { limit?: number } = {}) {
   const projectRows =
     projectIds.length > 0
       ? db
-          .select({ id: projects.id, idea: projects.idea, title: projects.title })
+          .select({
+            id: projects.id,
+            idea: projects.idea,
+            title: projects.title,
+            // The jobs screen shows both pipelines' work in one list, and
+            // "Casting"/"Concept art" mean nothing without knowing which kind
+            // of project they belong to.
+            format: projects.format,
+          })
           .from(projects)
           .where(inArray(projects.id, projectIds))
           .all()
@@ -261,6 +355,29 @@ export function listAllJobs(db: Db, opts: { limit?: number } = {}) {
     ...job,
     project: job.projectId ? (projectById.get(job.projectId) ?? null) : null,
   }));
+}
+
+/**
+ * How much work is outstanding, as two numbers.
+ *
+ * A real aggregate, because the nav badge polls this every few seconds on
+ * every open tab. The first version answered it by calling `listAllJobs` and
+ * counting the result, which selects up to a thousand job rows, collects their
+ * distinct project ids, runs a second query for those, and builds a map — all
+ * to return two integers, four times a minute, forever.
+ */
+export function jobCounts(db: Db): { active: number; failed: number } {
+  const rows = db
+    .select({ status: jobs.status, count: sql<number>`count(*)` })
+    .from(jobs)
+    .groupBy(jobs.status)
+    .all();
+
+  const by = new Map(rows.map((row) => [row.status, Number(row.count)]));
+  return {
+    active: (by.get("queued") ?? 0) + (by.get("running") ?? 0),
+    failed: by.get("failed") ?? 0,
+  };
 }
 
 export function getProjectDetail(db: Db, projectId: string) {
@@ -279,6 +396,21 @@ export function getProjectDetail(db: Db, projectId: string) {
       : undefined,
     voiceStyle: project.voiceStyleId
       ? db.select().from(voiceStyles).where(eq(voiceStyles.id, project.voiceStyleId)).get()
+      : undefined,
+    // The Development chain's own two. Resolved here for the same reason the
+    // narrative pair above is: the project header names the styles in force,
+    // and without these a movie project's header showed the narrative and
+    // voice styles `createProject` had assigned it as a side effect of those
+    // columns being NOT NULL — two settings that nothing in its pipeline reads.
+    directionStyle: project.directionStyleId
+      ? db.select().from(directionStyles).where(eq(directionStyles.id, project.directionStyleId)).get()
+      : undefined,
+    productionDesignStyle: project.productionDesignStyleId
+      ? db
+          .select()
+          .from(productionDesignStyles)
+          .where(eq(productionDesignStyles.id, project.productionDesignStyleId))
+          .get()
       : undefined,
     evaluations: db
       .select()

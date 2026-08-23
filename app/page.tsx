@@ -9,9 +9,9 @@ import {
   productionDesignStyles,
   voiceStyles,
 } from "@/lib/db/schema";
+import { formatLabel, isDevFormat } from "@/lib/labels";
 import { listPreferences } from "@/lib/preferences";
 import { listProjects } from "@/lib/projects";
-import { createSdApi } from "@/lib/sdapi";
 import { NewProjectForm } from "./new-project-form";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +19,6 @@ export const dynamic = "force-dynamic";
 export default async function Home() {
   const config = resolveConfig();
   const db = getDb();
-  const healthy = await createSdApi({ baseUrl: config.sdApiUrl }).health();
 
   const projects = listProjects(db);
   const styles = {
@@ -36,45 +35,23 @@ export default async function Home() {
   const seeded = styles.narrativeStyles.length > 0;
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-14">
-      <header className="flex items-baseline justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Viceroy</h1>
-        <span className="flex items-center gap-3 text-xs text-white/40">
-          <Link href="/styles" className="transition hover:text-white/70">
-            styles
-          </Link>
-          <Link href="/providers" className="transition hover:text-white/70">
-            providers
-          </Link>
-          <Link href="/prompt-templates" className="transition hover:text-white/70">
-            prompts
-          </Link>
-          <Link href="/preferences" className="transition hover:text-white/70">
-            preferences
-          </Link>
-          <Link href="/jobs" className="transition hover:text-white/70">
-            jobs
-          </Link>
-          <span>
-            sd-api{" "}
-            <span className={healthy ? "text-emerald-400" : "text-red-400"}>
-              {healthy ? "reachable" : "unreachable"}
-            </span>
-          </span>
-        </span>
-      </header>
+    <main className="mx-auto max-w-3xl px-6 py-10">
+      <h1 className="text-2xl font-semibold tracking-tight">New project</h1>
 
       {!seeded ? (
-        <p className="mt-10 rounded-md bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
+        <p className="mt-6 rounded-md bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
           No styles found. Run <code className="font-mono">pnpm db:seed</code> to install the
           built-in narrative, voice and image styles.
         </p>
       ) : (
-        <section className="mt-10 rounded-lg border border-white/10 bg-white/[0.02] p-6">
+        <section className="mt-6 rounded-lg border border-white/10 bg-white/[0.02] p-6">
           <NewProjectForm
             {...styles}
             basePixels={config.video.width * config.video.height}
             defaultMode={defaultMode}
+            defaultFormat={prefs.defaultFormat}
+            defaultAspectRatio={prefs.defaultAspectRatio}
+            defaultResolutionKey={prefs.defaultResolution}
             defaultNarrativeStyleName={prefs.defaultNarrativeStyle}
             defaultVoiceStyleName={prefs.defaultVoiceStyle}
             defaultImageStyleName={prefs.defaultImageStyle}
@@ -97,8 +74,22 @@ export default async function Home() {
                   href={`/projects/${project.id}`}
                   className="flex items-center justify-between gap-4 py-3 transition hover:text-amber-300"
                 >
-                  <span className="min-w-0 truncate text-sm" title={project.title ?? project.idea}>
-                    {project.title ?? project.idea}
+                  <span className="flex min-w-0 items-center gap-2.5">
+                    {/* Which pipeline this project runs is the single most
+                        useful thing to know from a list — the two flows share
+                        almost no vocabulary past this point. */}
+                    <span
+                      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
+                        isDevFormat(project.format)
+                          ? "bg-sky-400/10 text-sky-300"
+                          : "bg-white/5 text-white/40"
+                      }`}
+                    >
+                      {formatLabel(project.format, true)}
+                    </span>
+                    <span className="min-w-0 truncate text-sm" title={project.title ?? project.idea}>
+                      {project.title ?? project.idea}
+                    </span>
                   </span>
                   <span className="shrink-0 font-mono text-xs text-white/35">
                     {project.awaitingReview ? "needs review" : project.stage}

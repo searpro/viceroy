@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { CaptionPreviewPlayer } from "./caption-preview-player";
 
@@ -106,12 +105,8 @@ export function StylesView({
   const [productionDesign, setProductionDesign] = useState(productionDesignStyles);
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-14">
-      <Link href="/" className="text-xs text-white/40 transition hover:text-white/70">
-        â home
-      </Link>
-
-      <h1 className="mt-4 text-2xl font-semibold tracking-tight">Styles</h1>
+    <main className="mx-auto max-w-3xl px-6 py-10">
+      <h1 className="text-2xl font-semibold tracking-tight">Styles</h1>
       <p className="mt-2 text-sm text-white/45">
         Narrative, voice, image, caption and direction styles a project can be built with.
         Built-in styles can be edited but not deleted.
@@ -353,7 +348,7 @@ function NarrativeCard({
       </div>
       <p className="mt-1 text-xs text-white/50">{style.description}</p>
       <p className="mt-1 text-[11px] text-white/30">
-        {style.targetSceneCount} scenes Â· {style.targetWordCount} words Â·{" "}
+        {style.targetSceneCount} scenes · {style.targetWordCount} words ·{" "}
         {style.evaluationChecklist.length} checklist items
       </p>
 
@@ -1030,7 +1025,7 @@ function CaptionCard({
       </div>
       <p className="mt-1 text-xs text-white/50">{style.description}</p>
       <p className="mt-1 text-[11px] text-white/30">
-        {style.fontFamily.split(",")[0]} Â· {style.fontSize}px{style.uppercase ? " Â· uppercase" : ""}
+        {style.fontFamily.split(",")[0]} · {style.fontSize}px{style.uppercase ? " · uppercase" : ""}
       </p>
 
       {editing && (

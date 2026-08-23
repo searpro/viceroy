@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db/client";
-import { continueProject, getProjectDetail, regenerate, regenerateSchema } from "@/lib/projects";
+import {
+  continueProject,
+  getProjectDetail,
+  projectSettingsSchema,
+  regenerate,
+  regenerateSchema,
+  updateProjectSettings,
+} from "@/lib/projects";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +48,32 @@ export async function POST(request: Request, { params }: Params) {
 
   try {
     return NextResponse.json({ job: regenerate(getDb(), id, parsed.data) }, { status: 202 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 400 },
+    );
+  }
+}
+
+/**
+ * Frame settings only — see `projectSettingsSchema`.
+ *
+ * A PATCH rather than another `action` on POST: POST here enqueues work and
+ * answers 202, and changing a stored setting is neither of those things.
+ */
+export async function PATCH(request: Request, { params }: Params) {
+  const { id } = await params;
+  const parsed = projectSettingsSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? "Invalid request" },
+      { status: 400 },
+    );
+  }
+
+  try {
+    return NextResponse.json({ settings: updateProjectSettings(getDb(), id, parsed.data) });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },

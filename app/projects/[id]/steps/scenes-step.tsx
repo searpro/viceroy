@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { aspectCss } from "@/lib/resolution";
 import { ContinueBanner } from "../continue-banner";
 import type { Detail, Scene } from "../detail-types";
 
@@ -49,6 +50,7 @@ export function ScenesStep({
               <SceneCard
                 key={scene.id}
                 scene={scene}
+                aspect={aspectCss(detail.project.aspectRatio, detail.project.format)}
                 busy={busy || active}
                 onRedoPrompt={(direction) => onRedoPrompt(scene.id, direction)}
                 onRedoImage={(direction) => onRedoImage(scene.id, direction)}
@@ -72,11 +74,14 @@ export function ScenesStep({
  */
 export function SceneCard({
   scene,
+  aspect,
   busy,
   onRedoPrompt,
   onRedoImage,
 }: {
   scene: Scene;
+  /** The project's own frame shape — a narrative project can be 16:9 too since M7.1 PR-E. */
+  aspect: string;
   busy: boolean;
   onRedoPrompt: (direction: string) => void;
   onRedoImage: (direction: string) => void;
@@ -85,7 +90,7 @@ export function SceneCard({
 
   return (
     <li className="overflow-hidden rounded-lg border border-white/10 bg-white/[0.02]">
-      <div className="relative aspect-[9/16] bg-black/40">
+      <div className="relative bg-black/40" style={{ aspectRatio: aspect }}>
         {scene.imageAssetId ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img

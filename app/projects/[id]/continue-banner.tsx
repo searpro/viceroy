@@ -1,3 +1,4 @@
+import { devStagePhase, nextStepLabel } from "@/lib/labels";
 import type { Detail } from "./detail-types";
 
 /**
@@ -23,7 +24,12 @@ export function ContinueBanner({
   // Both the narrative pipeline's job types (`nextStep.type`) and the
   // Development chain's `dev_artifacts` stages (`nextStep.stage`) name "what
   // comes next" the same way — this banner is otherwise identical for both.
-  const label = detail.nextStep.kind === "run" ? detail.nextStep.type : detail.nextStep.stage;
+  // Said in words: it printed the raw key (`screenplay_revision`,
+  // `production_design`) in a monospace span, which reads as a system
+  // identifier rather than as the name of the thing about to happen.
+  const key = detail.nextStep.kind === "run" ? detail.nextStep.type : detail.nextStep.stage;
+  const label = nextStepLabel(detail.nextStep);
+  const phase = key ? devStagePhase(key) : undefined;
 
   return (
     <div
@@ -33,7 +39,8 @@ export function ContinueBanner({
     >
       <span>
         {detail.stalled ? "Stalled — " : detail.project.awaitingReview ? "Waiting for you — " : ""}
-        next: <span className="font-mono">{label}</span>, because {detail.nextStep.reason}.
+        next: <span className="font-medium text-white/90">{label}</span>
+        {phase && <span className="text-white/40"> ({phase})</span>}, because {detail.nextStep.reason}.
       </span>
       <button
         onClick={onContinue}

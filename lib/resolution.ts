@@ -34,6 +34,39 @@ export function defaultAspectFor(format: string): AspectRatioKey {
   return format === "short_video_narrative" ? "9:16" : "16:9";
 }
 
+/**
+ * The shape a project actually is, stored value or not.
+ *
+ * `projects.aspect_ratio` is nullable — every project created before M7.1 PR-E
+ * has none — and the fallback for a null used to be the literal "9:16" at each
+ * of the four call sites that needed one. That is right for a short and wrong
+ * for everything else: a `short_movie` created before that column existed came
+ * back vertical, so its panels were generated 9:16, its timeline reported a
+ * 9:16 frame, and the review grid drew 9:16 boxes around them. The format is
+ * the thing that knows better, so every fallback goes through here.
+ */
+export function projectAspect(project: {
+  format: string;
+  aspectRatio?: string | null;
+}): AspectRatioKey {
+  const stored = ASPECT_RATIOS.find((a) => a.key === project.aspectRatio);
+  return stored ? stored.key : defaultAspectFor(project.format);
+}
+
+/**
+ * The CSS `aspect-ratio` value for a shape — `"1.7777 / 1"`, for a style attribute.
+ *
+ * Normalised through `projectAspect` rather than straight through
+ * `aspectRatioValue`, which *throws* on a key it does not know. This is called
+ * during the render of a client component, so a project carrying an aspect
+ * written by an older build — or by hand — would take the whole project page
+ * down rather than drawing a slightly wrong box.
+ */
+export function aspectCss(key: string | null | undefined, format = "short_video_narrative"): string {
+  const ratio = aspectRatioValue(projectAspect({ format, aspectRatio: key }), "9:16");
+  return `${ratio} / 1`;
+}
+
 export function aspectRatioValue(key: string | null | undefined, fallback: AspectRatioKey): number {
   const found = ASPECT_RATIOS.find((a) => a.key === (key ?? fallback));
   if (!found) throw new Error(`No such aspect ratio: ${key}`);
@@ -88,9 +121,21 @@ export function dimensionsForAspect(
  * render cost, and a user picking "HD" for a landscape project should not
  * silently get four times the pixels of the vertical one.
  */
-export const RESOLUTION_KEYS = ["standard", "hd", "high"] as const;
+export const RESOLUTION_KEYS = ["draft", "low", "standard", "hd", "high"] as const;
+export type ResolutionKey = (typeof RESOLUTION_KEYS)[number];
 
-const SCALES: { key: (typeof RESOLUTION_KEYS)[number]; label: string; factor: number }[] = [
+/**
+ * `draft` and `low` exist because the Development chain generates an order of
+ * magnitude more images than the narrative pipeline does — a storyboard is one
+ * panel per beat, a shot list one keyframe per shot — and the first pass over
+ * a movie is about whether the coverage is right, not whether the grain is.
+ * At 1/3 scale a panel costs a ninth of the pixels, which on the CPU box F12
+ * measured is the difference between reviewing a sequence in minutes and in an
+ * afternoon. Re-roll at `hd` once the shape of the film is settled.
+ */
+const SCALES: { key: ResolutionKey; label: string; factor: number }[] = [
+  { key: "draft", label: "Draft", factor: 1 / 3 },
+  { key: "low", label: "Low", factor: 1 / 2 },
   { key: "standard", label: "Standard", factor: 2 / 3 },
   { key: "hd", label: "HD", factor: 1 },
   { key: "high", label: "High", factor: 4 / 3 },

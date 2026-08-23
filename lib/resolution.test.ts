@@ -3,7 +3,10 @@ import { resolveConfig } from "./config";
 import {
   ASPECT_RATIO_KEYS,
   ASPECT_RATIOS,
+  aspectCss,
   defaultAspectFor,
+  projectAspect,
+  RESOLUTION_KEYS,
   resolutionPresets,
   resolvePresetDimensions,
   sourceImageFor,
@@ -124,5 +127,78 @@ describe("per-project aspect ratio (M7.1 PR-E)", () => {
 
   it("refuses an aspect it has no definition for", () => {
     expect(() => sourceImageFor(config, "3:7")).toThrow(/No such aspect ratio/);
+  });
+});
+
+describe("projectAspect", () => {
+  // The bug this exists to prevent: `aspect_ratio` is nullable, every project
+  // created before M7.1 PR-E has none, and the four call sites that needed a
+  // fallback all hardcoded "9:16". A `short_movie` from before that column
+  // therefore generated portrait panels, reported a 9:16 timeline frame, and
+  // was drawn into portrait review boxes — while its format plainly said
+  // otherwise.
+  it("falls back to the format's own shape, not to vertical", () => {
+    expect(projectAspect({ format: "short_movie", aspectRatio: null })).toBe("16:9");
+    expect(projectAspect({ format: "feature_film", aspectRatio: null })).toBe("16:9");
+    expect(projectAspect({ format: "short_video_narrative", aspectRatio: null })).toBe("9:16");
+  });
+
+  it("prefers the stored shape whenever there is one", () => {
+    expect(projectAspect({ format: "short_movie", aspectRatio: "4:5" })).toBe("4:5");
+    expect(projectAspect({ format: "short_video_narrative", aspectRatio: "2.39:1" })).toBe("2.39:1");
+  });
+
+  it("treats an unrecognised stored value as absent rather than throwing", () => {
+    // A row written by an older build, or by hand. Falling back beats a render
+    // that 500s on a value the UI cannot even offer.
+    expect(projectAspect({ format: "short_movie", aspectRatio: "21:9" })).toBe("16:9");
+    expect(projectAspect({ format: "short_movie" })).toBe("16:9");
+  });
+});
+
+describe("aspectCss", () => {
+  it("emits a CSS aspect-ratio for the stored shape", () => {
+    expect(aspectCss("16:9")).toBe(`${16 / 9} / 1`);
+    expect(aspectCss("1:1")).toBe("1 / 1");
+  });
+
+  it("falls back through the format, so a movie thumbnail is not portrait", () => {
+    expect(aspectCss(null, "short_movie")).toBe(`${16 / 9} / 1`);
+    expect(aspectCss(null, "short_video_narrative")).toBe(`${9 / 16} / 1`);
+  });
+});
+
+describe("lower resolution presets", () => {
+  it("offers tiers below the configured output, for cheap review passes", () => {
+    // A movie generates one image per storyboard beat and one per shot, so the
+    // first pass over a sequence is about coverage, not grain — there was no
+    // way to ask for less than 2/3 of full size.
+    expect(RESOLUTION_KEYS).toContain("draft");
+    expect(RESOLUTION_KEYS).toContain("low");
+
+    const presets = resolutionPresets(config);
+    const pixels = (key: string) => {
+      const preset = presets.find((p) => p.key === key)!;
+      return preset.width * preset.height;
+    };
+    expect(pixels("draft")).toBeLessThan(pixels("low"));
+    expect(pixels("low")).toBeLessThan(pixels("standard"));
+    expect(pixels("standard")).toBeLessThan(pixels("hd"));
+  });
+
+  it("keeps the existing tiers at the pixel counts they always had", () => {
+    // Adding tiers must not move the ones projects are already stored at, or
+    // `currentResolutionKey` would stop recognising them.
+    const hd = resolutionPresets(config).find((p) => p.key === "hd")!;
+    expect({ width: hd.width, height: hd.height }).toEqual(config.video);
+  });
+
+  it("holds the project's shape at every tier", () => {
+    for (const aspect of ASPECT_RATIO_KEYS) {
+      const ratio = ASPECT_RATIOS.find((a) => a.key === aspect)!.ratio;
+      for (const preset of resolutionPresets(config, aspect)) {
+        expect(preset.width / preset.height).toBeCloseTo(ratio, 1);
+      }
+    }
   });
 });

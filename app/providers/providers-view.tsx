@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { RunpodPanel, type Compute } from "./runpod-panel";
+import { ProviderStatusPanel } from "./provider-status-panel";
 import { ROLES_BY_KIND, WorkflowSection, type Workflow } from "./workflow-editor";
 
 type Provider = {
@@ -74,16 +74,19 @@ export function ProvidersView({
   const [flows, setFlows] = useState(workflows);
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-14">
-      <Link href="/" className="text-xs text-white/40 transition hover:text-white/70">
-        ← home
-      </Link>
-
-      <h1 className="mt-4 text-2xl font-semibold tracking-tight">Providers</h1>
+    <main className="mx-auto max-w-3xl px-6 py-10">
+      <h1 className="text-2xl font-semibold tracking-tight">Providers</h1>
       <p className="mt-2 text-sm text-white/45">
         Where each kind of inference call goes. Exactly one provider per kind is the default —
         stages use whichever is marked default, falling back to any provider of that kind.
       </p>
+
+      {/* The reachability of the five defaults, in the one place that can do
+          something about it. This is what the home page's single "sd-api
+          reachable" badge was standing in for, and it was standing in badly:
+          it probed one URL from the config regardless of which providers a
+          run would actually call. */}
+      <ProviderStatusPanel onSelectKind={setTab} />
 
       <nav className="mt-6 flex gap-1 border-b border-white/10">
         {KINDS.map((k) => (

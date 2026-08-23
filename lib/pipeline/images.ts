@@ -2,7 +2,7 @@ import { asc, eq } from "drizzle-orm";
 import { storeAsset } from "../assets";
 import { characters, projects, scenes } from "../db/schema";
 import { renderPrompt } from "../prompts";
-import { sourceImageFor } from "../resolution";
+import { projectAspect, sourceImageFor } from "../resolution";
 import { enqueue } from "../queue";
 import type { ImageBackend } from "../backends/types";
 import {
@@ -102,7 +102,7 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
   // The frame's shape is the project's, not the machine's (M7.1 PR-E) — the
   // pixel budget stays global, which is the part that genuinely is a property
   // of this hardware.
-  const sourceSize = sourceImageFor(ctx.config, project.aspectRatio);
+  const sourceSize = sourceImageFor(ctx.config, projectAspect(project));
   const imageProvider = resolveProvider(ctx.db, "image");
 
   const all = ctx.db
@@ -225,7 +225,7 @@ export async function runCharacterImages(ctx: StageContext): Promise<void> {
   // frame of the same shape as the scenes it anchors, so it follows the
   // project's aspect. The Development chain's own portraits are pure
   // reference material and take `referenceImage` instead (M7.1 PR-A3).
-  const sourceSize = sourceImageFor(ctx.config, project.aspectRatio);
+  const sourceSize = sourceImageFor(ctx.config, projectAspect(project));
   const imageProvider = resolveProvider(ctx.db, "image");
   const backend = ctx.imageBackend();
 

@@ -26,7 +26,7 @@ import {
 } from "../db/schema";
 import { storeAsset } from "../assets";
 import { renderPrompt } from "../prompts";
-import { sourceImageFor } from "../resolution";
+import { projectAspect, sourceImageFor } from "../resolution";
 import { extractSceneDialogue, resolveSpeakers, sceneDialogueFor } from "../screenplay-dialogue";
 import { minimumDurationMs, type DialogueLine } from "../timeline/speech";
 import { DEFAULT_SEGMENT_DURATION_MS } from "../timeline/build";
@@ -1852,7 +1852,7 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
   // A panel becomes a shot-list keyframe and reaches the previs render, so it
   // takes the project's own frame shape (M7.1 PR-E) rather than the global
   // default that had movie projects drawing portrait panels.
-  const panelSize = sourceImageFor(ctx.config, project.aspectRatio);
+  const panelSize = sourceImageFor(ctx.config, projectAspect(project));
 
   // M7.1 PR-A's gate. `devNextStep` already walks `DEV_CHAIN_STAGES` in order
   // and so will not *offer* storyboards before casting is locked, but a direct
