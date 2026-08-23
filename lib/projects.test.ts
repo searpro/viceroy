@@ -5,6 +5,7 @@ import { seed } from "./db/seed";
 import type { Db } from "./db/client";
 import {
   assets,
+  characterReferenceImages,
   characters,
   devArtifacts,
   locations,
@@ -757,5 +758,86 @@ describe("regenerate — per-item image scoping (M7.1 PR-D0)", () => {
     const plan = db.select().from(devArtifacts).where(eq(devArtifacts.projectId, project.id)).get()!;
     expect(plan.content).toBe("a plan");
     expect(plan.approvedAt).not.toBeNull();
+  });
+});
+
+describe("regenerate — the reference pack goes with the identity (M7.1 PR-B)", () => {
+  function castWithPack() {
+    const project = createProject(db, { idea: "a diver who fears the surface", format: "short_movie" });
+    const [character] = db
+      .insert(characters)
+      .values({
+        projectId: project.id,
+        name: "Reyna",
+        description: "d",
+        imageAssetId: imageAsset().id,
+        refInputName: "uploaded-reyna.png",
+        castingLockedAt: new Date(),
+      })
+      .returning()
+      .all();
+    for (const view of ["head_front", "body_front", "expression_sad"] as const) {
+      db.insert(characterReferenceImages)
+        .values({
+          characterId: character!.id,
+          view,
+          imageAssetId: imageAsset().id,
+          refInputName: `uploaded-reyna-${view}.png`,
+        })
+        .run();
+    }
+    return { project, character: character! };
+  }
+
+  // The invariant, and the reason this block exists: the pack is cleared
+  // exactly when the anchor it depicts is cleared — never one without the
+  // other. `runCasting` skips a view that already has an image, so a pack
+  // surviving a cleared anchor would put a regenerated face inside seven views
+  // of the old one, and panels pick their reference *from that pack*.
+  it("leaves the pack exactly as intact as the anchor on an unscoped casting redo", () => {
+    const { project, character } = castWithPack();
+    expect(db.select().from(characterReferenceImages).all()).toHaveLength(3);
+
+    // An unscoped redo deliberately leaves its own target's output alone (the
+    // job it enqueues is what overwrites it), so the anchor survives here — and
+    // the pack must survive with it, or the two would disagree.
+    regenerate(db, project.id, { target: "casting" });
+
+    const after = db.select().from(characters).where(eq(characters.id, character.id)).get()!;
+    expect(after.imageAssetId).not.toBeNull();
+    expect(db.select().from(characterReferenceImages).all()).toHaveLength(3);
+  });
+
+  it("clears only the scoped character's pack, leaving the rest of the cast's alone", () => {
+    const { project, character } = castWithPack();
+    const [other] = db
+      .insert(characters)
+      .values({ projectId: project.id, name: "Marisol", description: "d" })
+      .returning()
+      .all();
+    db.insert(characterReferenceImages)
+      .values({ characterId: other!.id, view: "head_front", refInputName: "uploaded-marisol.png" })
+      .run();
+
+    // Locked, so the redo needs the explicit unlock first — the same two-step
+    // the API route pairs.
+    unlockCasting(db, project.id, character.id);
+    regenerate(db, project.id, { target: "casting", characterId: character.id });
+
+    const left = db.select().from(characterReferenceImages).all();
+    expect(left).toHaveLength(1);
+    expect(left[0]!.characterId).toBe(other!.id);
+  });
+
+  it("takes the pack with it when an upstream stage cascades into casting", () => {
+    const { project, character } = castWithPack();
+    // "production_design" sits directly above casting as of M7.1 PR-A, so its
+    // redo cascades through `DISCARD["casting"]` — which clears the anchor, so
+    // the pack has to go too.
+    regenerate(db, project.id, { target: "production_design" });
+
+    const after = db.select().from(characters).where(eq(characters.id, character.id)).get()!;
+    expect(after.imageAssetId).toBeNull();
+    expect(db.select().from(characterReferenceImages).all()).toHaveLength(0);
   });
 });

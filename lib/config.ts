@@ -61,6 +61,17 @@ const envSchema = z.object({
   REFERENCE_IMAGE_WIDTH: z.coerce.number().pipe(multipleOf16).default(512),
   REFERENCE_IMAGE_HEIGHT: z.coerce.number().pipe(multipleOf16).default(512),
 
+  // The full-figure half of the pair above (M7.1 PR-B, the PR that first
+  // generates body turnarounds — PR-A3 deliberately shipped one square size and
+  // said the body sizes would arrive with the views that need them).
+  //
+  // A standing figure in a square crop is mostly empty floor and ceiling, and
+  // the head — the part that carries identity — ends up a few dozen pixels
+  // tall. 2:3 costs 50% more pixels than the square and is what makes a
+  // full-body view usable as a reference at all.
+  REFERENCE_BODY_IMAGE_WIDTH: z.coerce.number().pipe(multipleOf16).default(512),
+  REFERENCE_BODY_IMAGE_HEIGHT: z.coerce.number().pipe(multipleOf16).default(768),
+
   VIDEO_WIDTH: z.coerce.number().int().positive().default(1080),
   VIDEO_HEIGHT: z.coerce.number().int().positive().default(1920),
 
@@ -84,6 +95,8 @@ export type Config = {
   sourceImage: { width: number; height: number };
   /** Images generated only to be conditioned on later — see the env comment. */
   referenceImage: { width: number; height: number };
+  /** The full-figure variant of `referenceImage`, for body turnaround views. */
+  referenceBodyImage: { width: number; height: number };
   video: { width: number; height: number };
   qcMaxIterations: number;
   jobMaxAttempts: number;
@@ -118,6 +131,10 @@ export function resolveConfig(env: Record<string, string | undefined> = process.
     runpodApiKey: parsed.RUNPOD_API_KEY,
     sourceImage: source,
     referenceImage: { width: parsed.REFERENCE_IMAGE_WIDTH, height: parsed.REFERENCE_IMAGE_HEIGHT },
+    referenceBodyImage: {
+      width: parsed.REFERENCE_BODY_IMAGE_WIDTH,
+      height: parsed.REFERENCE_BODY_IMAGE_HEIGHT,
+    },
     video: { width: parsed.VIDEO_WIDTH, height: parsed.VIDEO_HEIGHT },
     qcMaxIterations: parsed.QC_MAX_ITERATIONS,
     jobMaxAttempts: parsed.JOB_MAX_ATTEMPTS,

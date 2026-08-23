@@ -355,6 +355,70 @@ export const characters = sqliteTable(
   (t) => [index("characters_project_idx").on(t.projectId)],
 );
 
+/**
+ * The named views a Character Canonical Reference Pack holds (M7.1 PR-B).
+ *
+ * `head_front` is the anchor: it is the portrait `characters.image_asset_id`
+ * already stored before this existed, and every other view is generated *from*
+ * it as a reference so the pack is consistent by construction. That is also
+ * why it is first — `runCasting` generates in this order and the rest depend
+ * on it.
+ *
+ * The set is deliberately closed and deliberately small. Each view is a
+ * separate generation, and on this CPU box a reference-conditioned 512x512
+ * costs ~122s and a 512x768 body view more (findings F12/F30), so a pack is
+ * roughly a quarter-hour per character. The M7.1 plan's optional "1-2 action
+ * poses" are omitted for exactly that reason: nothing selects them yet, and an
+ * unused view is pure wall-clock.
+ */
+export const CRP_VIEWS = [
+  "head_front",
+  "head_three_quarter",
+  "head_side",
+  "body_front",
+  "body_side",
+  "expression_smiling",
+  "expression_angry",
+  "expression_sad",
+] as const;
+export type CrpView = (typeof CRP_VIEWS)[number];
+
+/**
+ * One generated view of a locked character's identity (M7.1 PR-B).
+ *
+ * Same visual-consistency column shape as `characters`/`locations`/`props`
+ * (`imageAssetId`, `refInputName`, `imageSource`) so `filterLiveRefs`' existing
+ * dangling-reference handling applies to these unchanged — a view whose upload
+ * has gone missing degrades that view, it does not fail the stage (ADR 0001).
+ *
+ * No `approvedAt`: the pack is not separately approvable. Casting's own lock
+ * (`characters.castingLockedAt`) is the gate, and it covers the whole identity
+ * — approving individual views would create a second, finer gate with no stage
+ * reading it.
+ */
+export const characterReferenceImages = sqliteTable(
+  "character_reference_images",
+  {
+    id: id(),
+    characterId: text("character_id")
+      .notNull()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    view: text("view", { enum: CRP_VIEWS }).notNull(),
+    prompt: text("prompt").notNull().default(""),
+    imageAssetId: text("image_asset_id").references(() => assets.id),
+    refInputName: text("ref_input_name"),
+    imageSource: text("image_source", { enum: ["generated", "uploaded"] })
+      .notNull()
+      .default("generated"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("character_reference_images_character_idx").on(t.characterId),
+    unique("character_reference_images_character_view_unq").on(t.characterId, t.view),
+  ],
+);
+
 export const scenes = sqliteTable(
   "scenes",
   {
@@ -1195,6 +1259,7 @@ export const schema = {
   productionDesignStyles,
   projects,
   characters,
+  characterReferenceImages,
   scenes,
   evaluations,
   voiceovers,

@@ -4,6 +4,7 @@ import { resolveConfig } from "./config";
 import type { Db } from "./db/client";
 import {
   captionStyles,
+  characterReferenceImages,
   characters,
   continuityFacts,
   DEV_CHAIN_STAGES,
@@ -624,6 +625,21 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
   // generations on the cast's reference portraits, so a new identity makes
   // every image drawn from the old one stale.
   casting: (db, projectId) => {
+    // The reference pack goes with the identity it depicts (M7.1 PR-B). Not
+    // clearing it would be worse than leaving it stale: `runCasting` skips a
+    // view that already has an image, so the regenerated anchor would be a new
+    // face sitting in a pack of seven views of the old one — and every
+    // downstream panel picks its reference *from that pack*. A cast-locked
+    // character whose pack disagrees with their portrait is precisely the
+    // drift this milestone exists to prevent, and nothing would surface it.
+    db.delete(characterReferenceImages)
+      .where(
+        inArray(
+          characterReferenceImages.characterId,
+          db.select({ id: characters.id }).from(characters).where(eq(characters.projectId, projectId)),
+        ),
+      )
+      .run();
     db.update(characters)
       .set({
         imageAssetId: null,
@@ -775,7 +791,12 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
   if (input.target === "casting" && input.characterId) {
     // Mirrors `character_images` above exactly — the lock guard already ran
     // (and would have thrown) if this character were still locked, so
-    // clearing here always starts from an unlocked row.
+    // clearing here always starts from an unlocked row. Plus this character's
+    // reference pack, for the reason `DISCARD["casting"]` gives above: a stale
+    // pack around a fresh anchor is a character whose own views disagree.
+    db.delete(characterReferenceImages)
+      .where(eq(characterReferenceImages.characterId, input.characterId))
+      .run();
     db.update(characters)
       .set({ imageAssetId: null, imagePrompt: null, refInputName: null, imageSource: "generated" })
       .where(eq(characters.id, input.characterId))

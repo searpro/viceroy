@@ -1,9 +1,11 @@
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { Fountain, type Script } from "fountain-js";
 import {
+  characterReferenceImages,
   characters,
   CONTINUITY_SUBJECT_TYPES,
   continuityFacts,
+  CRP_VIEWS,
   devArtifacts,
   evaluations,
   locations,
@@ -17,7 +19,9 @@ import {
   STORYBOARD_SHOT_TYPES,
   worldBuilding,
   type ContinuitySubjectType,
+  type CrpView,
   type DevArtifactStage,
+  type StoryboardShotType,
 } from "../db/schema";
 import { storeAsset } from "../assets";
 import { renderPrompt } from "../prompts";
@@ -36,6 +40,7 @@ import {
   type StageContext,
 } from "./context";
 import { filterLiveRefs, negativePromptFor } from "./images";
+import type { ImageBackend } from "../backends/types";
 import { parseEvaluation, type EvaluationPayload } from "./story";
 
 /**
@@ -1701,6 +1706,54 @@ export function selectPanelReferences(
 }
 
 /**
+ * Load every character's live reference-pack views, keyed by character.
+ *
+ * Liveness is checked per view, not per character: `refInputName` points at
+ * state in another service, so one view's upload can go missing while the rest
+ * survive. A view that has gone is dropped from the map and
+ * `resolveCastReference` falls past it — the same degrade-don't-fail rule
+ * `filterLiveRefs` applies to characters, locations and props (ADR 0001).
+ */
+export async function livePackViews(
+  backend: Pick<ImageBackend, "hasReference">,
+  rows: { characterId: string; view: CrpView; refInputName: string | null }[],
+): Promise<Map<string, Map<CrpView, string>>> {
+  const candidates = rows.filter((row): row is typeof row & { refInputName: string } =>
+    Boolean(row.refInputName),
+  );
+  const alive = await Promise.all(candidates.map((row) => backend.hasReference(row.refInputName)));
+
+  const byCharacter = new Map<string, Map<CrpView, string>>();
+  candidates.forEach((row, index) => {
+    if (!alive[index]) return;
+    const views = byCharacter.get(row.characterId) ?? new Map<CrpView, string>();
+    views.set(row.view, row.refInputName);
+    byCharacter.set(row.characterId, views);
+  });
+  return byCharacter;
+}
+
+/**
+ * Pick the pack view that best matches this shot, or fall back to the anchor.
+ *
+ * See `crpViewPreference` for why matching framing matters. `fallback` is the
+ * character's own `characters.refInputName` — every locked character has one,
+ * and a project cast before M7.1 PR-B existed has *only* that, so this returns
+ * exactly the pre-pack behaviour for them rather than nothing.
+ */
+export function resolveCastReference(
+  pack: Map<CrpView, string> | undefined,
+  fallback: string | undefined,
+  shotType: StoryboardShotType,
+): string | undefined {
+  for (const view of crpViewPreference(shotType)) {
+    const ref = pack?.get(view);
+    if (ref) return ref;
+  }
+  return fallback;
+}
+
+/**
  * Stage 18 (M7 PR10) — one storyboard panel per beat in the approved scene
  * breakdown, each with its own independently-editable shotType/cameraAngle/
  * cameraMovement/lens rather than one prose paragraph — the structured
@@ -1796,8 +1849,40 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
     );
   }
 
-  const tiers = [
-    { entities: cast, live: liveCastRefs },
+  // M7.1 PR-B. The cast tier's reference depends on the shot being drawn — a
+  // close-up wants a head view, a wide wants the full figure — so unlike
+  // locations and props it cannot be one fixed map for the whole stage. The
+  // pack is loaded and liveness-checked once here; `castTierFor` below picks
+  // per panel.
+  const packRows =
+    cast.length > 0
+      ? ctx.db
+          .select()
+          .from(characterReferenceImages)
+          .where(
+            inArray(
+              characterReferenceImages.characterId,
+              cast.map((c) => c.id),
+            ),
+          )
+          .all()
+      : [];
+  const packs = await livePackViews(backend, packRows);
+
+  const castTierFor = (shotType: StoryboardShotType) => {
+    const live = new Map<string, string>();
+    for (const character of cast) {
+      const ref = resolveCastReference(
+        packs.get(character.id),
+        liveCastRefs.get(character.id),
+        shotType,
+      );
+      if (ref) live.set(character.id, ref);
+    }
+    return { entities: cast, live };
+  };
+
+  const setTiers = [
     { entities: locs, live: liveLocationRefs },
     { entities: items, live: livePropRefs },
   ];
@@ -1826,7 +1911,11 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
     if (!panel) throw new Error(`No such storyboard panel on this project: ${jobPanelId}`);
 
     const prompt = `${panel.panelImagePrompt}${direction ? `, ${direction}` : ""}`;
-    const refs = selectPanelReferences(panel.panelImagePrompt, tiers, refBudget);
+    const refs = selectPanelReferences(
+      panel.panelImagePrompt,
+      [castTierFor(panel.shotType), ...setTiers],
+      refBudget,
+    );
     ctx.log(
       `Re-rolling storyboard panel for scene ${panel.sceneId}, beat ${panel.index + 1} ` +
         `with ${refs.length} reference(s)`,
@@ -1942,7 +2031,11 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
     checkAbort(ctx);
 
     // Cast first, then location, then prop — see `selectPanelReferences`.
-    const refs = selectPanelReferences(beat.description, tiers, refBudget);
+    const refs = selectPanelReferences(
+      beat.description,
+      [castTierFor(beat.shotType), ...setTiers],
+      refBudget,
+    );
 
     // The reference count is worth logging per panel, not just per stage: it is
     // the one number that says whether this panel was anchored to canon or
@@ -2283,6 +2376,90 @@ export async function runShotList(ctx: StageContext): Promise<void> {
  * portrait" shape `character_images` already has — used by a locked
  * character's redo once it has been explicitly unlocked.
  */
+/**
+ * How each reference-pack view is framed, and whether it needs a body crop.
+ *
+ * Code-side structured vocabulary folded into one editable template, the same
+ * shape `runStoryboards`' own `shotDescriptor` uses for its four cinematography
+ * fields — the phrasing per view is a fixed mapping, not something to restate
+ * in free text (the M7.1 plan's "deterministic prompt compiler" point).
+ *
+ * `head_front` is absent deliberately: it is the anchor, built by
+ * `character.portrait` rather than `character.reference_view`, because it is
+ * the one view with no reference image to condition on and so has to carry the
+ * whole identity by description alone.
+ */
+const CRP_VIEW_SPECS: Record<Exclude<CrpView, "head_front">, {
+  framing: string;
+  detail: string;
+  body: boolean;
+}> = {
+  head_three_quarter: {
+    framing: "three-quarter view head-and-shoulders portrait, head turned about 45 degrees",
+    detail: "neutral expression, full face clearly visible and unobstructed",
+    body: false,
+  },
+  head_side: {
+    framing: "exact side profile head-and-shoulders portrait, head turned 90 degrees",
+    detail: "neutral expression, clean profile silhouette",
+    body: false,
+  },
+  body_front: {
+    framing: "full figure standing straight facing camera, head to feet entirely in frame",
+    detail: "arms relaxed at sides, neutral expression, complete outfit clearly visible",
+    body: true,
+  },
+  body_side: {
+    framing: "full figure standing straight in side profile, head to feet entirely in frame",
+    detail: "arms relaxed at sides, complete outfit clearly visible",
+    body: true,
+  },
+  expression_smiling: {
+    framing: "tightly cropped head-and-shoulders portrait, face fills most of the frame",
+    detail: "smiling warmly, facing camera, full face clearly visible",
+    body: false,
+  },
+  expression_angry: {
+    framing: "tightly cropped head-and-shoulders portrait, face fills most of the frame",
+    detail: "angry, brows drawn down, facing camera, full face clearly visible",
+    body: false,
+  },
+  expression_sad: {
+    framing: "tightly cropped head-and-shoulders portrait, face fills most of the frame",
+    detail: "sad, downcast, facing camera, full face clearly visible",
+    body: false,
+  },
+};
+
+/** Every pack view except the anchor, in `CRP_VIEWS` order. */
+const CRP_DERIVED_VIEWS = CRP_VIEWS.filter(
+  (view): view is Exclude<CrpView, "head_front"> => view !== "head_front",
+);
+
+/**
+ * Which pack views can stand in for a character in a panel, best first.
+ *
+ * A close-up conditioned on a full-figure plate has a head a few dozen pixels
+ * tall to learn a face from; a wide conditioned on a head crop has nothing to
+ * say about build or posture. Matching the reference's framing to the shot's is
+ * the whole reason a pack is worth generating rather than one portrait.
+ *
+ * Every list ends at `head_front`, the anchor, which always exists for a locked
+ * character — so this degrades to exactly the pre-pack behaviour rather than to
+ * no reference at all.
+ */
+export function crpViewPreference(shotType: StoryboardShotType): readonly CrpView[] {
+  switch (shotType) {
+    case "extreme-close-up":
+    case "close-up":
+      return ["head_three_quarter", "head_front", "head_side"];
+    case "medium":
+      return ["body_front", "head_three_quarter", "head_front"];
+    case "wide":
+      return ["body_front", "body_side", "head_front"];
+  }
+}
+
 export async function runCasting(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
   const bundle = loadProject(ctx.db, projectId);
@@ -2359,6 +2536,117 @@ export async function runCasting(ctx: StageContext): Promise<void> {
       .set({ imagePrompt: prompt, imageAssetId: asset.id, refInputName, castingLockedAt: new Date() })
       .where(eq(characters.id, character.id))
       .run();
+  }
+
+  // ---------------------------------------------------------------- the pack
+  //
+  // Every derived view is generated *from* the anchor portrait, passed as the
+  // sole reference, which is what makes a pack internally consistent rather
+  // than eight independent guesses at the same person. Resumable per view (a
+  // row with an image is skipped) for the same reason every other image stage
+  // here is: a pack is roughly a quarter-hour per character on this box
+  // (findings F12/F30), so a crash partway through must cost one view, not the
+  // whole pack.
+  //
+  // Runs over the whole in-scope cast rather than only `pending`: a character
+  // whose anchor already existed before this PR has no pack at all, and would
+  // otherwise never get one without a redo.
+  const packFor = jobCharacterId ? cast.filter((c) => c.id === jobCharacterId) : cast;
+  const havePackRows = ctx.db
+    .select()
+    .from(characterReferenceImages)
+    .where(
+      inArray(
+        characterReferenceImages.characterId,
+        packFor.map((c) => c.id),
+      ),
+    )
+    .all();
+  const packByKey = new Map(havePackRows.map((row) => [`${row.characterId}::${row.view}`, row]));
+
+  for (const character of packFor) {
+    // Re-read: the loop above may have just written this character's anchor.
+    const anchor = ctx.db.select().from(characters).where(eq(characters.id, character.id)).get();
+    if (!anchor?.imageAssetId) continue;
+
+    // The anchor is recorded as a pack row too, so "the pack" is one queryable
+    // set rather than "`characters` plus a table of everything else". It owns
+    // no separate generation — this points at the portrait already made above.
+    const anchorRow = packByKey.get(`${character.id}::head_front`);
+    if (!anchorRow) {
+      ctx.db
+        .insert(characterReferenceImages)
+        .values({
+          characterId: character.id,
+          view: "head_front",
+          prompt: anchor.imagePrompt ?? "",
+          imageAssetId: anchor.imageAssetId,
+          refInputName: anchor.refInputName,
+        })
+        .run();
+    }
+
+    const anchorRef = anchor.refInputName;
+    const visualDescription = anchor.appearanceTag ?? anchor.description;
+    const missing = CRP_DERIVED_VIEWS.filter(
+      (view) => !packByKey.get(`${character.id}::${view}`)?.imageAssetId,
+    );
+
+    for (const [index, view] of missing.entries()) {
+      checkAbort(ctx);
+      const spec = CRP_VIEW_SPECS[view];
+      const size = spec.body ? ctx.config.referenceBodyImage : ctx.config.referenceImage;
+
+      const prompt =
+        `${imageStyle.promptPrefix}` +
+        renderPrompt(ctx.db, "character.reference_view", {
+          viewFraming: spec.framing,
+          characterDescription: visualDescription,
+          viewDetail: spec.detail,
+        }) +
+        `${imageStyle.promptSuffix}`;
+
+      ctx.log(
+        `Generating ${view.replace(/_/g, " ")} for ${anchor.name} (${index + 1}/${missing.length})`,
+      );
+      const bytes = await backend.generate(
+        {
+          prompt,
+          negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
+          width: size.width,
+          height: size.height,
+          // A dangling anchor degrades this view to a text-only generation
+          // rather than failing the pack, the same rule ADR 0001 sets for
+          // scene images and `filterLiveRefs` applies everywhere else.
+          references: anchorRef && (await backend.hasReference(anchorRef)) ? [anchorRef] : [],
+        },
+        { shouldAbort: ctx.shouldAbort, log: ctx.log },
+      );
+
+      const asset = storeAsset(ctx.db, ctx.config, {
+        kind: "image",
+        bytes,
+        mimeType: "image/png",
+        projectId,
+        label: `character-${anchor.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${view}`,
+        meta: { characterId: character.id, view, prompt },
+      });
+      const refInputName = await backend.uploadReference(bytes, `${character.id}-${view}.png`);
+
+      const existing = packByKey.get(`${character.id}::${view}`);
+      if (existing) {
+        ctx.db
+          .update(characterReferenceImages)
+          .set({ prompt, imageAssetId: asset.id, refInputName })
+          .where(eq(characterReferenceImages.id, existing.id))
+          .run();
+      } else {
+        ctx.db
+          .insert(characterReferenceImages)
+          .values({ characterId: character.id, view, prompt, imageAssetId: asset.id, refInputName })
+          .run();
+      }
+    }
   }
 
   // A whole-cast run also locks any character that already had a portrait

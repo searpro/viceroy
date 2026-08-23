@@ -147,6 +147,16 @@ const STORY_VARS = [
     name: "storyboardPanelPrompt",
     description: "The source storyboard panel's own assembled image prompt, for reference",
   },
+  {
+    name: "viewFraming",
+    description:
+      "How this reference-pack view is framed — the crop and camera position, e.g. 'three-quarter view head-and-shoulders portrait'",
+  },
+  {
+    name: "viewDetail",
+    description:
+      "What this reference-pack view must show beyond the framing, e.g. 'neutral expression' or 'full figure head to feet, standing straight'",
+  },
 ];
 
 function pick(...names: string[]) {
@@ -565,6 +575,33 @@ what the array is for — the prompt itself describes them without naming them.`
 most of the frame, {{characterDescription}}, neutral expression, facing
 camera, plain uncluttered background, evenly lit, full face clearly visible
 and unobstructed`,
+  },
+  {
+    key: "character.reference_view",
+    section: "Preproduction",
+    label: "Character reference-pack view prompt",
+    description:
+      "Builds one non-anchor view of a character's reference pack (M7.1 PR-B, stage 16 casting).",
+    // A sibling of `character.portrait` above, not a replacement: that template
+    // still builds the pack's `head_front` anchor, and this one builds every
+    // view generated *from* that anchor. Kept separate because the anchor is
+    // the only view with no reference image to condition on, so it is the only
+    // one whose prompt has to carry the whole identity on its own.
+    //
+    // BUG-26's lesson is preserved and is why framing is split in two:
+    // `{{viewFraming}}` leads and `{{viewDetail}}` trails, so the crop
+    // instruction is weighted at both ends of the comma-separated prompt and
+    // cannot lose to a clothing clause in the middle of
+    // `{{characterDescription}}`. Both are CONTENT, never the rendering
+    // register — Image Style's promptPrefix/promptSuffix wrap this the same way
+    // they wrap every other image call here (ADR 0002).
+    //
+    // No character name, for the same reason `character.portrait` omits one:
+    // FLUX.2 stencils a name it is given into the frame (finding F14).
+    variables: pick("viewFraming", "characterDescription", "viewDetail"),
+    template: `{{viewFraming}}, same person, consistent facial features and
+identity, {{characterDescription}}, plain uncluttered background, evenly lit,
+{{viewDetail}}`,
   },
   {
     key: "concept_art.location",

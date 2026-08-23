@@ -5,6 +5,8 @@ import { seed } from "../db/seed";
 import type { Db } from "../db/client";
 import {
   assets,
+  CRP_VIEWS,
+  STORYBOARD_SHOT_TYPES,
   characters,
   continuityFacts,
   devArtifacts,
@@ -19,6 +21,7 @@ import {
   shotListItems,
   storyboardPanels,
   worldBuilding,
+  type CrpView,
 } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject, regenerate, resolveContinuityFact, unlockCasting } from "../projects";
@@ -27,7 +30,10 @@ import { advance, nextStep } from "./chain";
 import { resolveProvider } from "./context";
 import {
   PANEL_REFERENCE_BUDGET,
+  crpViewPreference,
+  livePackViews,
   parseScreenplay,
+  resolveCastReference,
   selectPanelReferences,
   runBeatSheet,
   runCasting,
@@ -1829,15 +1835,25 @@ describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
       }),
     );
 
-    // Both beats mention Reyna and "her father's pick set" — each generation
-    // carries her locked portrait first and that prop's concept art second,
-    // which is `selectPanelReferences`' priority order (cast before set
-    // dressing) rather than table order. Identity is what drifts most visibly
-    // between adjacent panels, so it gets the budget first.
+    // Both beats mention Reyna and "her father's pick set", so each generation
+    // carries a reference for her first and that prop's concept art second —
+    // `selectPanelReferences`' priority order (cast before set dressing) rather
+    // than table order.
+    //
+    // *Which* reference stands in for Reyna depends on the shot (M7.1 PR-B):
+    // BEATS' first beat is a close-up and its second is wide, so the close-up
+    // cites her three-quarter head view and the wide cites her full figure. A
+    // wide conditioned on a head crop has nothing to say about build or
+    // posture, which is the whole reason a pack is worth generating.
     const reyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
-    for (const request of requests) {
-      expect(request.references).toEqual([reyna.refInputName, prop.refInputName]);
-    }
+    expect(requests[0]!.references).toEqual([
+      `uploaded-${reyna.id}-head_three_quarter.png`,
+      prop.refInputName,
+    ]);
+    expect(requests[1]!.references).toEqual([
+      `uploaded-${reyna.id}-body_front.png`,
+      prop.refInputName,
+    ]);
   });
 
   // M7.1 PR-A's gate. `devNextStep` will not offer storyboards before casting
@@ -2311,12 +2327,27 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
       }),
     );
 
-    // WORLD's own fixture cast is exactly one character, "Reyna" (see the
-    // top of this file).
-    expect(requests).toHaveLength(1);
+    // WORLD's own fixture cast is exactly one character, "Reyna" (see the top
+    // of this file) — and as of M7.1 PR-B casting generates her whole reference
+    // pack, not one portrait: the `head_front` anchor plus the seven views
+    // derived from it.
+    expect(requests).toHaveLength(CRP_VIEWS.length);
     // M7.1 PR-A3 — a portrait is reference material, sized for the face rather
-    // than for the output frame. See `referenceImage` in config.ts.
+    // than for the output frame. See `referenceImage` in config.ts. The two
+    // full-figure views take the taller `referenceBodyImage` instead (PR-B): a
+    // standing figure in a square crop is mostly empty floor.
     expect(requests[0]).toMatchObject({ width: 512, height: 512 });
+    const bodyRequests = requests.filter((r) => r.height === 768);
+    expect(bodyRequests).toHaveLength(2);
+    expect(requests.filter((r) => r.height === 512)).toHaveLength(CRP_VIEWS.length - 2);
+
+    // Every derived view is conditioned on the anchor — that is what makes the
+    // pack one person rather than seven guesses at one.
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    const anchorRef = `uploaded-${cast.id}.png`;
+    for (const request of requests.slice(1)) {
+      expect(request.references).toEqual([anchorRef]);
+    }
     const reyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
     expect(reyna.imageAssetId).not.toBeNull();
     expect(reyna.refInputName).toBe(`uploaded-${reyna.id}.png`);
@@ -3038,5 +3069,60 @@ describe("scoped image redos (M7.1 PR-D0)", () => {
         ),
       ),
     ).rejects.toThrow(/Casting is not locked/);
+  });
+});
+
+describe("character reference packs (M7.1 PR-B)", () => {
+  it("orders views by shot, so a close-up cites a head crop and a wide the full figure", () => {
+    // The whole reason a pack is worth its generation cost: a wide conditioned
+    // on a head crop has nothing to say about build or posture, and a close-up
+    // conditioned on a standing figure has a face a few dozen pixels tall.
+    expect(crpViewPreference("close-up")[0]).toBe("head_three_quarter");
+    expect(crpViewPreference("extreme-close-up")[0]).toBe("head_three_quarter");
+    expect(crpViewPreference("medium")[0]).toBe("body_front");
+    expect(crpViewPreference("wide")[0]).toBe("body_front");
+  });
+
+  it("always ends its preference list at the anchor, which every locked character has", () => {
+    // A project cast before packs existed has only the anchor, so this is what
+    // makes `resolveCastReference` degrade to exactly the pre-pack behaviour.
+    for (const shotType of STORYBOARD_SHOT_TYPES) {
+      expect(crpViewPreference(shotType)).toContain("head_front");
+    }
+  });
+
+  it("falls through to the next-best view when the preferred one is missing", () => {
+    const pack = new Map<CrpView, string>([["head_front", "anchor.png"]]);
+    // A wide wants a full figure; this pack has none, so it lands on the anchor
+    // rather than on nothing.
+    expect(resolveCastReference(pack, "fallback.png", "wide")).toBe("anchor.png");
+    expect(resolveCastReference(pack, "fallback.png", "close-up")).toBe("anchor.png");
+  });
+
+  it("falls back to the character's own portrait when there is no pack at all", () => {
+    expect(resolveCastReference(undefined, "fallback.png", "wide")).toBe("fallback.png");
+  });
+
+  it("returns nothing when neither a pack nor a portrait is live, rather than throwing", () => {
+    expect(resolveCastReference(undefined, undefined, "medium")).toBeUndefined();
+  });
+
+  it("drops one dead view from a pack without dropping the rest", async () => {
+    // `refInputName` points at another service's state, so one view's upload
+    // can vanish while its siblings survive — ADR 0001's degrade-don't-fail
+    // rule, applied per view rather than per character.
+    const backend = { hasReference: async (name: string) => name !== "gone.png" };
+    const packs = await livePackViews(backend, [
+      { characterId: "c1", view: "head_front", refInputName: "anchor.png" },
+      { characterId: "c1", view: "body_front", refInputName: "gone.png" },
+      { characterId: "c1", view: "head_side", refInputName: "side.png" },
+      { characterId: "c2", view: "head_front", refInputName: null },
+    ]);
+
+    expect([...packs.get("c1")!.keys()].sort()).toEqual(["head_front", "head_side"]);
+    // A row with no upload at all never enters the map.
+    expect(packs.has("c2")).toBe(false);
+    // And the degraded pack still resolves, just to a less ideal view.
+    expect(resolveCastReference(packs.get("c1"), undefined, "wide")).toBe("anchor.png");
   });
 });
