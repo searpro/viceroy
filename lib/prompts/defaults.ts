@@ -148,6 +148,10 @@ const STORY_VARS = [
     description: "The source storyboard panel's own assembled image prompt, for reference",
   },
   {
+    name: "characterArc",
+    description: "How this character changes over the story, if the chain recorded one",
+  },
+  {
     name: "viewFraming",
     description:
       "How this reference-pack view is framed — the crop and camera position, e.g. 'three-quarter view head-and-shoulders portrait'",
@@ -575,6 +579,38 @@ what the array is for — the prompt itself describes them without naming them.`
 most of the frame, {{characterDescription}}, neutral expression, facing
 camera, plain uncluttered background, evenly lit, full face clearly visible
 and unobstructed`,
+  },
+  {
+    key: "casting.wardrobe",
+    section: "Preproduction",
+    label: "Wardrobe variants prompt",
+    description:
+      "Proposes the approved outfits for one character (M7.1 PR-C, stage 16 casting).",
+    // Unlike its neighbours this one IS read by an LLM, not sent to a
+    // diffusion model, so it is prose and asks for JSON back. What it returns
+    // becomes `wardrobe_variants` rows whose descriptions are later folded into
+    // an image prompt — so the instruction to describe only garments matters:
+    // a variant that smuggles in "brooding, rain-soaked" would put mood into
+    // the rendering register a body view has no business carrying (ADR 0002).
+    //
+    // Two is the cap the M7.1 plan itself recommends, and the cost argues the
+    // same way: each variant adds two full-figure generations to the most
+    // expensive per-character stage in the chain (~130s each, finding F30).
+    variables: pick("characterDescription", "characterArc"),
+    template: `A character in a film. Describe the outfits they wear.
+
+Character: {{characterDescription}}
+{{characterArc}}
+
+Return JSON: {"variants": [{"name": string, "description": string}]}
+
+Give at most two variants. The first is their default, worn unless the story
+says otherwise. Add a second only if the story clearly puts them in a
+different outfit; if it does not, return one.
+
+Each description lists garments, materials and colours only — what someone
+would see on a hanger. No mood, no lighting, no camera language, no adjectives
+about the character's state of mind.`,
   },
   {
     key: "character.reference_view",

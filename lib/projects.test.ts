@@ -15,6 +15,7 @@ import {
   scenes,
   storyboardPanels,
   voiceovers,
+  wardrobeVariants,
 } from "./db/schema";
 import { listJobs } from "./queue";
 import {
@@ -827,6 +828,24 @@ describe("regenerate — the reference pack goes with the identity (M7.1 PR-B)",
     const left = db.select().from(characterReferenceImages).all();
     expect(left).toHaveLength(1);
     expect(left[0]!.characterId).toBe(other!.id);
+  });
+
+  // Deliberately *not* cleared alongside the pack. A variant is a plan, not a
+  // picture: it is derived from `characters.description`, which belongs to the
+  // upstream "characters" stage and a casting redo does not touch. Keeping them
+  // makes wardrobe stable across redos and saves re-proposing — `runCasting`
+  // only proposes when a character has none — while the body views themselves
+  // still regenerate, because the pack rows did go.
+  it("keeps wardrobe variants across a casting cascade, even though the pack goes", () => {
+    const { project, character } = castWithPack();
+    db.insert(wardrobeVariants)
+      .values({ characterId: character.id, name: "Workshop", description: "canvas apron", isDefault: true })
+      .run();
+
+    regenerate(db, project.id, { target: "production_design" });
+
+    expect(db.select().from(characterReferenceImages).all()).toHaveLength(0);
+    expect(db.select().from(wardrobeVariants).all()).toHaveLength(1);
   });
 
   it("takes the pack with it when an upstream stage cascades into casting", () => {

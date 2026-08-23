@@ -130,13 +130,21 @@ export function ProjectView({ initial }: { initial: Detail }) {
   async function regenerateDevItem(
     scope: { panelId: string } | { locationId: string } | { propId: string },
     itemDirection: string,
+    wardrobeVariantId?: string | null,
   ) {
     const target = "panelId" in scope ? "storyboards" : "concept_art";
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ target, ...scope, direction: itemDirection.trim() || undefined }),
+      body: JSON.stringify({
+        target,
+        ...scope,
+        direction: itemDirection.trim() || undefined,
+        // Sent only when the control offered a picker — `undefined` leaves the
+        // panel's existing override alone, where `null` clears it to default.
+        ...(wardrobeVariantId !== undefined ? { wardrobeVariantId } : {}),
+      }),
     });
     const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
     if (response.ok) setDetail(await response.json());

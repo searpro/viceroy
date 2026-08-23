@@ -102,7 +102,20 @@ export type StoryboardPanel = {
   cameraMovement: string;
   lens: string;
   panelImageAssetId: string | null;
+  /** M7.1 PR-C — which character's outfit changes here; null means all defaults. */
+  wardrobeVariantId?: string | null;
   approvedAt: string | null;
+};
+
+// M7.1 PR-C. An approved outfit for one character. Flat across the cast, with
+// `characterId` on the row, because the panel wardrobe picker needs every
+// variant the project has and would only regroup a per-character shape.
+export type WardrobeVariant = {
+  id: string;
+  characterId: string;
+  name: string;
+  description: string;
+  isDefault: boolean;
 };
 
 // M7 PR11. Same "own table, not a `dev_artifacts` row" story as
@@ -173,6 +186,7 @@ export type Detail = {
   props: LocationOrProp[];
   continuityFacts: ContinuityFact[];
   storyboardPanels: StoryboardPanel[];
+  wardrobeVariants?: WardrobeVariant[];
   shotListItems: ShotListItem[];
   render?: { id: string; assetId: string | null; status: string } | null;
   voiceover?: {

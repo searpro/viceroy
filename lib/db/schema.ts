@@ -356,6 +356,36 @@ export const characters = sqliteTable(
 );
 
 /**
+ * An approved outfit for one character (M7.1 PR-C).
+ *
+ * Identity is locked by casting; clothing is not, and a story that puts a
+ * character in two situations wants them recognisably the same person in
+ * different clothes. A variant carries its own body views in the reference
+ * pack, so "same face, different outfit" is something the pack can express
+ * rather than something a prompt has to argue for.
+ *
+ * Exactly one variant per character is `isDefault`, and it is what any panel
+ * naming no variant uses. Deliberately a flag here rather than a
+ * `defaultVariantId` on `characters`: that column could point at another
+ * character's variant, which this shape cannot express.
+ */
+export const wardrobeVariants = sqliteTable(
+  "wardrobe_variants",
+  {
+    id: id(),
+    characterId: text("character_id")
+      .notNull()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("wardrobe_variants_character_idx").on(t.characterId)],
+);
+
+/**
  * The named views a Character Canonical Reference Pack holds (M7.1 PR-B).
  *
  * `head_front` is the anchor: it is the portrait `characters.image_asset_id`
@@ -404,6 +434,13 @@ export const characterReferenceImages = sqliteTable(
       .notNull()
       .references(() => characters.id, { onDelete: "cascade" }),
     view: text("view", { enum: CRP_VIEWS }).notNull(),
+    // Null for a wardrobe-independent view — the head crops and expressions,
+    // which show a face rather than an outfit. Only body views carry one; see
+    // `WARDROBE_DEPENDENT_VIEWS` in lib/pipeline/dev.ts for the split and why
+    // generating three expressions per outfit would be waste.
+    wardrobeVariantId: text("wardrobe_variant_id").references(() => wardrobeVariants.id, {
+      onDelete: "cascade",
+    }),
     prompt: text("prompt").notNull().default(""),
     imageAssetId: text("image_asset_id").references(() => assets.id),
     refInputName: text("ref_input_name"),
@@ -415,7 +452,16 @@ export const characterReferenceImages = sqliteTable(
   },
   (t) => [
     index("character_reference_images_character_idx").on(t.characterId),
-    unique("character_reference_images_character_view_unq").on(t.characterId, t.view),
+    // The real constraint is (character, view, variant) with NULL folded to '',
+    // expressed as a raw expression index in migration 0022 because SQLite
+    // treats NULLs as distinct and Drizzle's `unique()` cannot say `ifnull`.
+    // Declared here on the two plain columns only so the generated schema
+    // still records that a uniqueness rule exists; the migration is what runs.
+    unique("character_reference_images_character_view_variant_unq").on(
+      t.characterId,
+      t.view,
+      t.wardrobeVariantId,
+    ),
   ],
 );
 
@@ -922,6 +968,13 @@ export const storyboardPanels = sqliteTable(
       .default("static"),
     lens: text("lens", { enum: STORYBOARD_LENSES }).notNull().default("standard"),
     panelImageAssetId: text("panel_image_asset_id").references(() => assets.id),
+    // M7.1 PR-C. Null means every character in this panel wears their default
+    // variant — what the whole pre-PR-C corpus means, and what most panels keep
+    // meaning. One id, not a set: a variant already belongs to a character, so
+    // a single pointer says unambiguously whose outfit changes, and everyone
+    // else keeps their default. Two simultaneous overrides would need a join
+    // table; nothing has asked for one.
+    wardrobeVariantId: text("wardrobe_variant_id").references(() => wardrobeVariants.id),
     approvedAt: integer("approved_at", { mode: "timestamp_ms" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -994,6 +1047,8 @@ export const shotListItems = sqliteTable(
     characterIds: text("character_ids", { mode: "json" }).notNull().$type<string[]>().default([]),
     durationHintMs: integer("duration_hint_ms"),
     keyframeAssetId: text("keyframe_asset_id").references(() => assets.id),
+    /** M7.1 PR-C — carried from the source panel; see `storyboardPanels`. */
+    wardrobeVariantId: text("wardrobe_variant_id").references(() => wardrobeVariants.id),
     approvedAt: integer("approved_at", { mode: "timestamp_ms" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1260,6 +1315,7 @@ export const schema = {
   projects,
   characters,
   characterReferenceImages,
+  wardrobeVariants,
   scenes,
   evaluations,
   voiceovers,

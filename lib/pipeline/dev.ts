@@ -13,6 +13,7 @@ import {
   props,
   shotListItems,
   storyboardPanels,
+  wardrobeVariants,
   STORYBOARD_CAMERA_ANGLES,
   STORYBOARD_CAMERA_MOVEMENTS,
   STORYBOARD_LENSES,
@@ -1716,21 +1717,39 @@ export function selectPanelReferences(
  */
 export async function livePackViews(
   backend: Pick<ImageBackend, "hasReference">,
-  rows: { characterId: string; view: CrpView; refInputName: string | null }[],
-): Promise<Map<string, Map<CrpView, string>>> {
+  rows: {
+    characterId: string;
+    view: CrpView;
+    refInputName: string | null;
+    wardrobeVariantId?: string | null;
+  }[],
+): Promise<Map<string, Map<string, string>>> {
   const candidates = rows.filter((row): row is typeof row & { refInputName: string } =>
     Boolean(row.refInputName),
   );
   const alive = await Promise.all(candidates.map((row) => backend.hasReference(row.refInputName)));
 
-  const byCharacter = new Map<string, Map<CrpView, string>>();
+  const byCharacter = new Map<string, Map<string, string>>();
   candidates.forEach((row, index) => {
     if (!alive[index]) return;
-    const views = byCharacter.get(row.characterId) ?? new Map<CrpView, string>();
-    views.set(row.view, row.refInputName);
+    const views = byCharacter.get(row.characterId) ?? new Map<string, string>();
+    views.set(packKey(row.view, row.wardrobeVariantId ?? null), row.refInputName);
     byCharacter.set(row.characterId, views);
   });
   return byCharacter;
+}
+
+/**
+ * How a pack view is addressed once outfits exist (M7.1 PR-C).
+ *
+ * A wardrobe-independent view is keyed by name alone; a body view is keyed by
+ * name and variant, because one character legitimately has several. Mirrors
+ * migration 0022's `ifnull(wardrobe_variant_id,'')` uniqueness so the in-memory
+ * key and the database constraint cannot disagree about what "the same view"
+ * means.
+ */
+export function packKey(view: CrpView, wardrobeVariantId: string | null): string {
+  return isWardrobeDependent(view) ? `${view}::${wardrobeVariantId ?? ""}` : view;
 }
 
 /**
@@ -1742,13 +1761,29 @@ export async function livePackViews(
  * exactly the pre-pack behaviour for them rather than nothing.
  */
 export function resolveCastReference(
-  pack: Map<CrpView, string> | undefined,
+  pack: Map<string, string> | undefined,
   fallback: string | undefined,
   shotType: StoryboardShotType,
+  wardrobe: { variantId: string | null; defaultVariantId: string | null } = {
+    variantId: null,
+    defaultVariantId: null,
+  },
 ): string | undefined {
   for (const view of crpViewPreference(shotType)) {
-    const ref = pack?.get(view);
-    if (ref) return ref;
+    if (!isWardrobeDependent(view)) {
+      const ref = pack?.get(view);
+      if (ref) return ref;
+      continue;
+    }
+    // A body view is tried against the panel's named outfit first, then the
+    // character's default. Falling back matters: a panel can name a variant
+    // belonging to a *different* character, in which case this character has
+    // no view under that id and should wear their own default rather than
+    // dropping out of the reference set entirely.
+    for (const variantId of [wardrobe.variantId, wardrobe.defaultVariantId, null]) {
+      const ref = pack?.get(packKey(view, variantId));
+      if (ref) return ref;
+    }
   }
   return fallback;
 }
@@ -1869,13 +1904,38 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
       : [];
   const packs = await livePackViews(backend, packRows);
 
-  const castTierFor = (shotType: StoryboardShotType) => {
+  // M7.1 PR-C. A panel's `wardrobeVariantId` names one character's outfit; every
+  // other character in it wears their own default, which is what this map
+  // supplies.
+  const defaultVariantByCharacter = new Map(
+    (cast.length > 0
+      ? ctx.db
+          .select()
+          .from(wardrobeVariants)
+          .where(
+            inArray(
+              wardrobeVariants.characterId,
+              cast.map((c) => c.id),
+            ),
+          )
+          .all()
+      : []
+    )
+      .filter((variant) => variant.isDefault)
+      .map((variant) => [variant.characterId, variant.id] as const),
+  );
+
+  const castTierFor = (shotType: StoryboardShotType, wardrobeVariantId: string | null) => {
     const live = new Map<string, string>();
     for (const character of cast) {
       const ref = resolveCastReference(
         packs.get(character.id),
         liveCastRefs.get(character.id),
         shotType,
+        {
+          variantId: wardrobeVariantId,
+          defaultVariantId: defaultVariantByCharacter.get(character.id) ?? null,
+        },
       );
       if (ref) live.set(character.id, ref);
     }
@@ -1913,7 +1973,7 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
     const prompt = `${panel.panelImagePrompt}${direction ? `, ${direction}` : ""}`;
     const refs = selectPanelReferences(
       panel.panelImagePrompt,
-      [castTierFor(panel.shotType), ...setTiers],
+      [castTierFor(panel.shotType, panel.wardrobeVariantId), ...setTiers],
       refBudget,
     );
     ctx.log(
@@ -2033,7 +2093,7 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
     // Cast first, then location, then prop — see `selectPanelReferences`.
     const refs = selectPanelReferences(
       beat.description,
-      [castTierFor(beat.shotType), ...setTiers],
+      [castTierFor(beat.shotType, existingByKey.get(`${beat.sceneId}::${beat.index}`)?.wardrobeVariantId ?? null), ...setTiers],
       refBudget,
     );
 
@@ -2437,6 +2497,21 @@ const CRP_DERIVED_VIEWS = CRP_VIEWS.filter(
 );
 
 /**
+ * The views an outfit changes (M7.1 PR-C).
+ *
+ * Only the full-figure ones. Head crops and expressions show a face, and
+ * generating three expressions per outfit would double the most expensive
+ * per-character stage in the chain to say nothing new about the face — the
+ * same "an unused view is pure wall-clock" reasoning that kept action poses
+ * out of the pack in PR-B.
+ */
+const WARDROBE_DEPENDENT_VIEWS: readonly CrpView[] = ["body_front", "body_side"];
+
+export function isWardrobeDependent(view: CrpView): boolean {
+  return WARDROBE_DEPENDENT_VIEWS.includes(view);
+}
+
+/**
  * Which pack views can stand in for a character in a panel, best first.
  *
  * A close-up conditioned on a full-figure plate has a head a few dozen pixels
@@ -2458,6 +2533,83 @@ export function crpViewPreference(shotType: StoryboardShotType): readonly CrpVie
     case "wide":
       return ["body_front", "body_side", "head_front"];
   }
+}
+
+type WardrobeCandidate = { name?: unknown; description?: unknown };
+
+/**
+ * Propose this character's approved outfits, once (M7.1 PR-C).
+ *
+ * Called only when a character has no variants at all — never to refresh them.
+ * Re-proposing on a later run would let a second call invent a different
+ * wardrobe for a cast whose identity is explicitly locked, leaving already
+ * generated body views depicting outfits no row describes any more.
+ *
+ * A model that returns nothing usable is not an error: the character falls back
+ * to a single variant built from their own description, which is exactly the
+ * behaviour before this PR existed. Failing the stage here would make casting —
+ * already the second most expensive stage in the chain — fail on a bad JSON
+ * response after the portrait work was already paid for.
+ */
+async function proposeWardrobe(
+  ctx: StageContext,
+  character: { id: string; name: string; arc: string | null },
+  visualDescription: string,
+) {
+  const provider = resolveDevProvider(ctx.db);
+  let candidates: WardrobeCandidate[] = [];
+  try {
+    const payload = await ctx
+      .llmClient(provider)
+      .chatJson<{ variants?: WardrobeCandidate[] }>({
+        model: provider.model,
+        messages: [
+          {
+            role: "user",
+            content: renderPrompt(ctx.db, "casting.wardrobe", {
+              characterDescription: visualDescription,
+              characterArc: character.arc ? `Arc: ${character.arc}` : "",
+            }),
+          },
+        ],
+        temperature: 0.3,
+      });
+    candidates = payload.variants ?? [];
+  } catch (error) {
+    ctx.log(
+      `Wardrobe proposal failed for ${character.name} (${(error as Error).message}) — ` +
+        `using one default outfit from their description`,
+      "warn",
+    );
+  }
+
+  const usable = candidates
+    .filter(
+      (v): v is { name: string; description: string } =>
+        typeof v?.name === "string" &&
+        v.name.trim().length > 0 &&
+        typeof v?.description === "string" &&
+        v.description.trim().length > 0,
+    )
+    // Two is the cap: each variant adds two full-figure generations to the most
+    // expensive per-character stage there is (~130s each, finding F30), and two
+    // is what the M7.1 plan itself recommends for v1.
+    .slice(0, 2);
+
+  const rows = usable.length > 0 ? usable : [{ name: "Default", description: visualDescription }];
+  return rows.map(
+    (row, index) =>
+      ctx.db
+        .insert(wardrobeVariants)
+        .values({
+          characterId: character.id,
+          name: row.name.trim(),
+          description: row.description.trim(),
+          isDefault: index === 0,
+        })
+        .returning()
+        .all()[0]!,
+  );
 }
 
 export async function runCasting(ctx: StageContext): Promise<void> {
@@ -2562,7 +2714,12 @@ export async function runCasting(ctx: StageContext): Promise<void> {
       ),
     )
     .all();
-  const packByKey = new Map(havePackRows.map((row) => [`${row.characterId}::${row.view}`, row]));
+  const packByKey = new Map(
+    havePackRows.map((row) => [
+      `${row.characterId}::${packKey(row.view, row.wardrobeVariantId)}`,
+      row,
+    ]),
+  );
 
   for (const character of packFor) {
     // Re-read: the loop above may have just written this character's anchor.
@@ -2572,7 +2729,7 @@ export async function runCasting(ctx: StageContext): Promise<void> {
     // The anchor is recorded as a pack row too, so "the pack" is one queryable
     // set rather than "`characters` plus a table of everything else". It owns
     // no separate generation — this points at the portrait already made above.
-    const anchorRow = packByKey.get(`${character.id}::head_front`);
+    const anchorRow = packByKey.get(`${character.id}::${packKey("head_front", null)}`);
     if (!anchorRow) {
       ctx.db
         .insert(characterReferenceImages)
@@ -2588,26 +2745,56 @@ export async function runCasting(ctx: StageContext): Promise<void> {
 
     const anchorRef = anchor.refInputName;
     const visualDescription = anchor.appearanceTag ?? anchor.description;
-    const missing = CRP_DERIVED_VIEWS.filter(
-      (view) => !packByKey.get(`${character.id}::${view}`)?.imageAssetId,
+
+    // M7.1 PR-C — the outfits this character's body views are generated in.
+    // Proposed once and then left alone: re-proposing on every run would let a
+    // second call invent a different wardrobe for a cast whose identity is
+    // explicitly locked, and the pack rows already generated would be of
+    // outfits no variant row describes any more.
+    let variants = ctx.db
+      .select()
+      .from(wardrobeVariants)
+      .where(eq(wardrobeVariants.characterId, character.id))
+      .all();
+    if (variants.length === 0) {
+      variants = await proposeWardrobe(ctx, anchor, visualDescription);
+    }
+    const defaultVariant = variants.find((v) => v.isDefault) ?? variants[0]!;
+
+    // One job per (view, outfit) — but only body views multiply, so a
+    // two-outfit character costs two extra generations, not eight.
+    const jobs = CRP_DERIVED_VIEWS.flatMap((view) =>
+      isWardrobeDependent(view)
+        ? variants.map((variant) => ({ view, variant }))
+        : [{ view, variant: null as (typeof variants)[number] | null }],
+    ).filter(
+      ({ view, variant }) =>
+        !packByKey.get(`${character.id}::${packKey(view, variant?.id ?? null)}`)?.imageAssetId,
     );
 
-    for (const [index, view] of missing.entries()) {
+    for (const [index, { view, variant }] of jobs.entries()) {
       checkAbort(ctx);
       const spec = CRP_VIEW_SPECS[view];
       const size = spec.body ? ctx.config.referenceBodyImage : ctx.config.referenceImage;
+
+      // The outfit is folded into the subject description rather than given
+      // its own template variable: it is part of what the person looks like,
+      // and an empty variable would leave a dangling comma in a
+      // comma-separated diffusion prompt for every wardrobe-independent view.
+      const described = variant ? `${visualDescription}, wearing ${variant.description}` : visualDescription;
 
       const prompt =
         `${imageStyle.promptPrefix}` +
         renderPrompt(ctx.db, "character.reference_view", {
           viewFraming: spec.framing,
-          characterDescription: visualDescription,
+          characterDescription: described,
           viewDetail: spec.detail,
         }) +
         `${imageStyle.promptSuffix}`;
 
       ctx.log(
-        `Generating ${view.replace(/_/g, " ")} for ${anchor.name} (${index + 1}/${missing.length})`,
+        `Generating ${view.replace(/_/g, " ")}${variant ? ` (${variant.name})` : ""} for ` +
+          `${anchor.name} (${index + 1}/${jobs.length})`,
       );
       const bytes = await backend.generate(
         {
@@ -2623,17 +2810,18 @@ export async function runCasting(ctx: StageContext): Promise<void> {
         { shouldAbort: ctx.shouldAbort, log: ctx.log },
       );
 
+      const slug = variant ? `${view}-${variant.id}` : view;
       const asset = storeAsset(ctx.db, ctx.config, {
         kind: "image",
         bytes,
         mimeType: "image/png",
         projectId,
-        label: `character-${anchor.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${view}`,
-        meta: { characterId: character.id, view, prompt },
+        label: `character-${anchor.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${slug}`,
+        meta: { characterId: character.id, view, wardrobeVariantId: variant?.id ?? null, prompt },
       });
-      const refInputName = await backend.uploadReference(bytes, `${character.id}-${view}.png`);
+      const refInputName = await backend.uploadReference(bytes, `${character.id}-${slug}.png`);
 
-      const existing = packByKey.get(`${character.id}::${view}`);
+      const existing = packByKey.get(`${character.id}::${packKey(view, variant?.id ?? null)}`);
       if (existing) {
         ctx.db
           .update(characterReferenceImages)
@@ -2643,7 +2831,14 @@ export async function runCasting(ctx: StageContext): Promise<void> {
       } else {
         ctx.db
           .insert(characterReferenceImages)
-          .values({ characterId: character.id, view, prompt, imageAssetId: asset.id, refInputName })
+          .values({
+            characterId: character.id,
+            view,
+            wardrobeVariantId: variant?.id ?? null,
+            prompt,
+            imageAssetId: asset.id,
+            refInputName,
+          })
           .run();
       }
     }

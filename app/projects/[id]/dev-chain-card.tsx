@@ -38,7 +38,7 @@ export function DevChainCard({
   onContinue: () => void;
   onResolveContinuityFact: (factId: string) => void;
   onUnlockCasting: (characterId: string) => void;
-  onRedoDevItem: (scope: DevItemScope, direction: string) => void;
+  onRedoDevItem: (scope: DevItemScope, direction: string, wardrobeVariantId?: string | null) => void;
 }) {
   const { nextStep } = detail;
 
@@ -101,7 +101,7 @@ function DevChainHistory({
   busy: boolean;
   onResolveContinuityFact: (factId: string) => void;
   onUnlockCasting: (characterId: string) => void;
-  onRedoDevItem: (scope: DevItemScope, direction: string) => void;
+  onRedoDevItem: (scope: DevItemScope, direction: string, wardrobeVariantId?: string | null) => void;
 }) {
   const byStage = new Map(detail.devArtifacts.map((row) => [row.stage, row]));
   const hasCharacters = detail.characters.length > 0;
@@ -268,13 +268,24 @@ function WorldBuildingSection({ detail }: { detail: Detail }) {
  */
 function RerollControl({
   busy,
+  wardrobe,
   onRedo,
 }: {
   busy: boolean;
-  onRedo: (direction: string) => void;
+  /**
+   * Offered only where an outfit is a meaningful thing to change — storyboard
+   * panels. Concept-art plates are locations and props, which have no wardrobe,
+   * so they pass nothing and the picker does not render (M7.1 PR-C).
+   */
+  wardrobe?: {
+    options: { id: string; label: string }[];
+    selected: string | null;
+  };
+  onRedo: (direction: string, wardrobeVariantId?: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [direction, setDirection] = useState("");
+  const [variantId, setVariantId] = useState<string | null>(wardrobe?.selected ?? null);
 
   if (!open) {
     return (
@@ -297,11 +308,28 @@ function RerollControl({
         placeholder="direction (optional)"
         className="w-full rounded border border-white/10 bg-black/30 px-1.5 py-1 text-[11px] text-white/80 placeholder:text-white/30"
       />
+      {wardrobe && wardrobe.options.length > 0 ? (
+        <select
+          value={variantId ?? ""}
+          onChange={(event) => setVariantId(event.target.value || null)}
+          aria-label="Wardrobe"
+          className="w-full rounded border border-white/10 bg-black/30 px-1.5 py-1 text-[11px] text-white/80"
+        >
+          <option value="">default wardrobe</option>
+          {wardrobe.options.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      ) : null}
       <div className="flex gap-2">
         <button
           type="button"
           onClick={() => {
-            onRedo(direction);
+            // The outfit is only sent when this control offers one, so a
+            // concept-art re-roll never carries a wardrobe field at all.
+            onRedo(direction, wardrobe ? variantId : undefined);
             setOpen(false);
             setDirection("");
           }}
@@ -373,8 +401,15 @@ function StoryboardsSection({
 }: {
   detail: Detail;
   busy: boolean;
-  onRedo: (scope: DevItemScope, direction: string) => void;
+  onRedo: (scope: DevItemScope, direction: string, wardrobeVariantId?: string | null) => void;
 }) {
+  // Labelled by character, since a variant named "Field kit" says nothing on
+  // its own about whose field kit it is.
+  const nameById = new Map(detail.characters.map((character) => [character.id, character.name]));
+  const wardrobeOptions = (detail.wardrobeVariants ?? []).map((variant) => ({
+    id: variant.id,
+    label: `${nameById.get(variant.characterId) ?? "?"} — ${variant.name}`,
+  }));
   const panels = [...detail.storyboardPanels].sort((a, b) =>
     a.sceneId === b.sceneId ? a.index - b.index : a.sceneId.localeCompare(b.sceneId),
   );
@@ -402,7 +437,13 @@ function StoryboardsSection({
             <li className="rounded border border-white/10 px-1.5 py-0.5">{panel.cameraMovement}</li>
             <li className="rounded border border-white/10 px-1.5 py-0.5">{panel.lens}</li>
           </ul>
-          <RerollControl busy={busy} onRedo={(direction) => onRedo({ panelId: panel.id }, direction)} />
+          <RerollControl
+            busy={busy}
+            wardrobe={{ options: wardrobeOptions, selected: panel.wardrobeVariantId ?? null }}
+            onRedo={(direction, wardrobeVariantId) =>
+              onRedo({ panelId: panel.id }, direction, wardrobeVariantId)
+            }
+          />
         </figure>
       ))}
     </div>

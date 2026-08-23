@@ -26,6 +26,7 @@ import {
   subtitleCues,
   voiceovers,
   voiceStyles,
+  wardrobeVariants,
   worldBuilding,
   type DevArtifactStage,
 } from "./db/schema";
@@ -292,6 +293,16 @@ export function getProjectDetail(db: Db, projectId: string) {
     worldBuilding: db.select().from(worldBuilding).where(eq(worldBuilding.projectId, projectId)).get(),
     locations: db.select().from(locations).where(eq(locations.projectId, projectId)).all(),
     props: db.select().from(props).where(eq(props.projectId, projectId)).all(),
+    // M7.1 PR-C. Flat across the whole cast, with `characterId` on each row —
+    // the panel wardrobe picker needs every variant the project has, and
+    // grouping them per character here would only be regrouped client-side.
+    wardrobeVariants: db
+      .select()
+      .from(wardrobeVariants)
+      .innerJoin(characters, eq(wardrobeVariants.characterId, characters.id))
+      .where(eq(characters.projectId, projectId))
+      .all()
+      .map(({ wardrobe_variants }) => wardrobe_variants),
     // M7 PR7. Every fact this project has ever extracted, unresolved conflict
     // and all — never filtered down to "just the latest", since the whole
     // point of keeping a conflicting fact is that it stays visible next to
@@ -398,6 +409,16 @@ export const regenerateSchema = z.object({
   locationId: z.string().optional(),
   /** Scopes a "concept_art" redo to one prop (M7.1 PR-D0). */
   propId: z.string().optional(),
+  /**
+   * Sets the panel's wardrobe override as part of re-rolling it (M7.1 PR-C).
+   *
+   * Deliberately not its own route. Changing which outfit a panel shows means
+   * the panel's image has to change too, so pairing the two makes the illegal
+   * intermediate state — a panel whose column names one outfit while its
+   * picture shows another — unrepresentable. `null` clears the override back
+   * to every character's default; omitted leaves it as it was.
+   */
+  wardrobeVariantId: z.string().nullable().optional(),
 });
 
 /**
@@ -751,6 +772,12 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
     }
   }
 
+  if (input.wardrobeVariantId !== undefined && !(input.target === "storyboards" && input.panelId)) {
+    throw new Error(
+      `"wardrobeVariantId" only applies to a panel-scoped "storyboards" redo — see regenerateSchema`,
+    );
+  }
+
   const scoped =
     input.sceneId ?? input.characterId ?? input.panelId ?? input.locationId ?? input.propId;
 
@@ -809,9 +836,31 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
   // not to discard the planning around it. `runStoryboards`/`runConceptArt`
   // then see exactly one item missing an image and regenerate that one.
   if (input.target === "storyboards" && input.panelId) {
+    // A named variant has to belong to this project's own cast: `regenerate`
+    // is reached straight from an API body, and a panel pointing at another
+    // project's outfit would resolve to a reference this project never
+    // generated — a silently unanchored panel, which is the failure this whole
+    // milestone exists to stop.
+    if (input.wardrobeVariantId) {
+      const owned = db
+        .select({ id: wardrobeVariants.id })
+        .from(wardrobeVariants)
+        .innerJoin(characters, eq(wardrobeVariants.characterId, characters.id))
+        .where(and(eq(wardrobeVariants.id, input.wardrobeVariantId), eq(characters.projectId, projectId)))
+        .get();
+      if (!owned) {
+        throw new Error(`No such wardrobe variant on this project: ${input.wardrobeVariantId}`);
+      }
+    }
+
     const cleared = db
       .update(storyboardPanels)
-      .set({ panelImageAssetId: null })
+      .set({
+        panelImageAssetId: null,
+        ...(input.wardrobeVariantId !== undefined
+          ? { wardrobeVariantId: input.wardrobeVariantId }
+          : {}),
+      })
       .where(and(eq(storyboardPanels.id, input.panelId), eq(storyboardPanels.projectId, projectId)))
       .returning()
       .all();

@@ -5,6 +5,7 @@ import { seed } from "../db/seed";
 import type { Db } from "../db/client";
 import {
   assets,
+  characterReferenceImages,
   CRP_VIEWS,
   STORYBOARD_SHOT_TYPES,
   characters,
@@ -20,6 +21,7 @@ import {
   providers,
   shotListItems,
   storyboardPanels,
+  wardrobeVariants,
   worldBuilding,
   type CrpView,
 } from "../db/schema";
@@ -31,7 +33,9 @@ import { resolveProvider } from "./context";
 import {
   PANEL_REFERENCE_BUDGET,
   crpViewPreference,
+  isWardrobeDependent,
   livePackViews,
+  packKey,
   parseScreenplay,
   resolveCastReference,
   selectPanelReferences,
@@ -1850,8 +1854,17 @@ describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
       `uploaded-${reyna.id}-head_three_quarter.png`,
       prop.refInputName,
     ]);
+    // The wide's full-figure view is per-outfit as of M7.1 PR-C, so its
+    // reference is keyed by variant — the character's default here, since this
+    // panel names none.
+    const outfit = db
+      .select()
+      .from(wardrobeVariants)
+      .where(eq(wardrobeVariants.characterId, reyna.id))
+      .all()
+      .find((v) => v.isDefault)!;
     expect(requests[1]!.references).toEqual([
-      `uploaded-${reyna.id}-body_front.png`,
+      `uploaded-${reyna.id}-body_front-${outfit.id}.png`,
       prop.refInputName,
     ]);
   });
@@ -3124,5 +3137,143 @@ describe("character reference packs (M7.1 PR-B)", () => {
     expect(packs.has("c2")).toBe(false);
     // And the degraded pack still resolves, just to a less ideal view.
     expect(resolveCastReference(packs.get("c1"), undefined, "wide")).toBe("anchor.png");
+  });
+});
+
+describe("wardrobe variants (M7.1 PR-C)", () => {
+  const anchor = "uploaded-anchor.png";
+
+  it("keys only body views by outfit, leaving heads and expressions shared", () => {
+    // Generating three expressions per outfit would double the most expensive
+    // per-character stage to say nothing new about the face.
+    expect(packKey("body_front", "v1")).toBe("body_front::v1");
+    expect(packKey("head_front", "v1")).toBe("head_front");
+    expect(packKey("expression_sad", "v1")).toBe("expression_sad");
+    expect(isWardrobeDependent("body_side")).toBe(true);
+    expect(isWardrobeDependent("head_side")).toBe(false);
+  });
+
+  it("prefers the panel's named outfit for a full-figure shot", () => {
+    const pack = new Map([
+      ["body_front::default", "body-default.png"],
+      ["body_front::alt", "body-alt.png"],
+      ["head_front", anchor],
+    ]);
+    expect(
+      resolveCastReference(pack, undefined, "wide", { variantId: "alt", defaultVariantId: "default" }),
+    ).toBe("body-alt.png");
+  });
+
+  it("falls back to the character's own default when the panel names someone else's outfit", () => {
+    // A panel carries one variant id, and it belongs to whichever character it
+    // dresses — every *other* character in the frame has no view under that id
+    // and must wear their own default rather than drop out of the references.
+    const pack = new Map([
+      ["body_front::mine", "body-mine.png"],
+      ["head_front", anchor],
+    ]);
+    expect(
+      resolveCastReference(pack, undefined, "wide", {
+        variantId: "someone-elses",
+        defaultVariantId: "mine",
+      }),
+    ).toBe("body-mine.png");
+  });
+
+  it("still reaches the anchor when a character has no body views in any outfit", () => {
+    const pack = new Map([["head_front", anchor]]);
+    expect(
+      resolveCastReference(pack, "portrait.png", "wide", { variantId: "alt", defaultVariantId: "d" }),
+    ).toBe(anchor);
+  });
+
+  it("ignores the outfit entirely for a close-up, which cites a head crop", () => {
+    const pack = new Map([
+      ["head_three_quarter", "head34.png"],
+      ["body_front::alt", "body-alt.png"],
+    ]);
+    expect(
+      resolveCastReference(pack, undefined, "close-up", { variantId: "alt", defaultVariantId: "d" }),
+    ).toBe("head34.png");
+  });
+
+  it("generates a body view per outfit but heads and expressions only once", async () => {
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id);
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        llm: [
+          {
+            json: {
+              variants: [
+                { name: "Workshop", description: "canvas apron over a grey shirt" },
+                { name: "Street", description: "navy wool coat" },
+              ],
+            },
+          },
+        ],
+        images: [Buffer.from("view")],
+      }),
+    );
+
+    const character = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    const rows = db
+      .select()
+      .from(characterReferenceImages)
+      .where(eq(characterReferenceImages.characterId, character.id))
+      .all();
+
+    // 6 wardrobe-independent views (anchor + 2 heads + 3 expressions) plus 2
+    // body views per outfit.
+    expect(rows.filter((r) => r.wardrobeVariantId === null)).toHaveLength(6);
+    expect(rows.filter((r) => r.wardrobeVariantId !== null)).toHaveLength(4);
+
+    const variants = db
+      .select()
+      .from(wardrobeVariants)
+      .where(eq(wardrobeVariants.characterId, character.id))
+      .all();
+    expect(variants.map((v) => v.name).sort()).toEqual(["Street", "Workshop"]);
+    // Exactly one default, and it is the first the model proposed.
+    expect(variants.filter((v) => v.isDefault)).toHaveLength(1);
+    expect(variants.find((v) => v.isDefault)!.name).toBe("Workshop");
+  });
+
+  it("falls back to one default outfit when the model returns nothing usable", async () => {
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id);
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+
+    // Casting is already the second most expensive stage in the chain; failing
+    // it on a malformed wardrobe response after the portrait work is paid for
+    // would be the wrong trade.
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        llm: [{ json: { variants: [{ name: "", description: "" }] } }],
+        images: [Buffer.from("view")],
+      }),
+    );
+
+    const character = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+    const variants = db
+      .select()
+      .from(wardrobeVariants)
+      .where(eq(wardrobeVariants.characterId, character.id))
+      .all();
+    expect(variants).toHaveLength(1);
+    expect(variants[0]!.name).toBe("Default");
+    expect(variants[0]!.isDefault).toBe(true);
   });
 });
