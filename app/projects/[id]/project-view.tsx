@@ -118,6 +118,31 @@ export function ProjectView({ initial }: { initial: Detail }) {
     setBusy(false);
   }
 
+  /**
+   * Re-roll one Development-chain image — a storyboard panel, or a location or
+   * prop's concept-art plate (M7.1 PR-D0).
+   *
+   * No `redoConfirmation` prompt, unlike the unscoped `regenerate` above: a
+   * scoped redo skips the downstream cascade entirely, so there is nothing to
+   * warn about losing. It replaces one picture and leaves the row's prompt and
+   * cinematography fields alone.
+   */
+  async function regenerateDevItem(
+    scope: { panelId: string } | { locationId: string } | { propId: string },
+    itemDirection: string,
+  ) {
+    const target = "panelId" in scope ? "storyboards" : "concept_art";
+    setBusy(true);
+    await fetch(`/api/projects/${detail.project.id}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target, ...scope, direction: itemDirection.trim() || undefined }),
+    });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
   async function regenerateCharacter(characterId: string, characterDirection: string) {
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
@@ -327,6 +352,7 @@ export function ProjectView({ initial }: { initial: Detail }) {
             onContinue={continueProject}
             onResolveContinuityFact={resolveContinuityFact}
             onUnlockCasting={unlockCharacterCasting}
+            onRedoDevItem={regenerateDevItem}
           />
         </div>
       ) : layout === "stepper" ? (

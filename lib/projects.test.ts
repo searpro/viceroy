@@ -3,7 +3,18 @@ import { eq } from "drizzle-orm";
 import { createTestDb } from "./db/testing";
 import { seed } from "./db/seed";
 import type { Db } from "./db/client";
-import { assets, characters, devArtifacts, projects, renders, scenes, voiceovers } from "./db/schema";
+import {
+  assets,
+  characters,
+  devArtifacts,
+  locations,
+  projects,
+  props,
+  renders,
+  scenes,
+  storyboardPanels,
+  voiceovers,
+} from "./db/schema";
 import { listJobs } from "./queue";
 import {
   createProject,
@@ -61,6 +72,48 @@ function projectWithSceneAndCharacter() {
     .returning()
     .all();
   return { project, character: character!, scene: scene! };
+}
+
+// A dev-format project with one panel, one location and one prop, each holding
+// a generated image — the fixture the M7.1 PR-D0 scoped-redo tests share.
+function devProjectWithPanelLocationProp() {
+  const project = createProject(db, { idea: "a lighthouse keeper counts ships", format: "short_movie" });
+  const [panel] = db
+    .insert(storyboardPanels)
+    .values({
+      projectId: project.id,
+      sceneId: "1",
+      index: 0,
+      panelImagePrompt: "Reyna at the workbench, close-up shot",
+      shotType: "close-up",
+      cameraAngle: "high",
+      panelImageAssetId: imageAsset().id,
+    })
+    .returning()
+    .all();
+  const [location] = db
+    .insert(locations)
+    .values({
+      projectId: project.id,
+      name: "The lamp room",
+      description: "brass and glass",
+      imageAssetId: imageAsset().id,
+      refInputName: "uploaded-lamp.png",
+    })
+    .returning()
+    .all();
+  const [prop] = db
+    .insert(props)
+    .values({
+      projectId: project.id,
+      name: "The logbook",
+      description: "salt-stained",
+      imageAssetId: imageAsset().id,
+      refInputName: "uploaded-log.png",
+    })
+    .returning()
+    .all();
+  return { project, panel: panel!, location: location!, prop: prop! };
 }
 
 // The whole point of scoping a redo to one row: clearing its artifact is what
@@ -605,5 +658,104 @@ describe("listAllJobs", () => {
     for (let i = 1; i < jobs.length; i++) {
       expect(jobs[i - 1]!.createdAt.getTime()).toBeGreaterThanOrEqual(jobs[i]!.createdAt.getTime());
     }
+  });
+});
+
+describe("regenerate — per-item image scoping (M7.1 PR-D0)", () => {
+  it("clears only the targeted panel's image, leaving its prompt and cinematography intact", () => {
+    const { project, panel } = devProjectWithPanelLocationProp();
+    const job = regenerate(db, project.id, { target: "storyboards", panelId: panel.id });
+
+    const after = db.select().from(storyboardPanels).where(eq(storyboardPanels.id, panel.id)).get()!;
+    expect(after.panelImageAssetId).toBeNull();
+    // The planning around the picture survives — a re-roll re-rolls the image,
+    // it does not discard a prompt or a shot choice a human may have edited.
+    expect(after.panelImagePrompt).toBe("Reyna at the workbench, close-up shot");
+    expect(after.shotType).toBe("close-up");
+    expect(after.cameraAngle).toBe("high");
+    expect(job.payload.panelId).toBe(panel.id);
+  });
+
+  it("clears a scoped location's image and its host reference, so nothing keeps anchoring to the old plate", () => {
+    const { project, location } = devProjectWithPanelLocationProp();
+    regenerate(db, project.id, { target: "concept_art", locationId: location.id });
+
+    const after = db.select().from(locations).where(eq(locations.id, location.id)).get()!;
+    expect(after.imageAssetId).toBeNull();
+    expect(after.refInputName).toBeNull();
+    expect(after.description).toBe("brass and glass");
+  });
+
+  it("leaves the sibling prop untouched when a location is scoped", () => {
+    const { project, location, prop } = devProjectWithPanelLocationProp();
+    regenerate(db, project.id, { target: "concept_art", locationId: location.id });
+
+    const after = db.select().from(props).where(eq(props.id, prop.id)).get()!;
+    expect(after.imageAssetId).not.toBeNull();
+    expect(after.refInputName).toBe("uploaded-log.png");
+  });
+
+  it("clears a scoped prop the same way", () => {
+    const { project, prop } = devProjectWithPanelLocationProp();
+    regenerate(db, project.id, { target: "concept_art", propId: prop.id });
+
+    const after = db.select().from(props).where(eq(props.id, prop.id)).get()!;
+    expect(after.imageAssetId).toBeNull();
+    expect(after.refInputName).toBeNull();
+  });
+
+  // A scoped redo skips `invalidateDownstreamOf` entirely — that is what makes
+  // it cheap, and what would make a cross-project id dangerous if it were not
+  // matched on projectId.
+  it("refuses a panel id belonging to another project rather than clearing it", () => {
+    const { panel } = devProjectWithPanelLocationProp();
+    const other = createProject(db, { idea: "an unrelated second film", format: "short_movie" });
+
+    expect(() => regenerate(db, other.id, { target: "storyboards", panelId: panel.id })).toThrow(
+      /No such storyboard panel on this project/,
+    );
+
+    const untouched = db.select().from(storyboardPanels).where(eq(storyboardPanels.id, panel.id)).get()!;
+    expect(untouched.panelImageAssetId).not.toBeNull();
+  });
+
+  it("refuses a location id belonging to another project", () => {
+    const { location } = devProjectWithPanelLocationProp();
+    const other = createProject(db, { idea: "an unrelated second film", format: "short_movie" });
+
+    expect(() => regenerate(db, other.id, { target: "concept_art", locationId: location.id })).toThrow(
+      /No such location on this project/,
+    );
+  });
+
+  // Silently ignoring a scope the target cannot honour is the expensive
+  // failure: the caller asks for one panel and gets the whole stage.
+  it("refuses a scope key the target does not understand", () => {
+    const { project, panel } = devProjectWithPanelLocationProp();
+    expect(() => regenerate(db, project.id, { target: "concept_art", panelId: panel.id })).toThrow(
+      /"panelId" does not scope a "concept_art" redo/,
+    );
+  });
+
+  it("refuses panelId on a narrative-pipeline target too, not just the wrong dev stage", () => {
+    const { project, panel } = devProjectWithPanelLocationProp();
+    expect(() => regenerate(db, project.id, { target: "story", panelId: panel.id })).toThrow(
+      /does not scope a "story" redo/,
+    );
+  });
+
+  it("does not cascade downstream stages, unlike an unscoped redo of the same target", () => {
+    const { project, panel } = devProjectWithPanelLocationProp();
+    db.insert(devArtifacts)
+      .values({ projectId: project.id, stage: "production_plan", content: "a plan", approvedAt: new Date() })
+      .run();
+
+    regenerate(db, project.id, { target: "storyboards", panelId: panel.id });
+
+    // "production_plan" sits well downstream of "storyboards"; an unscoped redo
+    // would have cleared it.
+    const plan = db.select().from(devArtifacts).where(eq(devArtifacts.projectId, project.id)).get()!;
+    expect(plan.content).toBe("a plan");
+    expect(plan.approvedAt).not.toBeNull();
   });
 });

@@ -30,7 +30,7 @@ const remotionEntry = path.resolve(
 );
 
 /**
- * Stage 19 (M7 PR11) — the thin animatic.
+ * Stage 20 (M7 PR11) — the thin animatic.
  *
  * Mirrors `runRender`'s (render.ts) staging/bundle/render shape, deliberately
  * much simpler: no `renders` table row (that table's status/error/retry

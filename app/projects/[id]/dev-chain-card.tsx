@@ -1,9 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { Panel } from "./steps/panel";
 import { ContinueBanner } from "./continue-banner";
 import { castingLockReason } from "./redo-warning";
+import { DEV_CHAIN_ORDER, DEV_STAGE_LABELS } from "./dev-stages";
 import type { Detail } from "./detail-types";
+
+/** What a scoped Development-chain image redo names (M7.1 PR-D0). */
+export type DevItemScope = { panelId: string } | { locationId: string } | { propId: string };
 
 /**
  * The Development chain's review card (M7 PR1, generate/approve wiring added
@@ -25,6 +30,7 @@ export function DevChainCard({
   onContinue,
   onResolveContinuityFact,
   onUnlockCasting,
+  onRedoDevItem,
 }: {
   detail: Detail;
   active: boolean;
@@ -32,6 +38,7 @@ export function DevChainCard({
   onContinue: () => void;
   onResolveContinuityFact: (factId: string) => void;
   onUnlockCasting: (characterId: string) => void;
+  onRedoDevItem: (scope: DevItemScope, direction: string) => void;
 }) {
   const { nextStep } = detail;
 
@@ -43,8 +50,10 @@ export function DevChainCard({
         </Panel>
         <DevChainHistory
           detail={detail}
+          busy={busy}
           onResolveContinuityFact={onResolveContinuityFact}
           onUnlockCasting={onUnlockCasting}
+          onRedoDevItem={onRedoDevItem}
         />
       </div>
     );
@@ -61,40 +70,17 @@ export function DevChainCard({
       </Panel>
       <DevChainHistory
         detail={detail}
+        busy={busy}
         onResolveContinuityFact={onResolveContinuityFact}
         onUnlockCasting={onUnlockCasting}
+        onRedoDevItem={onRedoDevItem}
       />
     </div>
   );
 }
 
-// Mirrors `DEV_CHAIN_STAGES` in lib/db/schema.ts — hand-kept rather than
-// imported, same as `PROJECT_FORMATS` in new-project-form.tsx, since
-// lib/db/schema.ts pulls in better-sqlite3 and isn't safe in a client bundle.
-const DEV_STAGE_LABELS: Record<string, string> = {
-  concept: "Concept",
-  logline: "Logline",
-  characters: "Characters & arcs",
-  world_building: "World building",
-  story_structure: "Story structure",
-  beat_sheet: "Beat sheet",
-  treatment: "Treatment",
-  screenplay: "Screenplay",
-  screenplay_revision: "Screenplay revision",
-  story_bible: "Story bible",
-  script_breakdown: "Script breakdown",
-  scene_breakdown: "Scene breakdown",
-  continuity: "Continuity",
-  visual_bible: "Visual bible",
-  production_design: "Production design",
-  concept_art: "Concept art",
-  storyboards: "Storyboards",
-  shot_list: "Shot list",
-  previs: "Previs",
-  casting: "Casting",
-  production_plan: "Production plan",
-};
-const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
+// Stage order and labels live in their own module so a test can assert they
+// stay in step with `DEV_CHAIN_STAGES` — see dev-stages.ts.
 
 /**
  * Read-only history of everything the Development chain has generated so
@@ -106,12 +92,16 @@ const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);
  */
 function DevChainHistory({
   detail,
+  busy,
   onResolveContinuityFact,
   onUnlockCasting,
+  onRedoDevItem,
 }: {
   detail: Detail;
+  busy: boolean;
   onResolveContinuityFact: (factId: string) => void;
   onUnlockCasting: (characterId: string) => void;
+  onRedoDevItem: (scope: DevItemScope, direction: string) => void;
 }) {
   const byStage = new Map(detail.devArtifacts.map((row) => [row.stage, row]));
   const hasCharacters = detail.characters.length > 0;
@@ -159,9 +149,9 @@ function DevChainHistory({
               ) : stage === "continuity" ? (
                 <ContinuitySection detail={detail} onResolveContinuityFact={onResolveContinuityFact} />
               ) : stage === "concept_art" ? (
-                <ConceptArtSection detail={detail} />
+                <ConceptArtSection detail={detail} busy={busy} onRedo={onRedoDevItem} />
               ) : stage === "storyboards" ? (
-                <StoryboardsSection detail={detail} />
+                <StoryboardsSection detail={detail} busy={busy} onRedo={onRedoDevItem} />
               ) : stage === "shot_list" ? (
                 <ShotListSection detail={detail} />
               ) : stage === "previs" ? (
@@ -264,14 +254,99 @@ function WorldBuildingSection({ detail }: { detail: Detail }) {
   );
 }
 
+/**
+ * The per-item re-roll control (M7.1 PR-D0).
+ *
+ * Direction is local to this one item, not the card-level direction box: the
+ * whole point of a scoped redo is that it steers one picture, and a shared
+ * input would leak a note written for one panel into the next one re-rolled.
+ * Same reasoning as `SceneCard`'s own per-scene direction state (scenes-step).
+ *
+ * Collapsed behind a "re-roll" toggle rather than always-open, because these
+ * render in a grid of many and a text input under every thumbnail would bury
+ * the images the grid exists to show.
+ */
+function RerollControl({
+  busy,
+  onRedo,
+}: {
+  busy: boolean;
+  onRedo: (direction: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [direction, setDirection] = useState("");
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        disabled={busy}
+        className="text-[11px] text-white/40 underline underline-offset-2 hover:text-white/70 disabled:opacity-40"
+      >
+        re-roll
+      </button>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <input
+        value={direction}
+        onChange={(event) => setDirection(event.target.value)}
+        placeholder="direction (optional)"
+        className="w-full rounded border border-white/10 bg-black/30 px-1.5 py-1 text-[11px] text-white/80 placeholder:text-white/30"
+      />
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            onRedo(direction);
+            setOpen(false);
+            setDirection("");
+          }}
+          disabled={busy}
+          className="rounded border border-white/20 px-1.5 py-0.5 text-[11px] text-white/80 hover:bg-white/10 disabled:opacity-40"
+        >
+          Re-roll
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            setDirection("");
+          }}
+          className="text-[11px] text-white/40 hover:text-white/70"
+        >
+          cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // M7 PR9. The one stage in this history panel whose output is images rather
 // than text — every location/prop that has one gets a thumbnail, not just a
 // name in a list, since that's the entire point of reviewing this stage.
-function ConceptArtSection({ detail }: { detail: Detail }) {
-  const withImages = [...detail.locations, ...detail.props].filter((entity) => entity.imageAssetId);
+function ConceptArtSection({
+  detail,
+  busy,
+  onRedo,
+}: {
+  detail: Detail;
+  busy: boolean;
+  onRedo: (scope: DevItemScope, direction: string) => void;
+}) {
+  // Tagged on merge: a scoped redo has to name `locationId` or `propId`
+  // specifically, and a flat concat of the two arrays loses which is which.
+  const entities = [
+    ...detail.locations.map((entity) => ({ entity, scope: { locationId: entity.id } as DevItemScope })),
+    ...detail.props.map((entity) => ({ entity, scope: { propId: entity.id } as DevItemScope })),
+  ].filter(({ entity }) => entity.imageAssetId);
+
   return (
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-      {withImages.map((entity) => (
+      {entities.map(({ entity, scope }) => (
         <figure key={entity.id} className="space-y-1.5">
           <img
             src={`/api/assets/${entity.imageAssetId}`}
@@ -279,6 +354,7 @@ function ConceptArtSection({ detail }: { detail: Detail }) {
             className="aspect-[9/16] w-full rounded-md border border-white/10 object-cover"
           />
           <figcaption className="text-xs text-white/60">{entity.name}</figcaption>
+          <RerollControl busy={busy} onRedo={(direction) => onRedo(scope, direction)} />
         </figure>
       ))}
     </div>
@@ -290,7 +366,15 @@ function ConceptArtSection({ detail }: { detail: Detail }) {
 // thumbnail — the acceptance bar this stage exists to clear is that
 // shotType/cameraAngle/cameraMovement/lens are independently visible, not
 // baked into `panelImagePrompt` as prose only.
-function StoryboardsSection({ detail }: { detail: Detail }) {
+function StoryboardsSection({
+  detail,
+  busy,
+  onRedo,
+}: {
+  detail: Detail;
+  busy: boolean;
+  onRedo: (scope: DevItemScope, direction: string) => void;
+}) {
   const panels = [...detail.storyboardPanels].sort((a, b) =>
     a.sceneId === b.sceneId ? a.index - b.index : a.sceneId.localeCompare(b.sceneId),
   );
@@ -318,6 +402,7 @@ function StoryboardsSection({ detail }: { detail: Detail }) {
             <li className="rounded border border-white/10 px-1.5 py-0.5">{panel.cameraMovement}</li>
             <li className="rounded border border-white/10 px-1.5 py-0.5">{panel.lens}</li>
           </ul>
+          <RerollControl busy={busy} onRedo={(direction) => onRedo({ panelId: panel.id }, direction)} />
         </figure>
       ))}
     </div>

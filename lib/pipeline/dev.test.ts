@@ -2851,3 +2851,192 @@ describe("selectPanelReferences — the panel reference budget (M7.1 PR-A2)", ()
     expect(PANEL_REFERENCE_BUDGET).toBe(3);
   });
 });
+
+describe("scoped image redos (M7.1 PR-D0)", () => {
+  // Local copies: the equivalents in the stage-16/18 blocks are scoped to those
+  // describes, and reaching across for them would couple this block to their
+  // setup. Same fixture shape, same reasoning as the stage-20 block's own copy.
+  const SCOPED_BEATS = {
+    json: {
+      beats: [
+        {
+          sceneId: "1",
+          description: "Reyna kneels at the workbench, examining her father's pick set closely.",
+          shotType: "close-up",
+          cameraAngle: "high",
+          cameraMovement: "static",
+          lens: "telephoto",
+        },
+        {
+          sceneId: "2",
+          description: "Reyna kneels at a new door, her father's pick set glinting in low light.",
+          shotType: "wide",
+          cameraAngle: "eye-level",
+          cameraMovement: "dolly",
+          lens: "wide",
+        },
+      ],
+    },
+  };
+
+  async function setupThroughConceptArt() {
+    const project = await runThroughApprovedContinuity();
+    await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
+    advance(db, project.id);
+    await runProductionDesign(
+      stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
+        llm: [{ content: "A production-design document." }],
+      }),
+    );
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("reyna-portrait")],
+      }),
+    );
+    await runConceptArt(
+      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
+        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
+      }),
+    );
+    return project;
+  }
+
+  async function setupThroughStoryboards() {
+    const project = await setupThroughConceptArt();
+    await runStoryboards(
+      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+        llm: [SCOPED_BEATS],
+        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+      }),
+    );
+    return project;
+  }
+
+  it("runConceptArt regenerates only the scoped location, not every entity missing a plate", async () => {
+    const project = await setupThroughConceptArt();
+    const location = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+    const prop = db.select().from(props).where(eq(props.projectId, project.id)).get()!;
+
+    // Clear BOTH images, then scope the redo to the location. The ordinary
+    // "missing an image" filter would pick up the prop too — the scope is what
+    // stops it, and on this hardware that is the whole point (finding F9).
+    db.update(locations).set({ imageAssetId: null }).where(eq(locations.id, location.id)).run();
+    db.update(props).set({ imageAssetId: null }).where(eq(props.id, prop.id)).run();
+
+    const requests: Record<string, unknown>[] = [];
+    await runConceptArt(
+      stubContext(
+        db,
+        enqueue(db, { type: "concept_art", projectId: project.id, payload: { locationId: location.id } }),
+        { images: [Buffer.from("relocation-bytes")], onImageRequest: (r) => requests.push(r) },
+      ),
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(db.select().from(locations).where(eq(locations.id, location.id)).get()!.imageAssetId).not.toBeNull();
+    expect(db.select().from(props).where(eq(props.id, prop.id)).get()!.imageAssetId).toBeNull();
+  });
+
+  it("runConceptArt leaves the stage's approval alone on a scoped redo", async () => {
+    const project = await setupThroughConceptArt();
+    const before = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(before.conceptArtApprovedAt).not.toBeNull();
+
+    const location = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+    db.update(locations).set({ imageAssetId: null }).where(eq(locations.id, location.id)).run();
+
+    await runConceptArt(
+      stubContext(
+        db,
+        enqueue(db, { type: "concept_art", projectId: project.id, payload: { locationId: location.id } }),
+        { images: [Buffer.from("relocation-bytes")] },
+      ),
+    );
+
+    // Re-rolling one plate is not the project reaching — or leaving — this
+    // stage, so an already-approved project stays approved and is not parked
+    // for review again.
+    const after = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(after.conceptArtApprovedAt).toEqual(before.conceptArtApprovedAt);
+    expect(after.awaitingReview).toBe(before.awaitingReview);
+  });
+
+  it("runStoryboards re-rolls one panel without re-extracting beats", async () => {
+    const project = await setupThroughStoryboards();
+    const panels = [...db.select().from(storyboardPanels).where(eq(storyboardPanels.projectId, project.id)).all()].sort(
+      (a, b) => a.index - b.index,
+    );
+    expect(panels).toHaveLength(2);
+    const target = panels[0]!;
+    const sibling = panels[1]!;
+    const siblingAssetBefore = sibling.panelImageAssetId;
+
+    db.update(storyboardPanels).set({ panelImageAssetId: null }).where(eq(storyboardPanels.id, target.id)).run();
+
+    const requests: Record<string, unknown>[] = [];
+    await runStoryboards(
+      stubContext(
+        db,
+        enqueue(db, { type: "storyboards", projectId: project.id, payload: { panelId: target.id } }),
+        {
+          images: [Buffer.from("re-rolled")],
+          onImageRequest: (r) => requests.push(r),
+          // No `llm` responses configured, and beat extraction would need one:
+          // a fresh extraction at temperature 0.4 might not even produce a beat
+          // at this panel's coordinates, so the scoped path must not run it.
+          onChatJsonRequest: () => {
+            throw new Error("a scoped panel re-roll must not re-extract beats");
+          },
+        },
+      ),
+    );
+
+    expect(requests).toHaveLength(1);
+    // Regenerated from the row's own stored prompt.
+    expect(requests[0]!.prompt).toBe(target.panelImagePrompt);
+
+    const after = db.select().from(storyboardPanels).where(eq(storyboardPanels.id, target.id)).get()!;
+    expect(after.panelImageAssetId).not.toBeNull();
+    expect(after.panelImagePrompt).toBe(target.panelImagePrompt);
+    expect(db.select().from(storyboardPanels).where(eq(storyboardPanels.id, sibling.id)).get()!.panelImageAssetId).toBe(
+      siblingAssetBefore,
+    );
+  });
+
+  it("runStoryboards rewrites a re-rolled panel's stored prompt only when direction was given", async () => {
+    const project = await setupThroughStoryboards();
+    const target = db.select().from(storyboardPanels).where(eq(storyboardPanels.projectId, project.id)).get()!;
+    db.update(storyboardPanels).set({ panelImageAssetId: null }).where(eq(storyboardPanels.id, target.id)).run();
+
+    await runStoryboards(
+      stubContext(
+        db,
+        enqueue(db, {
+          type: "storyboards",
+          projectId: project.id,
+          payload: { panelId: target.id, direction: "harsher shadows" },
+        }),
+        { images: [Buffer.from("re-rolled")] },
+      ),
+    );
+
+    const after = db.select().from(storyboardPanels).where(eq(storyboardPanels.id, target.id)).get()!;
+    expect(after.panelImagePrompt).toBe(`${target.panelImagePrompt}, harsher shadows`);
+  });
+
+  it("runStoryboards still refuses a scoped re-roll when the cast is unlocked", async () => {
+    const project = await setupThroughStoryboards();
+    const target = db.select().from(storyboardPanels).where(eq(storyboardPanels.projectId, project.id)).get()!;
+    db.update(characters).set({ castingLockedAt: null }).where(eq(characters.projectId, project.id)).run();
+
+    await expect(
+      runStoryboards(
+        stubContext(
+          db,
+          enqueue(db, { type: "storyboards", projectId: project.id, payload: { panelId: target.id } }),
+          { images: [Buffer.from("re-rolled")] },
+        ),
+      ),
+    ).rejects.toThrow(/Casting is not locked/);
+  });
+});

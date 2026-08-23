@@ -389,9 +389,35 @@ export const regenerateSchema = z.object({
   ttsInstruct: z.string().trim().max(1000).optional(),
   /** Scopes an "elements" or "scene_images" redo to one scene. */
   sceneId: z.string().optional(),
-  /** Scopes a "character_images" redo to one character. */
+  /** Scopes a "character_images" or "casting" redo to one character. */
   characterId: z.string().optional(),
+  /** Scopes a "storyboards" redo to one panel (M7.1 PR-D0). */
+  panelId: z.string().optional(),
+  /** Scopes a "concept_art" redo to one location (M7.1 PR-D0). */
+  locationId: z.string().optional(),
+  /** Scopes a "concept_art" redo to one prop (M7.1 PR-D0). */
+  propId: z.string().optional(),
 });
+
+/**
+ * Which redo targets each scope key is meaningful for.
+ *
+ * A scope the target doesn't understand is refused rather than ignored. Silently
+ * dropping it is the worse failure: the caller asked to redo one panel, the
+ * stage regenerates all of them, and on this hardware that is the difference
+ * between two minutes and an afternoon (finding F30). The narrative pipeline's
+ * own `sceneId`/`characterId` are listed here too, so the rule is one table
+ * rather than a convention only the new keys follow.
+ */
+const SCOPE_TARGETS = {
+  sceneId: ["elements", "scene_images"],
+  characterId: ["character_images", "casting"],
+  panelId: ["storyboards"],
+  locationId: ["concept_art"],
+  propId: ["concept_art"],
+} as const satisfies Record<string, readonly InvalidationStage[]>;
+
+type ScopeKey = keyof typeof SCOPE_TARGETS;
 
 /**
  * The pipeline's artifacts, in the order one derives from the last.
@@ -693,8 +719,32 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
     }
   }
 
-  const scoped = input.sceneId ?? input.characterId;
+  // A scope key the target doesn't understand is refused, not ignored — see
+  // `SCOPE_TARGETS`. Checked before anything is cleared or enqueued, so a
+  // mistyped request changes nothing.
+  for (const key of Object.keys(SCOPE_TARGETS) as ScopeKey[]) {
+    const value = input[key];
+    if (!value) continue;
+    const allowed: readonly string[] = SCOPE_TARGETS[key];
+    if (!allowed.includes(input.target)) {
+      throw new Error(
+        `"${key}" does not scope a "${input.target}" redo — it applies to ${allowed
+          .map((t) => `"${t}"`)
+          .join(" or ")}`,
+      );
+    }
+  }
 
+  const scoped =
+    input.sceneId ?? input.characterId ?? input.panelId ?? input.locationId ?? input.propId;
+
+  // A scoped redo touches exactly one row and skips the downstream cascade, so
+  // an id belonging to a different project would quietly clear that project's
+  // work instead. Every scoped write below is therefore matched on projectId as
+  // well as id, and a miss throws rather than silently no-opping — a redo that
+  // clears nothing but still enqueues a job is the shape of BUG-002, where a
+  // resumable stage skips what a redo forgot to clear and the pipeline finishes
+  // something internally consistent but wrong.
   if (!scoped) {
     invalidateDownstreamOf(db, projectId, input.target);
   }
@@ -732,6 +782,49 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
       .run();
   }
 
+  // M7.1 PR-D0 — the scoped image redos. Each clears only the one row's image
+  // pointer, leaving the row itself (and its prompt, cinematography fields, or
+  // description) intact: the point of a scoped redo is to re-roll the picture,
+  // not to discard the planning around it. `runStoryboards`/`runConceptArt`
+  // then see exactly one item missing an image and regenerate that one.
+  if (input.target === "storyboards" && input.panelId) {
+    const cleared = db
+      .update(storyboardPanels)
+      .set({ panelImageAssetId: null })
+      .where(and(eq(storyboardPanels.id, input.panelId), eq(storyboardPanels.projectId, projectId)))
+      .returning()
+      .all();
+    if (cleared.length === 0) {
+      throw new Error(`No such storyboard panel on this project: ${input.panelId}`);
+    }
+  }
+  if (input.target === "concept_art" && input.locationId) {
+    // `refInputName` goes too, unlike the panel above: the old plate is still
+    // uploaded on the generation host under that name, and leaving the pointer
+    // would let downstream storyboards keep anchoring to the very image this
+    // redo exists to replace.
+    const cleared = db
+      .update(locations)
+      .set({ imageAssetId: null, refInputName: null, imageSource: "generated" })
+      .where(and(eq(locations.id, input.locationId), eq(locations.projectId, projectId)))
+      .returning()
+      .all();
+    if (cleared.length === 0) {
+      throw new Error(`No such location on this project: ${input.locationId}`);
+    }
+  }
+  if (input.target === "concept_art" && input.propId) {
+    const cleared = db
+      .update(props)
+      .set({ imageAssetId: null, refInputName: null, imageSource: "generated" })
+      .where(and(eq(props.id, input.propId), eq(props.projectId, projectId)))
+      .returning()
+      .all();
+    if (cleared.length === 0) {
+      throw new Error(`No such prop on this project: ${input.propId}`);
+    }
+  }
+
   db.update(projects)
     .set({ awaitingReview: false, failureReason: null })
     .where(eq(projects.id, projectId))
@@ -745,6 +838,9 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
       ...(input.ttsInstruct ? { ttsInstruct: input.ttsInstruct } : {}),
       ...(input.sceneId ? { sceneId: input.sceneId } : {}),
       ...(input.characterId ? { characterId: input.characterId } : {}),
+      ...(input.panelId ? { panelId: input.panelId } : {}),
+      ...(input.locationId ? { locationId: input.locationId } : {}),
+      ...(input.propId ? { propId: input.propId } : {}),
     },
   });
 }

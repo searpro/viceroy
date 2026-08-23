@@ -1429,7 +1429,7 @@ export async function runProductionDesign(ctx: StageContext): Promise<void> {
 }
 
 /**
- * Stage 16 (M7 PR9) — the first stage in this whole chain that generates
+ * Stage 17 (M7 PR9) — the first stage in this chain that generates
  * images rather than text: one concept-art image per location and per prop
  * that doesn't already have one.
  *
@@ -1492,8 +1492,23 @@ export async function runConceptArt(ctx: StageContext): Promise<void> {
   const locs = ctx.db.select().from(locations).where(eq(locations.projectId, projectId)).all();
   const items = ctx.db.select().from(props).where(eq(props.projectId, projectId)).all();
 
-  const pendingLocations = locs.filter((l) => !l.imageAssetId);
-  const pendingProps = items.filter((p) => !p.imageAssetId);
+  // M7.1 PR-D0. A scoped redo names exactly one entity; `regenerate()` has
+  // already cleared that row's image, so the ordinary "missing an image"
+  // filter would find it anyway — but it would also pick up any *other* entity
+  // still lacking one, which on this hardware is minutes per extra plate
+  // (finding F9). Narrowing here is what makes a one-entity redo cost one
+  // generation. Same shape as `runSceneImages`' own `jobSceneId` scoping.
+  const jobLocationId =
+    typeof ctx.job.payload.locationId === "string" ? ctx.job.payload.locationId : undefined;
+  const jobPropId = typeof ctx.job.payload.propId === "string" ? ctx.job.payload.propId : undefined;
+  const scoped = jobLocationId ?? jobPropId;
+
+  const pendingLocations = locs.filter(
+    (l) => !l.imageAssetId && (jobLocationId ? l.id === jobLocationId : !jobPropId),
+  );
+  const pendingProps = items.filter(
+    (p) => !p.imageAssetId && (jobPropId ? p.id === jobPropId : !jobLocationId),
+  );
   const total = pendingLocations.length + pendingProps.length;
 
   if (total === 0) {
@@ -1593,12 +1608,25 @@ export async function runConceptArt(ctx: StageContext): Promise<void> {
   // approval means "the generation pass ran (or had nothing to do) and a
   // human reached this point", not per-image sign-off, since no UI for that
   // exists yet.
-  ctx.db
-    .update(projects)
-    .set({ conceptArtApprovedAt: project.mode === "auto" ? new Date() : null })
-    .where(eq(projects.id, projectId))
-    .run();
+  //
+  // A scoped redo is not the project reaching this stage, so it must not
+  // restate the stage's approval either way — see the note in `runElements`
+  // that `runSceneImages` follows for the same reason. Re-approving would
+  // rubber-stamp a stage a human may never have reviewed; un-approving would
+  // send an already-approved project back to a gate it had cleared, and (in
+  // manual mode) park it for review over one re-rolled plate.
+  if (!scoped) {
+    ctx.db
+      .update(projects)
+      .set({ conceptArtApprovedAt: project.mode === "auto" ? new Date() : null })
+      .where(eq(projects.id, projectId))
+      .run();
+  }
 
+  if (scoped) {
+    ctx.log("Concept art re-rolled for one entity");
+    return;
+  }
   if (project.mode === "manual") {
     awaitReview(ctx.db, projectId);
     ctx.log("Stopping for review (manual mode)");
@@ -1748,6 +1776,97 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
     );
   }
 
+  const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
+  const locs = ctx.db.select().from(locations).where(eq(locations.projectId, projectId)).all();
+  const items = ctx.db.select().from(props).where(eq(props.projectId, projectId)).all();
+  const liveCastRefs = await filterLiveRefs(backend, cast, ctx.log);
+  const liveLocationRefs = await filterLiveRefs(backend, locs, ctx.log);
+  const livePropRefs = await filterLiveRefs(backend, items, ctx.log);
+
+  // A workflow exposes a fixed number of reference slots and the host imposes
+  // its own wall-clock ceiling; the panel budget is whichever binds first.
+  // Same `referenceCapacity()` convention `runSceneImages` (images.ts) already
+  // follows for a crowded scene.
+  const refBudget = Math.min(PANEL_REFERENCE_BUDGET, backend.referenceCapacity());
+  if (refBudget < PANEL_REFERENCE_BUDGET) {
+    ctx.log(
+      `${backend.label} exposes ${backend.referenceCapacity()} reference slot(s) — ` +
+        `panels will be anchored with at most that many, not ${PANEL_REFERENCE_BUDGET}`,
+      "warn",
+    );
+  }
+
+  const tiers = [
+    { entities: cast, live: liveCastRefs },
+    { entities: locs, live: liveLocationRefs },
+    { entities: items, live: livePropRefs },
+  ];
+
+  // M7.1 PR-D0 — re-roll one panel, without re-extracting beats.
+  //
+  // Beat extraction is skipped deliberately, not just as an economy. This
+  // stage re-runs extraction on every ordinary call and matches results back
+  // to rows by (projectId, sceneId, index) — fine when regenerating the whole
+  // set, but a fresh extraction is an LLM call at temperature 0.4 and may not
+  // produce a beat at this panel's coordinates at all. The redo would then
+  // regenerate some *other* panel, or none, while reporting success. The row
+  // already carries everything a re-roll needs: its assembled prompt and its
+  // cinematography fields, both of which a human may have edited since.
+  //
+  // References are matched against the stored prompt rather than a beat
+  // description, the same way `runShotList` reads `panelImagePrompt` to find
+  // which cast members a panel is about — the prompt contains the description.
+  const jobPanelId = typeof ctx.job.payload.panelId === "string" ? ctx.job.payload.panelId : undefined;
+  if (jobPanelId) {
+    const panel = ctx.db
+      .select()
+      .from(storyboardPanels)
+      .where(and(eq(storyboardPanels.id, jobPanelId), eq(storyboardPanels.projectId, projectId)))
+      .get();
+    if (!panel) throw new Error(`No such storyboard panel on this project: ${jobPanelId}`);
+
+    const prompt = `${panel.panelImagePrompt}${direction ? `, ${direction}` : ""}`;
+    const refs = selectPanelReferences(panel.panelImagePrompt, tiers, refBudget);
+    ctx.log(
+      `Re-rolling storyboard panel for scene ${panel.sceneId}, beat ${panel.index + 1} ` +
+        `with ${refs.length} reference(s)`,
+    );
+
+    const bytes = await backend.generate(
+      {
+        prompt,
+        negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
+        width: ctx.config.sourceImage.width,
+        height: ctx.config.sourceImage.height,
+        references: refs,
+      },
+      { onProgress: ctx.progress, shouldAbort: ctx.shouldAbort, log: ctx.log },
+    );
+
+    const asset = storeAsset(ctx.db, ctx.config, {
+      kind: "image",
+      bytes,
+      mimeType: "image/png",
+      projectId,
+      label: `storyboard-scene${panel.sceneId}-${String(panel.index).padStart(3, "0")}`,
+      meta: { sceneId: panel.sceneId, index: panel.index, prompt },
+    });
+
+    // `panelImagePrompt` is rewritten only when direction was given, so an
+    // undirected re-roll leaves the stored prompt exactly as a human left it.
+    ctx.db
+      .update(storyboardPanels)
+      .set({ panelImageAssetId: asset.id, ...(direction ? { panelImagePrompt: prompt } : {}) })
+      .where(eq(storyboardPanels.id, panel.id))
+      .run();
+
+    // No `storyboardsApprovedAt` write, for the reason `runConceptArt`'s own
+    // scoped path gives: one re-rolled panel is not the project reaching or
+    // leaving this stage.
+    ctx.log("Storyboard panel re-rolled");
+    return;
+  }
+
   ctx.log(`Extracting storyboard beats with ${provider.model}`);
   ctx.progress(0.05);
   checkAbort(ctx);
@@ -1791,26 +1910,6 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
     throw new Error(`Project ${projectId} — storyboard beat extraction returned no usable beats`);
   }
 
-  const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
-  const locs = ctx.db.select().from(locations).where(eq(locations.projectId, projectId)).all();
-  const items = ctx.db.select().from(props).where(eq(props.projectId, projectId)).all();
-  const liveCastRefs = await filterLiveRefs(backend, cast, ctx.log);
-  const liveLocationRefs = await filterLiveRefs(backend, locs, ctx.log);
-  const livePropRefs = await filterLiveRefs(backend, items, ctx.log);
-
-  // A workflow exposes a fixed number of reference slots and the host imposes
-  // its own wall-clock ceiling; the panel budget is whichever binds first.
-  // Same `referenceCapacity()` convention `runSceneImages` (images.ts) already
-  // follows for a crowded scene.
-  const refBudget = Math.min(PANEL_REFERENCE_BUDGET, backend.referenceCapacity());
-  if (refBudget < PANEL_REFERENCE_BUDGET) {
-    ctx.log(
-      `${backend.label} exposes ${backend.referenceCapacity()} reference slot(s) — ` +
-        `panels will be anchored with at most that many, not ${PANEL_REFERENCE_BUDGET}`,
-      "warn",
-    );
-  }
-
   // Content, not rendering — same discipline `runConceptArt` already applies
   // to these same three fields.
   const guidance = [
@@ -1843,15 +1942,7 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
     checkAbort(ctx);
 
     // Cast first, then location, then prop — see `selectPanelReferences`.
-    const refs = selectPanelReferences(
-      beat.description,
-      [
-        { entities: cast, live: liveCastRefs },
-        { entities: locs, live: liveLocationRefs },
-        { entities: items, live: livePropRefs },
-      ],
-      refBudget,
-    );
+    const refs = selectPanelReferences(beat.description, tiers, refBudget);
 
     // The reference count is worth logging per panel, not just per stage: it is
     // the one number that says whether this panel was anchored to canon or
@@ -1947,7 +2038,7 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
     ctx.log("Stopping for review (manual mode)");
     return;
   }
-  ctx.log("Storyboards is the last Preproduction stage defined so far — nothing further to enqueue");
+  ctx.log("Storyboard panels written — advance to the shot list next");
 }
 
 type StoryboardBeatCandidate = {
@@ -1999,7 +2090,7 @@ function coerceDurationHintMs(value: unknown): number {
 }
 
 /**
- * Stage 18 (M7 PR11) — one `shot_list_items` row per approved storyboard
+ * Stage 19 (M7 PR11) — one `shot_list_items` row per approved storyboard
  * panel, refining that panel's own flat `panelImagePrompt` into the two
  * registers a shot actually needs: `keyframePrompt` (what the frame looks
  * like) and `motionPrompt` (what happens over its duration) — the same split
@@ -2156,7 +2247,7 @@ export async function runShotList(ctx: StageContext): Promise<void> {
 }
 
 /**
- * Stage 20 (M7 PR12) — "Casting": generate the portrait a dev-format
+ * Stage 16 (M7 PR12, moved there by M7.1 PR-A) — "Casting": generate the portrait a dev-format
  * project's cast has never had, then lock each character's identity.
  *
  * PR9 deliberately scoped concept art to locations/props only and left a
