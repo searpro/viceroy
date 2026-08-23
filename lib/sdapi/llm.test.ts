@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { SdApiHttp } from "./client";
-import { LlmClient, extractJsonObject } from "./llm";
+import { LlmClient, OPENAI_COMPATIBLE_CHAT_PATH, extractJsonObject } from "./llm";
 
 function clientReturning(body: unknown, status = 200) {
   const fetchImpl = vi.fn(
@@ -84,5 +84,25 @@ describe("LlmClient", () => {
   it("surfaces an HTTP error with its status", async () => {
     const { llm } = clientReturning({ error: "boom" }, 500);
     await expect(llm.chat({ model: "m", messages: [] })).rejects.toThrow(/500/);
+  });
+
+  // BUG-28 follow-up: an external OpenAI-compatible host (e.g. Gemini) has no
+  // sd-api-shaped /v1/llm namespace — it expects the plain top-level route.
+  it("posts to a configured OpenAI-compatible path instead of sd-api's own route", async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        new Response(JSON.stringify(completion("hi")), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const llm = new LlmClient(
+      new SdApiHttp({ baseUrl: "http://external", fetch: fetchImpl }),
+      OPENAI_COMPATIBLE_CHAT_PATH,
+    );
+    await llm.chat({ model: "m", messages: [] });
+
+    const [url] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe("http://external/chat/completions");
   });
 });

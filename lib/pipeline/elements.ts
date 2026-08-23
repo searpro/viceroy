@@ -116,7 +116,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
   let cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
   if (cast.length === 0) {
     ctx.log("Extracting characters");
-    const payload = await ctx.sdApi.llm.chatJson<CharacterPayload>({
+    const payload = await ctx.llmClient(provider).chatJson<CharacterPayload>({
       model: provider.model,
       messages: [
         {
@@ -172,7 +172,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
 
   if (sceneRows.length === 0) {
     ctx.log(`Grouping ${sentences.length} sentences into scenes`);
-    const payload = await ctx.sdApi.llm.chatJson<{ scenes?: unknown }>({
+    const payload = await ctx.llmClient(provider).chatJson<{ scenes?: unknown }>({
       model: provider.model,
       messages: [
         {
@@ -239,7 +239,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
     const steer = jobDirection && (!jobSceneId || jobSceneId === scene.id) ? jobDirection : "";
     const direction = steer ? `\nAdditional direction from the writer for this redo:\n${steer}` : "";
 
-    const payload = await ctx.sdApi.llm.chatJson<ScenePayload>({
+    const payload = await ctx.llmClient(provider).chatJson<ScenePayload>({
       model: provider.model,
       messages: [
         {

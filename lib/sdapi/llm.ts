@@ -17,11 +17,23 @@ type ChatCompletionResponse = {
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
+// sd-api reverse-proxies its OpenAI-compatible llama-server under this
+// namespace — correct when `http`'s baseUrl really is an sd-api install. A
+// provider pointed at a genuine external OpenAI-compatible host (e.g.
+// Gemini's `.../v1beta/openai/`) has no `/v1/llm` namespace: it expects the
+// plain top-level path every OpenAI SDK client calls. `resolveLlmClient` in
+// lib/backends/resolve.ts picks which one a given provider gets, by baseUrl.
+export const SD_API_CHAT_PATH = "/v1/llm/chat/completions";
+export const OPENAI_COMPATIBLE_CHAT_PATH = "/chat/completions";
+
 export class LlmClient {
-  constructor(private readonly http: SdApiHttp) {}
+  constructor(
+    private readonly http: SdApiHttp,
+    private readonly chatPath: string = SD_API_CHAT_PATH,
+  ) {}
 
   async chat(options: ChatOptions): Promise<{ content: string; completionTokens: number }> {
-    const payload = await this.http.json<ChatCompletionResponse>("/v1/llm/chat/completions", {
+    const payload = await this.http.json<ChatCompletionResponse>(this.chatPath, {
       method: "POST",
       headers: { "content-type": "application/json" },
       signal: options.signal ?? null,

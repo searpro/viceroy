@@ -155,7 +155,7 @@ export async function runConcept(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.85,
@@ -189,7 +189,7 @@ export async function runLogline(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.8,
@@ -230,7 +230,7 @@ export async function runDevCharacters(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const payload = await ctx.sdApi.llm.chatJson<DevCharacterPayload>({
+  const payload = await ctx.llmClient(provider).chatJson<DevCharacterPayload>({
     model: provider.model,
     messages: [
       {
@@ -341,7 +341,7 @@ export async function runWorldBuilding(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const payload = await ctx.sdApi.llm.chatJson<WorldBuildingPayload>({
+  const payload = await ctx.llmClient(provider).chatJson<WorldBuildingPayload>({
     model: provider.model,
     messages: [
       {
@@ -437,7 +437,7 @@ export async function runStoryStructure(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [
       {
@@ -486,7 +486,7 @@ export async function runBeatSheet(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [
       {
@@ -533,7 +533,7 @@ export async function runTreatment(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [
       {
@@ -617,7 +617,7 @@ export async function runScreenplay(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [
       {
@@ -742,7 +742,7 @@ export async function runScreenplayRevision(ctx: StageContext): Promise<void> {
     ctx.progress(0.1);
     checkAbort(ctx);
 
-    const raw = await ctx.sdApi.llm.chatJson<EvaluationPayload>({
+    const raw = await ctx.llmClient(provider).chatJson<EvaluationPayload>({
       model: provider.model,
       messages: [
         {
@@ -800,7 +800,7 @@ export async function runScreenplayRevision(ctx: StageContext): Promise<void> {
     ctx.log(`Revising screenplay against ${parsed.issues.length} issue(s)`);
     checkAbort(ctx);
 
-    const { content: revised } = await ctx.sdApi.llm.chat({
+    const { content: revised } = await ctx.llmClient(provider).chat({
       model: provider.model,
       messages: [
         {
@@ -915,7 +915,7 @@ export async function runScriptBreakdown(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [
       {
@@ -979,7 +979,7 @@ export async function runSceneBreakdown(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [
       {
@@ -1160,7 +1160,7 @@ export async function runContinuity(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const payload = await ctx.sdApi.llm.chatJson<ContinuityPayload>({
+  const payload = await ctx.llmClient(provider).chatJson<ContinuityPayload>({
     model: provider.model,
     messages: [
       {
@@ -1388,7 +1388,7 @@ export async function runProductionDesign(ctx: StageContext): Promise<void> {
   ctx.progress(0.2);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [
       {
@@ -1668,7 +1668,7 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
   ctx.progress(0.05);
   checkAbort(ctx);
 
-  const payload = await ctx.sdApi.llm.chatJson<StoryboardBeatsPayload>({
+  const payload = await ctx.llmClient(provider).chatJson<StoryboardBeatsPayload>({
     model: provider.model,
     messages: [
       {
@@ -1976,7 +1976,7 @@ export async function runShotList(ctx: StageContext): Promise<void> {
       `${panel.lens} lens`,
     ].join(", ");
 
-    const payload = await ctx.sdApi.llm.chatJson<ShotListRefinement>({
+    const payload = await ctx.llmClient(provider).chatJson<ShotListRefinement>({
       model: provider.model,
       messages: [
         {

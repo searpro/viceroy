@@ -13,7 +13,7 @@ import {
 } from "../lib/queue";
 import { createSdApi } from "../lib/sdapi";
 import { awaitReview, STAGE_HANDLERS, type StageContext } from "../lib/pipeline";
-import { resolveImageBackend, resolveVideoBackend } from "../lib/backends/resolve";
+import { resolveImageBackend, resolveLlmClient, resolveVideoBackend } from "../lib/backends/resolve";
 
 const IDLE_POLL_MS = 1000;
 
@@ -100,6 +100,7 @@ async function main() {
       // lets a provider swapped in the admin UI take effect on the next job.
       imageBackend: () => resolveImageBackend(db, config, baseSdApi),
       videoBackend: () => resolveVideoBackend(db, config),
+      llmClient: (provider) => resolveLlmClient(provider, config, baseSdApi),
       config,
       job,
       log: (message, level) => log(db, job.id, message, level),

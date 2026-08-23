@@ -61,6 +61,12 @@ function contextFor(job: Job, responses: { content?: string; json?: unknown }[])
       http: {} as never,
       health: async () => true,
     } as unknown as StageContext["sdApi"],
+    // Ignores which provider it was asked for — same canned client either way.
+    llmClient: () =>
+      ({
+        chat: async () => ({ content: next().content ?? "", completionTokens: 10 }),
+        chatJson: async () => next().json,
+      }) as unknown as StageContext["sdApi"]["llm"],
   };
 }
 
@@ -109,6 +115,19 @@ function capturingContextFor(
       http: {} as never,
       health: async () => true,
     } as unknown as StageContext["sdApi"],
+    // Ignores which provider it was asked for — same canned, prompt-capturing
+    // client either way.
+    llmClient: () =>
+      ({
+        chat: async ({ messages }: { messages: { content: string }[] }) => {
+          prompts.push(messages[0]!.content);
+          return { content: next().content ?? "", completionTokens: 10 };
+        },
+        chatJson: async ({ messages }: { messages: { content: string }[] }) => {
+          prompts.push(messages[0]!.content);
+          return next().json;
+        },
+      }) as unknown as StageContext["sdApi"]["llm"],
   };
   return { ctx, prompts };
 }

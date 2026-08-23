@@ -3,7 +3,12 @@ import { createComfyClient } from "../comfy/client";
 import type { Db } from "../db/client";
 import type { WorkflowRole } from "../db/schema";
 import { resolveProvider } from "../pipeline/context";
-import { createSdApi, type SdApi } from "../sdapi";
+import {
+  createSdApi,
+  LlmClient,
+  OPENAI_COMPATIBLE_CHAT_PATH,
+  type SdApi,
+} from "../sdapi";
 import { resolveWorkflow } from "../workflows";
 import { comfyImageBackend } from "./comfy-image";
 import { comfyVideoBackend } from "./comfy-video";
@@ -47,6 +52,43 @@ export function resolveImageBackend(db: Db, config: Config, base?: SdApi): Image
         });
 
   return sdApiImageBackend(sdApi, provider);
+}
+
+/**
+ * Build the LLM client for a given provider row.
+ *
+ * `resolveProvider`/`resolveDevProvider` in `pipeline/context.ts` pick *which*
+ * row an LLM stage should use, but every stage was then reaching for the
+ * worker's single long-lived `ctx.sdApi` client regardless — a client bound
+ * once, at startup, to `config.sdApiUrl`. That silently dropped a provider's
+ * own `baseUrl`/`apiKey`, so pointing an "llm" row anywhere but the local
+ * sd-api host (BUG-28: a Gemini row via its OpenAI-compatible endpoint) sent
+ * the request to local sd-api with a model name it had never heard of.
+ *
+ * Mirrors `resolveImageBackend`'s host comparison: reuse the worker's
+ * long-lived client when the provider is the same host it was built for, and
+ * build a one-off client when it isn't.
+ *
+ * A different host is a genuine external OpenAI-compatible provider, not
+ * another sd-api install (ADR 0004: LLM stays sd-api-only as a stored
+ * "kind" — this is decided purely by baseUrl, not a provider field), so it
+ * gets the plain top-level chat-completions path instead of sd-api's own
+ * `/v1/llm` reverse-proxy namespace.
+ */
+export function resolveLlmClient(
+  provider: { baseUrl: string; apiKey: string | null },
+  config: Config,
+  base: SdApi,
+): LlmClient {
+  if (provider.baseUrl.replace(/\/$/, "") === config.sdApiUrl) {
+    return base.llm;
+  }
+  const sdApi = createSdApi({
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey ?? undefined,
+    timeoutMs: config.sdApiTimeoutMs,
+  });
+  return new LlmClient(sdApi.http, OPENAI_COMPATIBLE_CHAT_PATH);
 }
 
 export function resolveVideoBackend(db: Db, config: Config): VideoBackend {

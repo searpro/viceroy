@@ -15,15 +15,16 @@ import {
 } from "../db/schema";
 import type { ProviderKind } from "../providers";
 import type { Job } from "../queue";
-import type { SdApi } from "../sdapi";
+import type { LlmClient, SdApi } from "../sdapi";
 import type { ImageBackend, VideoBackend } from "../backends/types";
 
 export type StageContext = {
   db: Db;
   /**
-   * The sd-api client for the kinds sd-api is the only backend for: llm,
-   * audio and asr. Image and video go through the backends below instead,
-   * because they are the two kinds a host other than sd-api can serve.
+   * The sd-api client for the kinds only the local sd-api host serves: audio
+   * and asr. LLM stages must not use this directly — use `llmClient` below —
+   * because an "llm" provider row can point at a different host entirely
+   * (see `llmClient`'s doc comment).
    */
   sdApi: SdApi;
   /**
@@ -33,6 +34,18 @@ export type StageContext = {
    */
   imageBackend: () => ImageBackend;
   videoBackend: () => VideoBackend;
+  /**
+   * The LLM client for a specific resolved provider row.
+   *
+   * Unlike `sdApi`, which is one client fixed to `config.sdApiUrl`, an "llm"
+   * provider can name any OpenAI-compatible host (BUG-28: e.g. Gemini's own
+   * endpoint) via its own `baseUrl`/`apiKey`. Every LLM-calling stage already
+   * resolves its provider via `resolveProvider`/`resolveDevProvider` before
+   * making the call — pass that row here to get a client actually bound to
+   * it, instead of reaching for `sdApi.llm` and silently talking to the local
+   * host with a model name it may not recognise.
+   */
+  llmClient: (provider: { baseUrl: string; apiKey: string | null }) => LlmClient;
   config: Config;
   job: Job;
   log: (message: string, level?: "debug" | "info" | "warn" | "error") => void;

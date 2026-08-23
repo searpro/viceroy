@@ -117,12 +117,29 @@ export function stubContext(db: Db, job: Job, options: StubOptions = {}): StageC
     },
   };
 
+  const llmClient: StageContext["llmClient"] = () =>
+    ({
+      chat: async (request: Record<string, unknown>) => {
+        options.onChatRequest?.(request);
+        return { content: nextLlm().content ?? "", completionTokens: 10 };
+      },
+      chatJson: async (request: Record<string, unknown>) => {
+        options.onChatJsonRequest?.(request);
+        return nextLlm().json;
+      },
+    }) as unknown as ReturnType<StageContext["llmClient"]>;
+
   return {
     db,
     config: resolveConfig({ VICEROY_DATA_DIR: options.dataDir ?? scratchDataDir() }),
     job,
     imageBackend: () => imageBackend,
     videoBackend: () => videoBackend,
+    // Ignores which provider it was asked for: stages exercise routing via
+    // `onChatRequest`/`onChatJsonRequest` asserting the right `model` was
+    // sent, not via which host the call reached — no test may reach a real
+    // model, so there is only ever one (canned) client to hand back.
+    llmClient,
     log: (message, level) => options.onLog?.(message, level),
     progress: () => {},
     shouldAbort: options.shouldAbort ?? (() => false),

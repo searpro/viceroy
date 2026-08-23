@@ -64,7 +64,7 @@ export async function runSynopsis(ctx: StageContext): Promise<void> {
   ctx.progress(0.1);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.85,
@@ -104,7 +104,7 @@ export async function runStory(ctx: StageContext): Promise<void> {
   ctx.progress(0.1);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.9,
@@ -164,7 +164,7 @@ export async function runStoryEval(ctx: StageContext): Promise<void> {
   ctx.progress(0.1);
   checkAbort(ctx);
 
-  const raw = await ctx.sdApi.llm.chatJson<EvaluationPayload>({
+  const raw = await ctx.llmClient(provider).chatJson<EvaluationPayload>({
     model: provider.model,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.2,
@@ -247,7 +247,7 @@ export async function runStoryRevise(ctx: StageContext): Promise<void> {
   ctx.progress(0.1);
   checkAbort(ctx);
 
-  const { content } = await ctx.sdApi.llm.chat({
+  const { content } = await ctx.llmClient(provider).chat({
     model: provider.model,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.8,
