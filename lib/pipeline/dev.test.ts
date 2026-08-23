@@ -26,7 +26,9 @@ import { setPreference } from "../preferences";
 import { advance, nextStep } from "./chain";
 import { resolveProvider } from "./context";
 import {
+  PANEL_REFERENCE_BUDGET,
   parseScreenplay,
+  selectPanelReferences,
   runBeatSheet,
   runCasting,
   runConcept,
@@ -1812,11 +1814,14 @@ describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
       }),
     );
 
-    // Both beats mention "her father's pick set" — each generation should
-    // carry that prop's concept-art reference, the same way `runSceneImages`
-    // threads a character's reference into every scene that mentions them.
+    // Both beats mention Reyna and "her father's pick set" — each generation
+    // carries her locked portrait first and that prop's concept art second,
+    // which is `selectPanelReferences`' priority order (cast before set
+    // dressing) rather than table order. Identity is what drifts most visibly
+    // between adjacent panels, so it gets the budget first.
+    const reyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
     for (const request of requests) {
-      expect(request.references).toEqual([prop.refInputName]);
+      expect(request.references).toEqual([reyna.refInputName, prop.refInputName]);
     }
   });
 
@@ -2748,5 +2753,83 @@ describe("filterLiveRefs — reused unchanged for locations and props", () => {
     expect(logs).toHaveLength(1);
     expect(logs[0]![0]).toContain("The bank");
     expect(logs[0]![1]).toBe("warn");
+  });
+});
+
+describe("selectPanelReferences — the panel reference budget (M7.1 PR-A2)", () => {
+  const reyna = { id: "char-1", name: "Reyna" };
+  const marisol = { id: "char-2", name: "Marisol" };
+  const shop = { id: "loc-1", name: "Reyna's shop" };
+  const picks = { id: "prop-1", name: "the pick set" };
+
+  const live = {
+    cast: new Map([
+      ["char-1", "reyna.png"],
+      ["char-2", "marisol.png"],
+    ]),
+    locs: new Map([["loc-1", "shop.png"]]),
+    props: new Map([["prop-1", "picks.png"]]),
+  };
+
+  const tiers = [
+    { entities: [reyna, marisol], live: live.cast },
+    { entities: [shop], live: live.locs },
+    { entities: [picks], live: live.props },
+  ];
+
+  it("spends the budget on cast before location, and location before prop", () => {
+    // Every tier is mentioned and the budget is exactly 3, so the ordering is
+    // what decides which three win — cast, then set, then dressing.
+    const refs = selectPanelReferences("Reyna and Marisol argue in Reyna's shop over the pick set.", tiers, 3);
+    expect(refs).toEqual(["reyna.png", "marisol.png", "shop.png"]);
+  });
+
+  it("drops the lowest-priority mentions rather than exceeding the budget", () => {
+    // Finding F30: a fourth reference projects past sd-api's own 600s job
+    // timeout, so overspending is a hard failure, not a slow panel.
+    const refs = selectPanelReferences("Reyna and Marisol argue in Reyna's shop over the pick set.", tiers, 2);
+    expect(refs).toEqual(["reyna.png", "marisol.png"]);
+  });
+
+  it("skips an entity whose reference is no longer live on the host", () => {
+    // `filterLiveRefs` has already dropped it from the map — a dangling
+    // reference degrades that entity to text, it does not consume a slot and it
+    // does not fail the panel (ADR 0001).
+    const withoutMarisol = [
+      { entities: [reyna, marisol], live: new Map([["char-1", "reyna.png"]]) },
+      { entities: [shop], live: live.locs },
+      { entities: [picks], live: live.props },
+    ];
+    const refs = selectPanelReferences(
+      "Reyna and Marisol argue in Reyna's shop over the pick set.",
+      withoutMarisol,
+      3,
+    );
+    expect(refs).toEqual(["reyna.png", "shop.png", "picks.png"]);
+  });
+
+  it("matches case-insensitively and ignores an entity the beat never names", () => {
+    expect(selectPanelReferences("REYNA works alone, saying nothing.", tiers, 3)).toEqual(["reyna.png"]);
+  });
+
+  it("returns nothing when a beat names no known entity, rather than failing", () => {
+    expect(selectPanelReferences("A stranger waits in the rain.", tiers, 3)).toEqual([]);
+  });
+
+  it("never spends two slots on one uploaded reference", () => {
+    const shared = [
+      {
+        entities: [reyna, { id: "char-3", name: "Marisol" }],
+        live: new Map([
+          ["char-1", "reyna.png"],
+          ["char-3", "reyna.png"],
+        ]),
+      },
+    ];
+    expect(selectPanelReferences("Reyna and Marisol.", shared, 3)).toEqual(["reyna.png"]);
+  });
+
+  it("caps at three, the ceiling finding F30 measured against the host's own timeout", () => {
+    expect(PANEL_REFERENCE_BUDGET).toBe(3);
   });
 });

@@ -1613,7 +1613,67 @@ export async function runConceptArt(ctx: StageContext): Promise<void> {
 }
 
 /**
- * Stage 17 (M7 PR10) — one storyboard panel per beat in the approved scene
+ * How many reference images one storyboard panel may carry.
+ *
+ * Measured, not guessed (finding F30): reference conditioning costs roughly
+ * 130s per reference at 512x768 on this CPU box, and sd-api enforces its own
+ * `SD_JOB_TIMEOUT_MS` (default 600s) well below viceroy's 30-minute
+ * `SD_API_TIMEOUT_MS` — so the remote cap is the binding one. Three references
+ * land at ~406s; four project to ~540s and five to ~670s, which does not run
+ * slowly, it fails outright.
+ *
+ * Three is therefore a ceiling imposed by the host, not a quality judgment.
+ * F30 also measured that references 2 and 3 both contribute materially (the
+ * third is what pulls a panel onto the locked location instead of an invented
+ * one), so this budget is spent, not conserved.
+ */
+export const PANEL_REFERENCE_BUDGET = 3;
+
+/**
+ * Pick which entities anchor one panel, in priority order, within the budget.
+ *
+ * Tiers are consulted in order and the budget is spent greedily, so the
+ * caller's tier ordering *is* the priority: cast first, then location, then
+ * prop. Identity is what drifts most visibly between adjacent panels and is
+ * what a viewer notices, so it gets the slots before set dressing does.
+ *
+ * Matching stays the same case-insensitive substring check over the beat's
+ * description that this stage already used for locations and props — good
+ * enough to tell which entities a beat is about, without a second LLM
+ * extraction pass purely to name them. Its one known weakness is inherited: a
+ * beat that refers to a character obliquely ("the old man") rather than by
+ * name matches nothing and generates unanchored, which is the pre-existing
+ * behaviour for locations and props too.
+ *
+ * The Project Look Pack is deliberately absent from these tiers. It stays
+ * textual — Production Design Style's guidance fields are already concatenated
+ * into every panel prompt below — because a reference slot buys far more spent
+ * on identity than on style glue, and `ImageRequest` references carry no
+ * per-reference weight that a "low strength" style anchor would need anyway.
+ */
+export function selectPanelReferences(
+  beatDescription: string,
+  tiers: readonly { entities: readonly { id: string; name: string }[]; live: Map<string, string> }[],
+  budget: number,
+): string[] {
+  const haystack = beatDescription.toLowerCase();
+  const chosen: string[] = [];
+
+  for (const tier of tiers) {
+    for (const entity of tier.entities) {
+      if (chosen.length >= budget) return chosen;
+      if (!haystack.includes(entity.name.toLowerCase())) continue;
+      const ref = tier.live.get(entity.id);
+      // Two entities can share one uploaded reference only by accident, but a
+      // duplicate would waste a scarce slot on nothing, so it is skipped.
+      if (ref && !chosen.includes(ref)) chosen.push(ref);
+    }
+  }
+  return chosen;
+}
+
+/**
+ * Stage 18 (M7 PR10) — one storyboard panel per beat in the approved scene
  * breakdown, each with its own independently-editable shotType/cameraAngle/
  * cameraMovement/lens rather than one prose paragraph — the structured
  * cinematography fields the M7 detail page's Style-system section scoped
@@ -1633,15 +1693,20 @@ export async function runConceptArt(ctx: StageContext): Promise<void> {
  * Reuses `runConceptArt`'s image-generation shape (resumable, `storeAsset`,
  * the same register split: the beat's own visual content and Production
  * Design Style's guidance are CONTENT; Image Style's prefix/suffix are the
- * RENDERING register) but is the first Preproduction stage to call
- * `filterLiveRefs` for real, against `locations`/`props`: a panel whose beat
- * text mentions a known location or prop by name gets that entity's
- * concept-art reference passed as `references`, the same way
- * `runSceneImages` (images.ts) references character portraits. The matching
- * heuristic is a simple case-insensitive substring check of the entity's
- * name against the beat's description — good enough for continuity between a
- * panel and the concept art it's meant to be consistent with, without a
- * second extraction pass just to name which entities a beat "is about".
+ * RENDERING register), and anchors each panel to the canon a human already
+ * approved: a beat whose text names a known character, location or prop gets
+ * that entity's uploaded reference passed as `references`, the same way
+ * `runSceneImages` (images.ts) references character portraits.
+ *
+ * The cast half of that is M7.1 PR-A2, and it is the reason this milestone
+ * exists. M7 PR10 shipped this stage referencing `locations`/`props` only,
+ * because casting sat at stage 20 — *after* storyboards — so no character had
+ * a portrait to reference yet. Every face in every panel was therefore
+ * unconditioned prompt text, with finding F14 ruling out even naming the
+ * character in that text. PR-A moved casting to stage 16 so the portraits
+ * exist by the time this runs; this stage now spends its reference budget on
+ * them first. See `selectPanelReferences` above for the priority order and
+ * `PANEL_REFERENCE_BUDGET` for why it is capped at three.
  *
  * Resumable per panel, matched by (projectId, sceneId, index): a beat whose
  * row already carries a `panelImageAssetId` is skipped, the same "a crash
@@ -1726,10 +1791,25 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
     throw new Error(`Project ${projectId} — storyboard beat extraction returned no usable beats`);
   }
 
+  const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
   const locs = ctx.db.select().from(locations).where(eq(locations.projectId, projectId)).all();
   const items = ctx.db.select().from(props).where(eq(props.projectId, projectId)).all();
+  const liveCastRefs = await filterLiveRefs(backend, cast, ctx.log);
   const liveLocationRefs = await filterLiveRefs(backend, locs, ctx.log);
   const livePropRefs = await filterLiveRefs(backend, items, ctx.log);
+
+  // A workflow exposes a fixed number of reference slots and the host imposes
+  // its own wall-clock ceiling; the panel budget is whichever binds first.
+  // Same `referenceCapacity()` convention `runSceneImages` (images.ts) already
+  // follows for a crowded scene.
+  const refBudget = Math.min(PANEL_REFERENCE_BUDGET, backend.referenceCapacity());
+  if (refBudget < PANEL_REFERENCE_BUDGET) {
+    ctx.log(
+      `${backend.label} exposes ${backend.referenceCapacity()} reference slot(s) — ` +
+        `panels will be anchored with at most that many, not ${PANEL_REFERENCE_BUDGET}`,
+      "warn",
+    );
+  }
 
   // Content, not rendering — same discipline `runConceptArt` already applies
   // to these same three fields.
@@ -1761,20 +1841,26 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
   let done = 0;
   for (const beat of pending) {
     checkAbort(ctx);
-    ctx.log(
-      `Generating storyboard panel for scene ${beat.sceneId}, beat ${beat.index + 1} (${done + 1}/${pending.length})`,
+
+    // Cast first, then location, then prop — see `selectPanelReferences`.
+    const refs = selectPanelReferences(
+      beat.description,
+      [
+        { entities: cast, live: liveCastRefs },
+        { entities: locs, live: liveLocationRefs },
+        { entities: items, live: livePropRefs },
+      ],
+      refBudget,
     );
 
-    // Simple name-mention matching against concept-art references — keeps a
-    // panel visually consistent with the world a human already generated,
-    // without a second extraction pass to identify which entities a beat "is
-    // about". See this function's own doc comment.
-    const mentioned = [...locs, ...items].filter((entity) =>
-      beat.description.toLowerCase().includes(entity.name.toLowerCase()),
+    // The reference count is worth logging per panel, not just per stage: it is
+    // the one number that says whether this panel was anchored to canon or
+    // generated from prompt text alone, and F30 makes it the dominant term in
+    // how long the panel will take.
+    ctx.log(
+      `Generating storyboard panel for scene ${beat.sceneId}, beat ${beat.index + 1} ` +
+        `(${done + 1}/${pending.length}) with ${refs.length} reference(s)`,
     );
-    const refs = mentioned
-      .map((entity) => liveLocationRefs.get(entity.id) ?? livePropRefs.get(entity.id))
-      .filter((name): name is string => Boolean(name));
 
     const shotDescriptor = [
       `${beat.shotType} shot`,
