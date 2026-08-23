@@ -1515,6 +1515,13 @@ describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
       }),
     );
 
+    // M7.1 PR-A3: concept-art plates exist to be conditioned on, never to be
+    // rendered, so they are generated at `referenceImage` — not at the shorts
+    // pipeline's 9:16 `sourceImage`, which is what they used to inherit.
+    for (const request of requests) {
+      expect(request).toMatchObject({ width: 512, height: 512 });
+    }
+
     // WORLD (the world-building fixture this suite runs every project
     // through) writes exactly one location ("Reyna's shop") and one prop
     // ("Her father's pick set") — see the top of this file.
@@ -1776,6 +1783,14 @@ describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
     );
 
     expect(requests).toHaveLength(2);
+    // Panels stay on `sourceImage`, unlike the reference plates M7.1 PR-A3
+    // moved to `referenceImage`: `runShotList` defaults a shot's keyframe to
+    // the panel image and `runPrevis` renders those at the project's video
+    // dimensions, so a panel's aspect reaches the animatic.
+    for (const request of requests) {
+      expect(request).toMatchObject({ width: 432, height: 768 });
+    }
+
     const panels = db
       .select()
       .from(storyboardPanels)
@@ -2299,6 +2314,9 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
     // WORLD's own fixture cast is exactly one character, "Reyna" (see the
     // top of this file).
     expect(requests).toHaveLength(1);
+    // M7.1 PR-A3 — a portrait is reference material, sized for the face rather
+    // than for the output frame. See `referenceImage` in config.ts.
+    expect(requests[0]).toMatchObject({ width: 512, height: 512 });
     const reyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
     expect(reyna.imageAssetId).not.toBeNull();
     expect(reyna.refInputName).toBe(`uploaded-${reyna.id}.png`);

@@ -35,6 +35,32 @@ const envSchema = z.object({
   SOURCE_IMAGE_WIDTH: z.coerce.number().pipe(multipleOf16).default(432),
   SOURCE_IMAGE_HEIGHT: z.coerce.number().pipe(multipleOf16).default(768),
 
+  // The size of an image generated *only* to be conditioned on later — a
+  // Development-chain cast portrait or a location/prop concept-art plate.
+  // Deliberately its own dimension pair rather than reusing `SOURCE_IMAGE_*`,
+  // for two reasons.
+  //
+  // First, these never reach the render. A source frame is upscaled into the
+  // finished video, which is why `resolveConfig` below refuses a source aspect
+  // that doesn't match `VIDEO_*`; a reference is uploaded to the generation
+  // host and cited by name, so it is under no such constraint and is
+  // deliberately not checked against that ratio. Inheriting `SOURCE_*` meant a
+  // movie project's cast portraits came out at the shorts pipeline's 9:16,
+  // which is a poor frame for a face and buys nothing.
+  //
+  // Second, cost. Reference conditioning is the dominant term in how long a
+  // panel takes (finding F30), and generating the reference itself is pure
+  // overhead before any panel exists — 512x512 carries the identity detail
+  // that matters at a fraction of a full frame's pixels.
+  //
+  // One pair, not a per-kind table: the only references this chain generates
+  // today are head-and-shoulders portraits and single-view concept-art plates,
+  // and both suit the same square. Body turnarounds and low-detail action
+  // variants get their own sizes in the PR that first generates them, rather
+  // than shipping knobs nothing reads.
+  REFERENCE_IMAGE_WIDTH: z.coerce.number().pipe(multipleOf16).default(512),
+  REFERENCE_IMAGE_HEIGHT: z.coerce.number().pipe(multipleOf16).default(512),
+
   VIDEO_WIDTH: z.coerce.number().int().positive().default(1080),
   VIDEO_HEIGHT: z.coerce.number().int().positive().default(1920),
 
@@ -56,6 +82,8 @@ export type Config = {
   comfyApiUrl: string;
   runpodApiKey: string | undefined;
   sourceImage: { width: number; height: number };
+  /** Images generated only to be conditioned on later — see the env comment. */
+  referenceImage: { width: number; height: number };
   video: { width: number; height: number };
   qcMaxIterations: number;
   jobMaxAttempts: number;
@@ -89,6 +117,7 @@ export function resolveConfig(env: Record<string, string | undefined> = process.
     comfyApiUrl: parsed.COMFY_API_URL.replace(/\/$/, ""),
     runpodApiKey: parsed.RUNPOD_API_KEY,
     sourceImage: source,
+    referenceImage: { width: parsed.REFERENCE_IMAGE_WIDTH, height: parsed.REFERENCE_IMAGE_HEIGHT },
     video: { width: parsed.VIDEO_WIDTH, height: parsed.VIDEO_HEIGHT },
     qcMaxIterations: parsed.QC_MAX_ITERATIONS,
     jobMaxAttempts: parsed.JOB_MAX_ATTEMPTS,

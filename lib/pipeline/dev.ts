@@ -1517,8 +1517,8 @@ export async function runConceptArt(ctx: StageContext): Promise<void> {
       {
         prompt,
         negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
-        width: ctx.config.sourceImage.width,
-        height: ctx.config.sourceImage.height,
+        width: ctx.config.referenceImage.width,
+        height: ctx.config.referenceImage.height,
         references: [],
       },
       {
@@ -1562,8 +1562,8 @@ export async function runConceptArt(ctx: StageContext): Promise<void> {
       {
         prompt,
         negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
-        width: ctx.config.sourceImage.width,
-        height: ctx.config.sourceImage.height,
+        width: ctx.config.referenceImage.width,
+        height: ctx.config.referenceImage.height,
         references: [],
       },
       {
@@ -1882,6 +1882,12 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
       {
         prompt,
         negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
+        // `sourceImage`, not `referenceImage` (M7.1 PR-A3): a panel is not only
+        // conditioning material. `runShotList` defaults each shot's
+        // `keyframeAssetId` to the panel's own image, and `runPrevis` renders
+        // those keyframes at the project's video dimensions — so a panel's
+        // aspect reaches the animatic, and has to stay locked to the output the
+        // way every other rendered frame is.
         width: ctx.config.sourceImage.width,
         height: ctx.config.sourceImage.height,
         references: refs,
@@ -2233,8 +2239,8 @@ export async function runCasting(ctx: StageContext): Promise<void> {
       {
         prompt,
         negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
-        width: ctx.config.sourceImage.width,
-        height: ctx.config.sourceImage.height,
+        width: ctx.config.referenceImage.width,
+        height: ctx.config.referenceImage.height,
         references: [],
       },
       {
