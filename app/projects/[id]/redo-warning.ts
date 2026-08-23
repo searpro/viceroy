@@ -44,16 +44,18 @@ export const REDO_CHAIN = [
   // story.
   "visual_bible",
   "production_design",
+  // Preproduction (M7 PR12, moved above "concept_art" by M7.1 PR-A so
+  // identity is locked before anything draws it) — see `castingLockReason`
+  // below for the one redo-warning affordance it adds (not a generic entry
+  // in `describeRedoLoss`, since a lock isn't a loss-to-weigh, it's a hard
+  // refusal). Its new position means a casting redo now warns about losing
+  // concept art, storyboards, the shot list and previs too.
+  "casting",
   "concept_art",
   "storyboards",
   // Preproduction (M7 PR11) — same "listed but nothing calls it yet" story.
   "shot_list",
   "previs",
-  // Preproduction (M7 PR12) — same "listed but nothing calls it yet" story;
-  // see `castingLockReason` below for the one redo-warning affordance this
-  // PR does add (not a generic entry in `describeRedoLoss`, since a lock
-  // isn't a loss-to-weigh, it's a hard refusal).
-  "casting",
   // Preproduction (M7 PR13) — same "listed but nothing calls it yet" story;
   // the chain's own permanent last stage now.
   "production_plan",

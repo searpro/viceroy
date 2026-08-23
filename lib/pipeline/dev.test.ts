@@ -1400,7 +1400,7 @@ describe("Preproduction stages (M7 PR8 — visual bible & production design)", (
     expect(row.approvedAt).not.toBeNull(); // auto mode auto-approves
   });
 
-  it("devNextStep advances visual_bible -> production_design -> concept_art -> storyboards", async () => {
+  it("devNextStep advances visual_bible -> production_design -> casting -> concept_art -> storyboards", async () => {
     const project = await runThroughApprovedContinuity();
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "visual_bible", needsApproval: false });
 
@@ -1416,10 +1416,19 @@ describe("Preproduction stages (M7 PR8 — visual bible & production design)", (
       }),
     );
 
-    // "production_design" deliberately does not auto-chain into "concept_art"
-    // (see `runProductionDesign`'s own doc comment) — the generic "continue"
+    // "production_design" deliberately does not auto-chain into the stage below
+    // it (see `runProductionDesign`'s own doc comment) — the generic "continue"
     // mechanism is what starts it, same as it starts "visual_bible" after
-    // "continuity".
+    // "continuity". That stage is "casting" as of M7.1 PR-A, which concept art
+    // then follows.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting", needsApproval: false });
+    advance(db, project.id); // enqueue casting
+
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("reyna-portrait")],
+      }),
+    );
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art", needsApproval: false });
     advance(db, project.id); // enqueue concept_art (nothing to approve — it was never generated)
 
@@ -1445,9 +1454,10 @@ describe("Preproduction stages (M7 PR8 — visual bible & production design)", (
         llm: [{ content: "A production-design document." }],
       }),
     );
-    // "concept_art" is next, not "complete" — see the "advances ... -> the
-    // next unhandled interim state" test above for why.
-    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art", needsApproval: false });
+    // "casting" is next, not "complete" — see the "advances ... -> the next
+    // unhandled interim state" test above for why. M7.1 PR-A moved casting into
+    // this slot, directly below production design.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting", needsApproval: false });
 
     const job = regenerate(db, project.id, { target: "visual_bible" });
     expect(job.type).toBe("visual_bible");
@@ -1470,7 +1480,11 @@ describe("Preproduction stages (M7 PR8 — visual bible & production design)", (
 });
 
 describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
-  async function runThroughApprovedProductionDesign() {
+  // Runs the chain down to a locked cast, which is where concept art now
+  // starts: M7.1 PR-A moved "casting" above "concept_art" so identity is locked
+  // before any stage draws a character. The one-image `images` array matches
+  // the fixture's single principal (Reyna).
+  async function runThroughLockedCasting() {
     const project = await runThroughApprovedContinuity();
     await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
     advance(db, project.id); // approve visual_bible, enqueue production_design
@@ -1479,11 +1493,16 @@ describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
         llm: [{ content: "A production-design document." }],
       }),
     );
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("reyna-portrait")],
+      }),
+    );
     return project;
   }
 
   it("generates one image per location and per prop lacking one, uploading each as a reference", async () => {
-    const project = await runThroughApprovedProductionDesign();
+    const project = await runThroughLockedCasting();
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art", needsApproval: false });
 
     const requests: Record<string, unknown>[] = [];
@@ -1514,7 +1533,7 @@ describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
   });
 
   it("is resumable — a location/prop that already has an image is skipped on a second run", async () => {
-    const project = await runThroughApprovedProductionDesign();
+    const project = await runThroughLockedCasting();
 
     const firstRequests: Record<string, unknown>[] = [];
     await runConceptArt(
@@ -1545,7 +1564,7 @@ describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
   });
 
   it("resumes a partial run — only the entity still missing an image is regenerated", async () => {
-    const project = await runThroughApprovedProductionDesign();
+    const project = await runThroughLockedCasting();
 
     // A full pass first, so the location's `imageAssetId` is a real `assets`
     // row (the FK a hand-rolled fake id would violate) — then simulate a run
@@ -1583,7 +1602,7 @@ describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
   // bug mixing Production Design Style's content into the rendering wrapper,
   // or Image Style's rendering register into the content templates.
   it("folds the entity's own description and Production Design Style's guidance into the prompt as content, wrapped by Image Style's rendering register", async () => {
-    const project = await runThroughApprovedProductionDesign();
+    const project = await runThroughLockedCasting();
 
     const style = db
       .select()
@@ -1636,7 +1655,7 @@ describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
   // `runProductionDesign`'s own doc comment on why it doesn't auto-chain into
   // this one) and checking the cascade reaches concept_art's generated images.
   it("redoing production_design invalidates concept_art, per ADR 0003 / INVALIDATION_CHAIN", async () => {
-    const project = await runThroughApprovedProductionDesign();
+    const project = await runThroughLockedCasting();
     await runConceptArt(
       stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
         images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
@@ -1662,13 +1681,14 @@ describe("Preproduction stage 16 (M7 PR9 — concept art)", () => {
     // `invalidateDownstreamOf` clears what comes *after* the redo target —
     // "production_design"'s own (still-approved) row is untouched (the job
     // just enqueued is what overwrites it), so `devStageStatus` still reports
-    // it approved and `nextStep` already lands on the now-cleared
-    // "concept_art" rather than back on "production_design".
-    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art", needsApproval: false });
+    // it approved and `nextStep` already lands on the now-cleared "casting" —
+    // the stage M7.1 PR-A put between production design and concept art —
+    // rather than back on "production_design".
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting", needsApproval: false });
   });
 
   it("uses the image provider (resolveProvider), not resolveDevProvider — no LLM call is ever made", async () => {
-    const project = await runThroughApprovedProductionDesign();
+    const project = await runThroughLockedCasting();
 
     await runConceptArt(
       stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
@@ -1695,6 +1715,14 @@ describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
     await runProductionDesign(
       stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
         llm: [{ content: "A production-design document." }],
+      }),
+    );
+    // Casting comes before concept art as of M7.1 PR-A, and storyboards now
+    // hard-refuse an unlocked cast — so this has to run for any storyboard test
+    // to reach generation at all.
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("reyna-portrait")],
       }),
     );
     await runConceptArt(
@@ -1790,6 +1818,32 @@ describe("Preproduction stage 17 (M7 PR10 — storyboards)", () => {
     for (const request of requests) {
       expect(request.references).toEqual([prop.refInputName]);
     }
+  });
+
+  // M7.1 PR-A's gate. `devNextStep` will not offer storyboards before casting
+  // is locked, but a direct redo can name this stage outright — and a panel
+  // drawn against an unlocked cast is exactly the drift this milestone exists
+  // to stop, with no way to tell afterwards which panels were anchored.
+  it("refuses to run at all when any character's casting is not locked", async () => {
+    const project = await runThroughApprovedConceptArt();
+    db.update(characters)
+      .set({ castingLockedAt: null })
+      .where(eq(characters.projectId, project.id))
+      .run();
+
+    await expect(
+      runStoryboards(
+        stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
+          llm: [BEATS],
+          images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
+        }),
+      ),
+    ).rejects.toThrow(/Casting is not locked for Reyna/);
+
+    // Refused before anything was written — not a partial run to clean up.
+    expect(
+      db.select().from(storyboardPanels).where(eq(storyboardPanels.projectId, project.id)).all(),
+    ).toHaveLength(0);
   });
 
   it("degrades to no reference when a beat mentions nothing by name, without failing the stage", async () => {
@@ -1957,6 +2011,13 @@ describe("Preproduction stage 18 (M7 PR11 — shot list)", () => {
     await runProductionDesign(
       stubContext(db, enqueue(db, { type: "production_design", projectId: project.id }), {
         llm: [{ content: "A production-design document." }],
+      }),
+    );
+    // Casting precedes concept art as of M7.1 PR-A, and `runStoryboards`
+    // hard-refuses an unlocked cast.
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("reyna-portrait")],
       }),
     );
     await runConceptArt(
@@ -2154,11 +2215,10 @@ describe("Preproduction stage 18 (M7 PR11 — shot list)", () => {
       .returning()
       .all();
     db.update(projects).set({ previsAssetId: asset!.id }).where(eq(projects.id, project.id)).run();
-    // "casting" (M7 PR12) is next, not "complete" — this project's cast has
-    // no locked (or even generated) portrait yet, the same "advances to the
-    // next unhandled interim state" pattern this suite's own
-    // "devNextStep advances shot_list -> previs -> ..." test already covers.
-    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting" });
+    // "production_plan" (M7 PR13) is next, not "complete" — previs is the last
+    // stage before the capstone now that M7.1 PR-A moved casting up to stage
+    // 16, so it is the capstone that is still outstanding here.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_plan" });
 
     const job = regenerate(db, project.id, { target: "shot_list" });
     expect(job.type).toBe("shot_list");
@@ -2197,7 +2257,12 @@ describe("Preproduction stage 18 (M7 PR11 — shot list)", () => {
 });
 
 describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
-  async function runThroughApprovedStoryboardsForCasting() {
+// Casting's upstream is "production_design" as of M7.1 PR-A, not "previs".
+  // The block used to walk all the way through storyboards and a faked previs
+  // render to get here, because casting sat at stage 20; at stage 16 it needs
+  // nothing below production design, and setting it up that way is what makes
+  // the ordering assertions below meaningful rather than incidental.
+  async function runThroughApprovedProductionDesignForCasting() {
     const project = await runThroughApprovedContinuity();
     await runVisualBible(stubContext(db, enqueue(db, { type: "visual_bible", projectId: project.id }), {}));
     advance(db, project.id); // approve visual_bible, enqueue production_design
@@ -2206,76 +2271,16 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
         llm: [{ content: "A production-design document." }],
       }),
     );
-    await runConceptArt(
-      stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
-        images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
-      }),
-    );
-    await runStoryboards(
-      stubContext(db, enqueue(db, { type: "storyboards", projectId: project.id }), {
-        // Same fixture as the "Preproduction stage 16" describe block's own
-        // `BEATS` — that constant is scoped to that block, so this is its own
-        // copy rather than reaching across describes for it.
-        llm: [
-          {
-            json: {
-              beats: [
-                {
-                  sceneId: "1",
-                  description: "Reyna kneels at the workbench, examining her father's pick set closely.",
-                  shotType: "close-up",
-                  cameraAngle: "high",
-                  cameraMovement: "static",
-                  lens: "telephoto",
-                },
-                {
-                  sceneId: "2",
-                  description: "Reyna kneels at a new door, her father's pick set glinting in low light.",
-                  shotType: "wide",
-                  cameraAngle: "eye-level",
-                  cameraMovement: "dolly",
-                  lens: "wide",
-                },
-              ],
-            },
-          },
-        ],
-        images: [Buffer.from("panel-1"), Buffer.from("panel-2")],
-      }),
-    );
     return project;
   }
 
-  async function runThroughApprovedPrevis() {
-    const project = await runThroughApprovedStoryboardsForCasting();
-    await runShotList(
-      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
-        llm: [
-          { json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } },
-          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 3000 } },
-        ],
-      }),
-    );
-    // Previs has no separate approval column — setting `previsAssetId` IS
-    // the approval (see that column's own comment, schema.ts) — a fake
-    // `assets` row here stands in for a real Remotion render, the same way
-    // the "redoing shot_list invalidates previs" test above does; `runPrevis`
-    // itself is exercised in previs.test.ts, not here.
-    const [asset] = db
-      .insert(assets)
-      .values({ kind: "video", path: "/tmp/previs.mp4", mimeType: "video/mp4", bytes: 1 })
-      .returning()
-      .all();
-    db.update(projects).set({ previsAssetId: asset!.id }).where(eq(projects.id, project.id)).run();
-    return project;
-  }
-
+  
   // Acceptance criterion 1: a dev-format cast with no portraits gets one
   // per character, and each is locked once its own portrait exists — closes
   // the exact gap PR9 flagged and deferred (`runConceptArt`'s own doc
   // comment).
   it("generates a portrait for each cast member lacking one, locking each as it completes", async () => {
-    const project = await runThroughApprovedPrevis();
+    const project = await runThroughApprovedProductionDesignForCasting();
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting", needsApproval: false });
 
     const requests: Record<string, unknown>[] = [];
@@ -2294,13 +2299,14 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
     expect(reyna.refInputName).toBe(`uploaded-${reyna.id}.png`);
     expect(reyna.castingLockedAt).not.toBeNull();
 
-    // "casting" hands off to "production_plan" next (M7 PR13), not
-    // "complete" — casting is no longer the chain's last stage.
-    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_plan" });
+    // "casting" hands off to "concept_art" next — M7.1 PR-A put it at stage 16,
+    // so the four image stages that condition on a locked cast all follow it
+    // rather than precede it.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art" });
   });
 
   it("is resumable — a character that already has a portrait is skipped on a second run", async () => {
-    const project = await runThroughApprovedPrevis();
+    const project = await runThroughApprovedProductionDesignForCasting();
     await runCasting(
       stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
         images: [Buffer.from("portrait-bytes")],
@@ -2324,10 +2330,11 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
     expect(stillReyna.imageAssetId).toBe(firstAssetId);
   });
 
-  // Acceptance criterion 2: devNextStep advances previs -> casting -> the
-  // next unhandled interim state ("production_plan", per M7 PR13).
-  it("devNextStep advances previs -> casting -> the next unhandled interim state", async () => {
-    const project = await runThroughApprovedPrevis();
+  // Acceptance criterion 2: devNextStep advances production_design -> casting
+  // -> the next unhandled interim state ("concept_art", now that M7.1 PR-A has
+  // put casting above the image stages).
+  it("devNextStep advances production_design -> casting -> the next unhandled interim state", async () => {
+    const project = await runThroughApprovedProductionDesignForCasting();
     expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "casting", needsApproval: false });
 
     await runCasting(
@@ -2336,20 +2343,19 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
       }),
     );
 
-    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_plan", needsApproval: false });
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art", needsApproval: false });
   });
 
-  // Acceptance criterion 5: "casting"'s own INVALIDATION_CHAIN entry must
-  // exist and sit in the right place, even though nothing follows it yet —
-  // exercised the same way every prior PR's own last-stage test is: by
-  // redoing the stage immediately *before* it ("previs") and checking the
-  // cascade reaches casting's locks. `invalidateDownstreamOf` leaves a
-  // target's own output alone (the redo job just enqueued is what overwrites
-  // it) — the same reason the shot_list suite's own "redoing shot_list
-  // invalidates previs" test redoes shot_list, not previs, to prove previs'
-  // own chain entry.
-  it("redoing previs invalidates casting, per ADR 0003 / INVALIDATION_CHAIN", async () => {
-    const project = await runThroughApprovedPrevis();
+  // Acceptance criterion 5: "casting"'s own INVALIDATION_CHAIN entry must exist
+  // and sit in the right place — exercised by redoing the stage immediately
+  // *before* it and checking the cascade reaches casting's locks. As of M7.1
+  // PR-A that upstream stage is "production_design", not "previs"; previs is
+  // now downstream of casting, so redoing it can no longer clear a lock (and
+  // must not — that direction is what left every storyboard panel unanchored in
+  // the first place). `invalidateDownstreamOf` leaves a target's own output
+  // alone (the redo job just enqueued is what overwrites it).
+  it("redoing production_design invalidates casting, per ADR 0003 / INVALIDATION_CHAIN", async () => {
+    const project = await runThroughApprovedProductionDesignForCasting();
     await runCasting(
       stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
         images: [Buffer.from("portrait-bytes")],
@@ -2357,10 +2363,10 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
     );
     const locked = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
     expect(locked.castingLockedAt).not.toBeNull();
-    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "production_plan" });
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art" });
 
-    const job = regenerate(db, project.id, { target: "previs" });
-    expect(job.type).toBe("previs");
+    const job = regenerate(db, project.id, { target: "production_design" });
+    expect(job.type).toBe("production_design");
 
     const after = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
     expect(after.castingLockedAt).toBeNull();
@@ -2373,7 +2379,7 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
   // covers the narrative-pipeline half (`character_images`) plus the
   // regression check that an unlocked character is unaffected.
   it("refuses a characterId-scoped redo of a locked character, and allows it again once unlocked", async () => {
-    const project = await runThroughApprovedPrevis();
+    const project = await runThroughApprovedProductionDesignForCasting();
     await runCasting(
       stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
         images: [Buffer.from("portrait-bytes")],
@@ -2411,6 +2417,13 @@ describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
         llm: [{ content: "A production-design document." }],
       }),
     );
+    // Casting precedes concept art as of M7.1 PR-A, and `runStoryboards` below
+    // hard-refuses an unlocked cast — load-bearing ordering, not cosmetic.
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+      }),
+    );
     await runConceptArt(
       stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
         images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
@@ -2459,11 +2472,6 @@ describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
       .returning()
       .all();
     db.update(projects).set({ previsAssetId: asset!.id }).where(eq(projects.id, project.id)).run();
-    await runCasting(
-      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
-        images: [Buffer.from("portrait-bytes")],
-      }),
-    );
     return project;
   }
 
@@ -2535,6 +2543,11 @@ describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
         llm: [{ content: "A production-design document." }],
       }),
     );
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+      }),
+    );
     await runConceptArt(
       stubContext(db, enqueue(db, { type: "concept_art", projectId: project.id }), {
         images: [Buffer.from("location-bytes"), Buffer.from("prop-bytes")],
@@ -2566,11 +2579,6 @@ describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
         llm: [{ json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000 } }],
       }),
     );
-    await runCasting(
-      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
-        images: [Buffer.from("portrait-bytes")],
-      }),
-    );
 
     await runProductionPlan(stubContext(db, enqueue(db, { type: "production_plan", projectId: project.id }), {}));
 
@@ -2592,7 +2600,7 @@ describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
   // target's own output alone (the redo job just enqueued is what overwrites
   // it), so a direct redo of "production_plan" itself is exercised by the
   // "assembles a production plan..." test above instead, via `regenerate`.
-  it("redoing casting invalidates production_plan, per ADR 0003 / INVALIDATION_CHAIN", async () => {
+  it("redoing previs invalidates production_plan, per ADR 0003 / INVALIDATION_CHAIN", async () => {
     const project = await runThroughApprovedCasting();
     await runProductionPlan(stubContext(db, enqueue(db, { type: "production_plan", projectId: project.id }), {}));
     advance(db, project.id); // approve production_plan
@@ -2601,8 +2609,11 @@ describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
       reason: "Preproduction approved, ready for Production",
     });
 
-    const job = regenerate(db, project.id, { target: "casting" });
-    expect(job.type).toBe("casting");
+    // "previs" is the stage immediately before "production_plan" as of M7.1
+    // PR-A (casting used to be, and is now up at stage 16 — see the casting
+    // block's own cascade test).
+    const job = regenerate(db, project.id, { target: "previs" });
+    expect(job.type).toBe("previs");
 
     const row = db
       .select()
@@ -2612,15 +2623,47 @@ describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
       .find((r) => r.stage === "production_plan")!;
     expect(row.content).toBe("");
     expect(row.approvedAt).toBeNull();
-    // "casting" is the redo target — its own row is left alone by
-    // `invalidateDownstreamOf` (the enqueued job above is what will
-    // overwrite it), so it is still locked/approved; "production_plan",
-    // downstream of it, is what the cascade actually cleared.
+    // "previs" is the redo target — its own output is left alone by
+    // `invalidateDownstreamOf` (the enqueued job above is what will overwrite
+    // it), so `previsAssetId` still stands; "production_plan", downstream of
+    // it, is what the cascade actually cleared.
     expect(nextStep(db, project.id)).toMatchObject({
       kind: "dev",
       stage: "production_plan",
       needsApproval: false,
     });
+  });
+
+  // The wider cascade M7.1 PR-A's reordering buys: casting now sits above every
+  // image stage, so redoing it invalidates all of them, not just the capstone.
+  // This is the property the whole milestone turns on — an identity change must
+  // not leave storyboard panels drawn from the old face sitting around looking
+  // finished.
+  it("redoing casting invalidates every image stage below it, not just the capstone", async () => {
+    const project = await runThroughApprovedCasting();
+    await runProductionPlan(stubContext(db, enqueue(db, { type: "production_plan", projectId: project.id }), {}));
+    advance(db, project.id); // approve production_plan
+
+    expect(db.select().from(storyboardPanels).where(eq(storyboardPanels.projectId, project.id)).all()).not.toHaveLength(0);
+    expect(db.select().from(shotListItems).where(eq(shotListItems.projectId, project.id)).all()).not.toHaveLength(0);
+
+    const job = regenerate(db, project.id, { target: "casting" });
+    expect(job.type).toBe("casting");
+
+    expect(db.select().from(storyboardPanels).where(eq(storyboardPanels.projectId, project.id)).all()).toHaveLength(0);
+    expect(db.select().from(shotListItems).where(eq(shotListItems.projectId, project.id)).all()).toHaveLength(0);
+
+    const updated = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    expect(updated.conceptArtApprovedAt).toBeNull();
+    expect(updated.storyboardsApprovedAt).toBeNull();
+    expect(updated.shotListApprovedAt).toBeNull();
+    expect(updated.previsAssetId).toBeNull();
+
+    // `invalidateDownstreamOf` leaves the redo target's own output alone (the
+    // job enqueued above is what overwrites it), so casting still reports
+    // approved and `nextStep` lands on the first stage the cascade actually
+    // cleared — "concept_art". Same shape as every other cascade test here.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "concept_art" });
   });
 
   it("regenerate refuses a redo of a direct dev_artifacts stage after it's already been cleared, resuming cleanly via the enqueued job", async () => {

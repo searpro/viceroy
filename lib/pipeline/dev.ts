@@ -1664,6 +1664,25 @@ export async function runStoryboards(ctx: StageContext): Promise<void> {
   const sceneBreakdown = requireDevArtifactContent(ctx.db, projectId, "scene_breakdown");
   const direction = pendingDirection(ctx);
 
+  // M7.1 PR-A's gate. `devNextStep` already walks `DEV_CHAIN_STAGES` in order
+  // and so will not *offer* storyboards before casting is locked, but a direct
+  // redo can name this stage outright — and a panel generated against an
+  // unlocked cast is exactly the drift this milestone exists to stop, with no
+  // cheap way to tell after the fact which panels were anchored and which were
+  // not. Same discipline as the cast-lock check in `regenerate()`
+  // (lib/projects.ts): a client-side warning alone is not a guard.
+  const unlocked = ctx.db
+    .select({ name: characters.name })
+    .from(characters)
+    .where(and(eq(characters.projectId, projectId), isNull(characters.castingLockedAt)))
+    .all();
+  if (unlocked.length > 0) {
+    throw new Error(
+      `Casting is not locked for ${unlocked.map((c) => c.name).join(", ")} — ` +
+        `run the casting stage before storyboards, so panels can be anchored to their portraits`,
+    );
+  }
+
   ctx.log(`Extracting storyboard beats with ${provider.model}`);
   ctx.progress(0.05);
   checkAbort(ctx);

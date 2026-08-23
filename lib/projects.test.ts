@@ -575,11 +575,14 @@ describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", ()
       "continuity",
       "visual_bible",
       "production_design",
+      // M7.1 PR-A moved "casting" above "concept_art": identity has to be
+      // locked before any stage draws a character, and this position is what
+      // makes a casting redo cascade the four image stages below it.
+      "casting",
       "concept_art",
       "storyboards",
       "shot_list",
       "previs",
-      "casting",
       "production_plan",
     ]);
   });

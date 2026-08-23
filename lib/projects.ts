@@ -574,24 +574,29 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
     db.delete(shotListItems).where(eq(shotListItems.projectId, projectId)).run();
     db.update(projects).set({ shotListApprovedAt: null }).where(eq(projects.id, projectId)).run();
   },
-  // Stage 19 (M7 PR11) — clears the render's own asset pointer only; the
+  // Stage 20 (M7 PR11) — clears the render's own asset pointer only; the
   // `assets` row/file it pointed at is left alone, same "rows are deleted or
   // nulled, the underlying asset files are left alone" discipline this
   // whole map's own doc comment already states (assets are reaped
-  // separately). Nothing currently sits downstream of "previs" in
-  // `INVALIDATION_CHAIN`, so this never fires as part of a cascade yet — it
-  // exists so a direct redo of "previs" itself clears the stale render.
+  // separately). Fires as part of a cascade from any earlier stage's redo,
+  // "casting" (stage 16) now included.
   previs: (db, projectId) => {
     db.update(projects).set({ previsAssetId: null }).where(eq(projects.id, projectId)).run();
   },
-  // Stage 20 (M7 PR12) — mirrors `character_images`' own discard shape
-  // exactly (same table, same fields), plus clearing `castingLockedAt`: a
-  // whole-stage redo starts every character's identity fresh, unlocked, the
-  // same way its first pass would have. This is the *cascade* path (fired
-  // when an earlier stage's redo invalidates everything after it) — a
-  // direct, scoped redo of one already-locked character's own portrait goes
-  // through `regenerate()`'s explicit lock guard below instead, which this
-  // does not duplicate.
+  // Stage 16 (M7 PR12, moved here by M7.1 PR-A) — mirrors `character_images`'
+  // own discard shape exactly (same table, same fields), plus clearing
+  // `castingLockedAt`: a whole-stage redo starts every character's identity
+  // fresh, unlocked, the same way its first pass would have. This is the
+  // *cascade* path (fired when an earlier stage's redo invalidates everything
+  // after it) — a direct, scoped redo of one already-locked character's own
+  // portrait goes through `regenerate()`'s explicit lock guard below instead,
+  // which this does not duplicate.
+  //
+  // Since PR-A moved this above "concept_art", a casting redo now also
+  // cascades concept art, storyboards, shot list and previs. That is the
+  // point of the move, not a side effect: those stages condition their
+  // generations on the cast's reference portraits, so a new identity makes
+  // every image drawn from the old one stale.
   casting: (db, projectId) => {
     db.update(characters)
       .set({

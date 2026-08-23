@@ -559,43 +559,53 @@ export const DEV_CHAIN_STAGES = [
   // `DEV_ARTIFACT_STAGES` above.
   "visual_bible",
   "production_design",
-  // Stage 16 (M7 PR9) — the first stage in this whole chain that generates
-  // images rather than text. Writes to `locations`/`props` directly, not a
-  // `dev_artifacts` row (see `DEV_TABLE_STAGES` below) — same shape as
-  // "characters"/"world_building"/"continuity" before it. Character
-  // portraits are deliberately out of scope here (see `runConceptArt`'s own
-  // comment in dev.ts) — the M7 detail page's stage list puts identity-lock
-  // casting at stage 20, not here.
+  // Stage 16 (M7.1 PR-A) — "Casting": generates the portrait a dev-format
+  // project's cast has never had, then locks each character's identity via
+  // `characters.castingLockedAt`. Writes to `characters` directly, not a
+  // `dev_artifacts` row — same shape as "characters"/"world_building"/
+  // "continuity" before it. Unlike those, "approved" here has no separate
+  // review click: locking a character *is* the stage completing for them
+  // (see `devStageStatus`'s own comment), so there is no "pending" state,
+  // the same shape "previs" has.
+  //
+  // M7 PR12 originally placed this at stage 20, after "previs". That was
+  // wrong, and measurably so: every continuity-heavy stage below runs
+  // *before* any character had a reference portrait, so `runStoryboards`
+  // could only ever anchor panels to locations and props and every face in
+  // every panel was unconditioned prompt text — with finding F14 ruling out
+  // even naming the character. Identity has to be locked before anything
+  // draws it. Moving this above "concept_art" also means
+  // `INVALIDATION_CHAIN`/`DISCARD` (lib/projects.ts) now cascade concept art,
+  // storyboards, shot list and previs when casting is redone, which is the
+  // correct direction: an identity change invalidates everything drawn from
+  // it. See findings F29/F30 for why reference conditioning, rather than an
+  // img2img edit pass, is what this ordering buys.
+  "casting",
+  // Stage 17 (M7 PR9) — the first stage in this chain to generate images of
+  // the *world* rather than the cast. Writes to `locations`/`props`
+  // directly, not a `dev_artifacts` row (see `DEV_TABLE_STAGES` below).
+  // Character portraits are deliberately out of scope here (see
+  // `runConceptArt`'s own comment in dev.ts) — "casting" above owns them.
   "concept_art",
-  // Stage 17 (M7 PR10) — one generated panel per beat in the approved scene
+  // Stage 18 (M7 PR10) — one generated panel per beat in the approved scene
   // breakdown. Writes to `storyboardPanels` directly, not a `dev_artifacts`
   // row — same shape as "characters"/"world_building"/"continuity"/
   // "concept_art" before it.
   "storyboards",
-  // Stage 18 (M7 PR11) — one `shot_list_items` row per approved storyboard
+  // Stage 19 (M7 PR11) — one `shot_list_items` row per approved storyboard
   // panel, refining its single flat `panelImagePrompt` into the keyframe/
   // motion two-register split M8's own `shots` table will need (see
   // `shotListItems`'s own comment below for why this is a new table, not a
   // shared one). Writes its own table, not a `dev_artifacts` row — same shape
   // as "storyboards" before it.
   "shot_list",
-  // Stage 19 (M7 PR11) — the thin animatic. Unlike every generation stage
+  // Stage 20 (M7 PR11) — the thin animatic. Unlike every generation stage
   // above, this reads structured rows and renders a video (see
   // `runPrevis`, previs.ts) rather than calling an LLM or diffusion model;
   // "approved" here means the render exists (`projects.previsAssetId` is
   // set), not a `dev_artifacts` row or a boolean gate of its own — see that
   // column's own comment above.
   "previs",
-  // Stage 20 (M7 PR12) — "Casting": generates the portrait a dev-format
-  // project's cast has never had (PR9 scoped concept art to locations/props
-  // only and flagged this exact gap for later — this is that later PR), then
-  // locks each character's identity via `characters.castingLockedAt`. Writes
-  // to `characters` directly, not a `dev_artifacts` row — same shape as
-  // "characters"/"concept_art"/"storyboards" before it. Unlike those,
-  // "approved" here has no separate review click: locking a character *is*
-  // the stage completing for them (see `devStageStatus`'s own comment), so
-  // there is no "pending" state, the same shape "previs" already has.
-  "casting",
   // Stage 21 (M7 PR13), Preproduction's own capstone — the last stage this
   // milestone's PR sequence names. Assembles one document from every
   // approved Preproduction artifact (script/scene breakdown, continuity,
@@ -618,11 +628,11 @@ export const DEV_TABLE_STAGES = [
   "characters",
   "world_building",
   "continuity",
+  "casting",
   "concept_art",
   "storyboards",
   "shot_list",
   "previs",
-  "casting",
 ] as const;
 export type DevTableStage = (typeof DEV_TABLE_STAGES)[number];
 
