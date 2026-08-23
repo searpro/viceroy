@@ -24,6 +24,8 @@ import {
   shotListItems,
   storyboardPanels,
   subtitleCues,
+  timelines,
+  timelineSegments,
   voiceovers,
   voiceStyles,
   wardrobeVariants,
@@ -31,6 +33,12 @@ import {
   type DevArtifactStage,
 } from "./db/schema";
 import { enqueue, listJobs } from "./queue";
+import {
+  loadTimeline,
+  projectImageAssets,
+  timelineIssues,
+  timelineTargetOptions,
+} from "./timeline/store";
 import { advance, isStalled, nextStep } from "./pipeline/chain";
 import {
   ASPECT_RATIO_KEYS,
@@ -259,6 +267,11 @@ export function getProjectDetail(db: Db, projectId: string) {
   const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
   if (!project) return undefined;
 
+  // Hoisted because it is served twice over: once as the timeline itself, and
+  // once through its target's validation. Building it twice would be wasted
+  // work and, worse, could serve issues against a different read.
+  const timeline = loadTimeline(db, projectId);
+
   return {
     project,
     narrativeStyle: project.narrativeStyleId
@@ -343,6 +356,25 @@ export function getProjectDetail(db: Db, projectId: string) {
       .where(eq(shotListItems.projectId, projectId))
       .orderBy(asc(shotListItems.index))
       .all(),
+    // M7.2. The neutral `Timeline`, not the raw rows: `startMs` and
+    // `totalDurationMs` are derived (see `buildTimeline`), so serving rows
+    // would make every client recompute them — and get them subtly different.
+    // Undefined until the stage has run.
+    timeline,
+    timelineApprovedAt:
+      db.select().from(timelines).where(eq(timelines.projectId, projectId)).get()?.approvedAt ?? null,
+    // Which images the timeline's keyframe pickers may offer. Same scoping the
+    // PATCH route enforces, so a screen cannot show an option the server will
+    // refuse.
+    timelineAssets: projectImageAssets(db, projectId),
+    // The target's own verdict, computed server-side. The rules belong to the
+    // target (`TimelineTarget.validate`), and a screen that reimplemented them
+    // would drift from what the compiler actually does.
+    timelineIssues: timelineIssues(timeline),
+    // Every registered target's label and constraint profile, so the picker
+    // and the warnings render without the client importing the registry —
+    // which is what keeps "add a target" a server-side change.
+    timelineTargets: timelineTargetOptions(),
   };
 }
 
@@ -685,11 +717,21 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
       .run();
   },
   // Stage 21 (M7 PR13) — same "cleared, not deleted" discipline as every
-  // other `dev_artifacts` stage above. Nothing sits downstream of
-  // "production_plan" in `INVALIDATION_CHAIN` (it's the last entry), so this
-  // never fires as part of a cascade — it exists so a direct redo of
-  // "production_plan" itself clears the stale assembly.
+  // other `dev_artifacts` stage above. It was the last entry in
+  // `INVALIDATION_CHAIN` until M7.2 added "timeline" below it, so it now does
+  // fire as part of a cascade as well as on a direct redo of itself.
   production_plan: devArtifactDiscard("production_plan"),
+  // Stage 22 (M7.2) — deleted, not cleared, unlike the `dev_artifacts` stages
+  // above. Those keep their row so `directionHistory` survives a redo; a
+  // timeline has no such history, and its segments are wholly derived from the
+  // shot list, so a redo rebuilds them from scratch. The settings row is kept
+  // and only un-approved: `targetId`, `fps` and `globalPrompt` are the user's
+  // own choices, not generated output, and losing them on every upstream redo
+  // would make the target picker useless in practice.
+  timeline: (db, projectId) => {
+    db.delete(timelineSegments).where(eq(timelineSegments.projectId, projectId)).run();
+    db.update(timelines).set({ approvedAt: null }).where(eq(timelines.projectId, projectId)).run();
+  },
 };
 
 /** `DISCARD`'s handler for one dev-artifact stage, covering every version. */

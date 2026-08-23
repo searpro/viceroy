@@ -611,8 +611,8 @@ describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", ()
     expect(targets).toEqual(chain);
   });
 
-  it("includes all twenty-one Development/Preproduction-chain stages in DEV_CHAIN_STAGES order", () => {
-    const devStages = INVALIDATION_CHAIN.slice(INVALIDATION_CHAIN.length - 21);
+  it("includes all twenty-two Development/Preproduction-chain stages in DEV_CHAIN_STAGES order", () => {
+    const devStages = INVALIDATION_CHAIN.slice(INVALIDATION_CHAIN.length - 22);
     expect(devStages).toEqual([
       "concept",
       "logline",
@@ -639,6 +639,10 @@ describe("regenerateSchema / INVALIDATION_CHAIN — kept in sync (ADR 0003)", ()
       "shot_list",
       "previs",
       "production_plan",
+      // Stage 22 (M7.2). Last, so every upstream redo clears the timeline —
+      // which is the correct direction: a shot-list redo must not leave a
+      // timeline describing shots that no longer exist.
+      "timeline",
     ]);
   });
 });

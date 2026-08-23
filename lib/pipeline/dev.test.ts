@@ -29,6 +29,8 @@ import { claim, enqueue, listJobs } from "../queue";
 import { createProject, regenerate, resolveContinuityFact, unlockCasting } from "../projects";
 import { setPreference } from "../preferences";
 import { advance, nextStep } from "./chain";
+import { runTimeline } from "./timeline-stage";
+import { minimumDurationMs } from "../timeline/speech";
 import { resolveProvider } from "./context";
 import {
   PANEL_REFERENCE_BUDGET,
@@ -2199,6 +2201,67 @@ describe("Preproduction stage 18 (M7 PR11 — shot list)", () => {
     expect(items[1]!.durationHintMs).toBe(15_000);
   });
 
+  // M7.2 — the gap that made a "movie" reach Production mute. Dialogue was
+  // written by stage 8, graded by stage 9 and typeset by the PDF export, then
+  // dropped: `shot_list_items` had no column for it. LTX speaks the words in
+  // its own prompt, so they have to travel this far.
+  it("carries the screenplay's own words into the shot it belongs to", async () => {
+    const project = await runThroughApprovedStoryboards();
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [
+          { json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000, dialogueLines: [1] } },
+          { json: { keyframePrompt: "k2", motionPrompt: "m2", durationHintMs: 3000, dialogueLines: [] } },
+        ],
+      }),
+    );
+
+    const items = db
+      .select()
+      .from(shotListItems)
+      .where(eq(shotListItems.projectId, project.id))
+      .orderBy(shotListItems.index)
+      .all();
+
+    expect(items[0]!.dialogue).toHaveLength(1);
+    // Verbatim from REVISED_SCREENPLAY — never reworded, because the model is
+    // asked for line *numbers*, not for the text.
+    expect(items[0]!.dialogue[0]).toMatchObject({ characterName: "REYNA", line: "Almost." });
+    expect(items[0]!.dialogue[0]!.parenthetical).toContain("quietly");
+    expect(items[1]!.dialogue).toEqual([]);
+  });
+
+  it("ignores a line number the scene does not have, rather than inventing one", async () => {
+    const project = await runThroughApprovedStoryboards();
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        llm: [{ json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 3000, dialogueLines: [7, 0, -1, 1, 1] } }],
+      }),
+    );
+
+    const [item] = db.select().from(shotListItems).where(eq(shotListItems.projectId, project.id)).all();
+    // Only the one valid index survives, and it is not duplicated.
+    expect(item!.dialogue).toHaveLength(1);
+  });
+
+  it("never stores a shot shorter than the speech it carries", async () => {
+    const project = await runThroughApprovedStoryboards();
+    await runShotList(
+      stubContext(db, enqueue(db, { type: "shot_list", projectId: project.id }), {
+        // The model's own estimate is made without seeing the dialogue — it is
+        // asked for dramatic length, not for arithmetic — so the floor is
+        // applied by the stage. (The floor's own arithmetic is exercised
+        // against a long line in build.test.ts, where the fixture is under
+        // this test's control; here the point is only that it is applied.)
+        llm: [{ json: { keyframePrompt: "k1", motionPrompt: "m1", durationHintMs: 1000, dialogueLines: [1] } }],
+      }),
+    );
+
+    const [item] = db.select().from(shotListItems).where(eq(shotListItems.projectId, project.id)).all();
+    expect(item!.dialogue).toHaveLength(1);
+    expect(item!.durationHintMs).toBeGreaterThanOrEqual(minimumDurationMs(item!.dialogue));
+  });
+
   it("refuses when a refinement returns an identical keyframe/motion split (the register-collapse failure mode)", async () => {
     const project = await runThroughApprovedStoryboards();
     await expect(
@@ -2328,6 +2391,45 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
   }
 
   
+  // M7.2 — the audible half of the identity lock. `voiceDesignNotes` shipped
+  // in PR12 as a column nothing ever wrote, which was invisible while the
+  // movie engine produced no audio at all. LTX speaks the lines, so an
+  // unlocked voice means the same character sounds different in every shot.
+  it("locks how a character sounds in the same write that locks how they look", async () => {
+    const project = await runThroughApprovedProductionDesignForCasting();
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+        llm: [{ json: { voice: "dry, unhurried, faint northern edge" } }],
+      }),
+    );
+
+    const [cast] = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    expect(cast!.voiceDesignNotes).toBe("dry, unhurried, faint northern edge");
+    // Both halves, or neither — a character locked-looking and unlocked-
+    // sounding is the state this change exists to make unreachable.
+    expect(cast!.castingLockedAt).not.toBeNull();
+    expect(cast!.imageAssetId).not.toBeNull();
+  });
+
+  it("still locks the cast when voice design returns nothing usable", async () => {
+    const project = await runThroughApprovedProductionDesignForCasting();
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+        // A paragraph where a phrase was asked for: it would otherwise be
+        // pasted into every one of this character's prompts.
+        llm: [{ json: { voice: "a ".repeat(40) } }],
+      }),
+    );
+
+    const [cast] = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+    expect(cast!.voiceDesignNotes).toBeNull();
+    // Casting is the second most expensive stage in the chain; a bad JSON
+    // response must not throw away the portrait work already paid for.
+    expect(cast!.castingLockedAt).not.toBeNull();
+  });
+
   // Acceptance criterion 1: a dev-format cast with no portraits gets one
   // per character, and each is locked once its own portrait exists — closes
   // the exact gap PR9 flagged and deferred (`runConceptArt`'s own doc
@@ -2675,10 +2777,9 @@ describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
     const project = await runThroughApprovedCasting();
     await runProductionPlan(stubContext(db, enqueue(db, { type: "production_plan", projectId: project.id }), {}));
     advance(db, project.id); // approve production_plan
-    expect(nextStep(db, project.id)).toEqual({
-      kind: "complete",
-      reason: "Preproduction approved, ready for Production",
-    });
+    // Approving the capstone no longer completes the chain: M7.2 appended
+    // "timeline" after it, so the chain now walks on to stage 22.
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "dev", stage: "timeline" });
 
     // "previs" is the stage immediately before "production_plan" as of M7.1
     // PR-A (casting used to be, and is now up at stage 16 — see the casting
@@ -2768,7 +2869,7 @@ describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
   // through the approved `production_plan`, ending at `devNextStep`'s
   // permanent terminal state. Mirrors PR5's own ten-stage Development
   // capstone test, one level up.
-  it("walks a project through the entire 21-stage Development/Preproduction chain to devNextStep's terminal 'Preproduction approved' state", async () => {
+  it("walks a project through the entire 22-stage Development/Preproduction chain to devNextStep's terminal 'Timeline approved' state", async () => {
     const project = await runThroughApprovedCasting();
     expect(nextStep(db, project.id)).toMatchObject({
       kind: "dev",
@@ -2780,19 +2881,29 @@ describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
 
     // production_plan is left unapproved even in auto mode (it is an
     // assembly stage, not a generation one) — "continue" is what a human
-    // uses to sign off on Preproduction and reach the milestone's terminal
-    // state.
+    // uses to sign off on Preproduction.
     expect(nextStep(db, project.id)).toMatchObject({
       kind: "dev",
       stage: "production_plan",
       needsApproval: true,
     });
 
+    // Signing off on Preproduction now hands over to stage 22 rather than
+    // completing the chain (M7.2).
+    expect(advance(db, project.id)).toMatchObject({ kind: "dev", stage: "timeline" });
+
+    await runTimeline(stubContext(db, enqueue(db, { type: "timeline", projectId: project.id }), {}));
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "timeline",
+      needsApproval: true,
+    });
+
     const finalStep = advance(db, project.id);
-    expect(finalStep).toEqual({ kind: "complete", reason: "Preproduction approved, ready for Production" });
+    expect(finalStep).toEqual({ kind: "complete", reason: "Timeline approved, ready for Production" });
     expect(nextStep(db, project.id)).toEqual({
       kind: "complete",
-      reason: "Preproduction approved, ready for Production",
+      reason: "Timeline approved, ready for Production",
     });
   });
 });

@@ -15,6 +15,8 @@ import {
   shotListItems,
   storyboardPanels,
   subtitleCues,
+  timelines,
+  timelineSegments,
   voiceovers,
   worldBuilding,
 } from "../db/schema";
@@ -321,7 +323,15 @@ describe("nextStep — Development chain", () => {
   // `world_building.approvedAt` respectively, so this test approves those two
   // stages by their own mechanism rather than inserting a `dev_artifacts` row
   // for them.
-  it("reports complete once every stage has an approved row", () => {
+  /**
+   * Every stage of the chain approved except the last one, "timeline" — the
+   * point the two tests below vary from. Each stage is approved by its own
+   * mechanism, which is the thing worth spelling out: `dev_artifacts` rows
+   * for the eight artifact stages, a `projects` timestamp for the table
+   * stages that have one, and the artifact's own existence for "previs" and
+   * "casting" (see `devStageStatus`).
+   */
+  function approveEverythingBeforeTheTimeline() {
     const project = newDevProject();
     const artifactStages = [
       "concept",
@@ -339,9 +349,8 @@ describe("nextStep — Development chain", () => {
       "scene_breakdown",
       "visual_bible",
       "production_design",
-      // Preproduction (M7 PR13) — the chain's own permanent last stage now;
-      // approved the ordinary `dev_artifacts` way, like the other capstone
-      // ("story_bible") above.
+      // Preproduction (M7 PR13) — approved the ordinary `dev_artifacts` way,
+      // like the other capstone ("story_bible") above.
       "production_plan",
     ] as const;
     for (const stage of artifactStages) {
@@ -392,9 +401,49 @@ describe("nextStep — Development chain", () => {
       .all();
     db.update(projects).set({ previsAssetId: previsAsset!.id }).where(eq(projects.id, project.id)).run();
 
+    return project;
+  }
+
+  it("reports complete once every stage has an approved row", () => {
+    const project = approveEverythingBeforeTheTimeline();
+    // Stage 22 (M7.2) — "timeline" owns its own tables, so it is approved by
+    // a timestamp on its own settings row, alongside at least one segment.
+    db.insert(timelines).values({ projectId: project.id, approvedAt: new Date() }).run();
+    db.insert(timelineSegments)
+      .values({ projectId: project.id, sceneId: "1", index: 0, durationMs: 4000 })
+      .run();
+
     expect(nextStep(db, project.id)).toMatchObject({
       kind: "complete",
-      reason: "Preproduction approved, ready for Production",
+      reason: "Timeline approved, ready for Production",
+    });
+  });
+
+  it("reports the timeline pending once it has segments awaiting a human", () => {
+    const project = approveEverythingBeforeTheTimeline();
+    db.insert(timelines).values({ projectId: project.id }).run();
+    db.insert(timelineSegments)
+      .values({ projectId: project.id, sceneId: "1", index: 0, durationMs: 4000 })
+      .run();
+
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "timeline",
+      needsApproval: true,
+    });
+  });
+
+  it("reports the timeline empty — not pending — when its settings row has no segments", () => {
+    // The shape a stage that died mid-write leaves behind. Calling that
+    // "pending" would put an approve button in front of nothing; calling it
+    // "empty" re-runs the stage, which is what actually fixes it.
+    const project = approveEverythingBeforeTheTimeline();
+    db.insert(timelines).values({ projectId: project.id }).run();
+
+    expect(nextStep(db, project.id)).toMatchObject({
+      kind: "dev",
+      stage: "timeline",
+      needsApproval: false,
     });
   });
 

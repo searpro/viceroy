@@ -27,6 +27,9 @@ import {
 import { storeAsset } from "../assets";
 import { renderPrompt } from "../prompts";
 import { sourceImageFor } from "../resolution";
+import { extractSceneDialogue, resolveSpeakers, sceneDialogueFor } from "../screenplay-dialogue";
+import { minimumDurationMs, type DialogueLine } from "../timeline/speech";
+import { DEFAULT_SEGMENT_DURATION_MS } from "../timeline/build";
 import { enqueue } from "../queue";
 import type { Db } from "../db/client";
 import {
@@ -2231,14 +2234,46 @@ type ShotListRefinement = {
   keyframePrompt?: unknown;
   motionPrompt?: unknown;
   durationHintMs?: unknown;
+  /** M7.2 — 1-based indices into the scene's own numbered line list. */
+  dialogueLines?: unknown;
 };
+
+/**
+ * The lines the model picked, resolved back to the authored text (M7.2).
+ *
+ * Indices, never strings: the model is asked which lines this shot covers, not
+ * to reproduce them, so there is no path by which a reworded or hallucinated
+ * line reaches the row. That is what lets a caption stay authored text after
+ * LTX speaks it, rather than becoming a transcription of whatever came out —
+ * the distinction findings F1 and F5 are about.
+ */
+function selectDialogueLines(available: DialogueLine[], picked: unknown): DialogueLine[] {
+  if (!Array.isArray(picked) || available.length === 0) return [];
+  const seen = new Set<number>();
+  const chosen: DialogueLine[] = [];
+  for (const raw of picked) {
+    const index = typeof raw === "number" ? raw : Number(raw);
+    if (!Number.isInteger(index) || index < 1 || index > available.length) continue;
+    if (seen.has(index)) continue;
+    seen.add(index);
+    chosen.push(available[index - 1]!);
+  }
+  // Screenplay order, whatever order the model listed them in — a shot plays
+  // its lines in the order they were written.
+  return chosen.sort((a, b) => available.indexOf(a) - available.indexOf(b));
+}
 
 // A plausible default for one shot's screen time when the model's own
 // estimate is missing or nonsensical — sits mid-range of the prompt's own
 // "typically 2000-6000ms" guidance, not at either edge, so a bad estimate
 // degrades to something a previs animatic can still cut on rather than to a
 // value that reads as broken (a 0ms or 60000ms shot).
-const DEFAULT_SHOT_DURATION_MS = 4000;
+//
+// Imported rather than redeclared (M7.2): `runPrevis` and the production
+// timeline both fall back to this same number, so the animatic's length and
+// the timeline's total are the same by construction. They used to be three
+// literals that happened to agree.
+const DEFAULT_SHOT_DURATION_MS = DEFAULT_SEGMENT_DURATION_MS;
 const MIN_SHOT_DURATION_MS = 1000;
 const MAX_SHOT_DURATION_MS = 15_000;
 
@@ -2314,6 +2349,14 @@ export async function runShotList(ctx: StageContext): Promise<void> {
 
   const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
 
+  // M7.2. The revised screenplay is the authored source of every spoken word;
+  // without this, dialogue died here and a finished movie reached Production
+  // mute. Parsed once per run rather than per panel — one screenplay, many
+  // panels.
+  const sceneDialogue = extractSceneDialogue(
+    requireDevArtifactContent(ctx.db, projectId, "screenplay_revision"),
+  );
+
   const existing = ctx.db.select().from(shotListItems).where(eq(shotListItems.projectId, projectId)).all();
   const existingByKey = new Set(existing.map((row) => `${row.sceneId}::${row.index}`));
 
@@ -2337,6 +2380,18 @@ export async function runShotList(ctx: StageContext): Promise<void> {
       `${panel.lens} lens`,
     ].join(", ");
 
+    const available = resolveSpeakers(sceneDialogueFor(sceneDialogue, panel.sceneId), cast);
+    const dialogueBlock =
+      available.length === 0
+        ? ""
+        : [
+            "",
+            `Spoken lines in this scene (choose which belong to this shot, by number):`,
+            ...available.map(
+              (entry, i) => `${i + 1}. ${entry.characterName}: "${entry.line}"`,
+            ),
+          ].join("\n");
+
     const payload = await ctx.llmClient(provider).chatJson<ShotListRefinement>({
       model: provider.model,
       messages: [
@@ -2345,6 +2400,7 @@ export async function runShotList(ctx: StageContext): Promise<void> {
           content: renderPrompt(ctx.db, "dev.shot_list", {
             storyboardPanelPrompt: panel.panelImagePrompt,
             shotDescriptor,
+            sceneDialogue: dialogueBlock,
             direction: directionBlock(direction),
           }),
         },
@@ -2366,6 +2422,8 @@ export async function runShotList(ctx: StageContext): Promise<void> {
     // function's own doc comment.
     const mentioned = cast.filter((c) => panel.panelImagePrompt.toLowerCase().includes(c.name.toLowerCase()));
 
+    const dialogue = selectDialogueLines(available, payload.dialogueLines);
+
     ctx.db
       .insert(shotListItems)
       .values({
@@ -2379,7 +2437,12 @@ export async function runShotList(ctx: StageContext): Promise<void> {
         cameraMovement: panel.cameraMovement,
         lens: panel.lens,
         characterIds: mentioned.map((c) => c.id),
-        durationHintMs: coerceDurationHintMs(payload.durationHintMs),
+        dialogue,
+        // A shot that carries speech cannot be shorter than the speech. The
+        // model's own estimate is made without knowing how many words it has
+        // to fit — it is asked for dramatic length, not for arithmetic — so
+        // the floor is applied here rather than trusted to the prompt (M7.2).
+        durationHintMs: Math.max(coerceDurationHintMs(payload.durationHintMs), minimumDurationMs(dialogue)),
         keyframeAssetId: panel.panelImageAssetId,
       })
       .run();
@@ -2544,6 +2607,59 @@ export function crpViewPreference(shotType: StoryboardShotType): readonly CrpVie
 type WardrobeCandidate = { name?: unknown; description?: unknown };
 
 /**
+ * Lock how this character sounds (M7.2) — the audible half of the identity
+ * lock casting was always defined to include.
+ *
+ * `characters.voiceDesignNotes` has existed since M7 PR12 and nothing ever
+ * wrote to it, which was invisible while the movie engine produced no audio.
+ * LTX generates speech from the words in its own prompt, in the documented
+ * form `[Speaker] says, in a [delivery], "[line]"` — so without a locked
+ * delivery phrase the same character is voiced differently in every shot.
+ * That is the audible version of the drift ADR 0001's reference portraits
+ * exist to prevent, and it is fixed the same way: decide once, at casting,
+ * and treat it as fixed input afterwards.
+ *
+ * Written once, never refreshed, for exactly the reason `proposeWardrobe`
+ * above is not: re-proposing would let a later run revoice a cast whose
+ * identity is explicitly locked. A model that returns nothing usable leaves
+ * the column null and the character simply has no delivery clause, which is
+ * how every project that predates this behaves.
+ */
+async function proposeVoiceDesign(
+  ctx: StageContext,
+  character: { name: string; arc: string | null },
+  visualDescription: string,
+): Promise<string> {
+  const provider = resolveDevProvider(ctx.db);
+  try {
+    const payload = await ctx.llmClient(provider).chatJson<{ voice?: unknown }>({
+      model: provider.model,
+      messages: [
+        {
+          role: "user",
+          content: renderPrompt(ctx.db, "casting.voice", {
+            characterDescription: visualDescription,
+            characterArc: character.arc ? `Arc: ${character.arc}` : "",
+          }),
+        },
+      ],
+      temperature: 0.3,
+    });
+    const voice = typeof payload.voice === "string" ? payload.voice.trim() : "";
+    // A model that ignores the twelve-word instruction and returns a paragraph
+    // would put a paragraph into every one of this character's prompts.
+    return voice.split(/\s+/).length > 20 ? "" : voice;
+  } catch (error) {
+    ctx.log(
+      `Voice design failed for ${character.name} (${(error as Error).message}) — ` +
+        `their lines will be spoken without a delivery direction`,
+      "warn",
+    );
+    return "";
+  }
+}
+
+/**
  * Propose this character's approved outfits, once (M7.1 PR-C).
  *
  * Called only when a character has no variants at all — never to refresh them.
@@ -2686,12 +2802,24 @@ export async function runCasting(ctx: StageContext): Promise<void> {
     });
     const refInputName = await backend.uploadReference(bytes, `${character.id}.png`);
 
+    // Voice is locked in the same write as the face (M7.2). Casting was
+    // always defined as locking visual reference *and* voice design; only the
+    // visual half was ever implemented. Doing both here means a character
+    // cannot end up locked-looking and unlocked-sounding.
+    const voiceDesignNotes = character.voiceDesignNotes ?? (await proposeVoiceDesign(ctx, character, visualDescription));
+
     // Generation and lock happen together, deliberately — see this
     // function's own doc comment on why casting has no separate approval
     // step.
     ctx.db
       .update(characters)
-      .set({ imagePrompt: prompt, imageAssetId: asset.id, refInputName, castingLockedAt: new Date() })
+      .set({
+        imagePrompt: prompt,
+        imageAssetId: asset.id,
+        refInputName,
+        voiceDesignNotes: voiceDesignNotes || null,
+        castingLockedAt: new Date(),
+      })
       .where(eq(characters.id, character.id))
       .run();
   }

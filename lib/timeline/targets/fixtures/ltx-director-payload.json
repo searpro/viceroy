@@ -1,0 +1,29 @@
+{
+  "global_prompt": "grimy harbour town, overcast, 35mm film grain",
+  "local_prompts": "Wide shot, eye-level angle, standard lens. Slow push in on the harbour. Steady sea ambience, rigging knocking against masts. Sparse low strings, unhurried.|Wide shot, eye-level angle, standard lens. She turns toward the door. Steady sea ambience, rigging knocking against masts. The squelch of boots on wet boards. Sparse low strings, unhurried. Reyna says, quietly, in a low, unhurried, faint coastal lilt, \"It was under the stairs.\" The score continues across the cut; the ambience continues.|Wide shot, eye-level angle, standard lens. The lantern gutters out. Wind only. The music drops; the dialogue drops.",
+  "segment_lengths": "97,97,145",
+  "guide_strength": "1,0.8,0.8,1",
+  "timeline_data": "{\"global_prompt\":\"grimy harbour town, overcast, 35mm film grain\",\"segments\":[{\"type\":\"image\",\"imageFile\":\"viceroy-asset-a.png\",\"start\":0,\"length\":1,\"trimStart\":0,\"isEndFrame\":false},{\"type\":\"image\",\"imageFile\":\"viceroy-asset-b.png\",\"start\":97,\"length\":1,\"trimStart\":0,\"isEndFrame\":false},{\"type\":\"image\",\"imageFile\":\"viceroy-asset-c.png\",\"start\":193,\"length\":1,\"trimStart\":0,\"isEndFrame\":true},{\"type\":\"image\",\"imageFile\":\"viceroy-asset-d.png\",\"start\":194,\"length\":1,\"trimStart\":0,\"isEndFrame\":false}],\"motionSegments\":[{\"start\":0,\"length\":97,\"prompt\":\"Wide shot, eye-level angle, standard lens. Slow push in on the harbour. Steady sea ambience, rigging knocking against masts. Sparse low strings, unhurried.\"},{\"start\":97,\"length\":97,\"prompt\":\"Wide shot, eye-level angle, standard lens. She turns toward the door. Steady sea ambience, rigging knocking against masts. The squelch of boots on wet boards. Sparse low strings, unhurried. Reyna says, quietly, in a low, unhurried, faint coastal lilt, \\\"It was under the stairs.\\\" The score continues across the cut; the ambience continues.\"},{\"start\":194,\"length\":145,\"prompt\":\"Wide shot, eye-level angle, standard lens. The lantern gutters out. Wind only. The music drops; the dialogue drops.\"}],\"audioSegments\":[],\"retakeMode\":false}",
+  "start_frame": 0,
+  "end_frame": 339,
+  "use_custom_audio": false,
+  "inpaint_audio": false,
+  "images": [
+    {
+      "fileName": "viceroy-asset-a.png",
+      "assetId": "asset-a"
+    },
+    {
+      "fileName": "viceroy-asset-b.png",
+      "assetId": "asset-b"
+    },
+    {
+      "fileName": "viceroy-asset-c.png",
+      "assetId": "asset-c"
+    },
+    {
+      "fileName": "viceroy-asset-d.png",
+      "assetId": "asset-d"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import { Panel } from "./steps/panel";
 import { ContinueBanner } from "./continue-banner";
 import { castingLockReason } from "./redo-warning";
 import { DEV_CHAIN_ORDER, DEV_STAGE_LABELS } from "./dev-stages";
+import { TimelineStep } from "./steps/timeline-step";
 import type { Detail } from "./detail-types";
 
 /** What a scoped Development-chain image redo names (M7.1 PR-D0). */
@@ -31,6 +32,8 @@ export function DevChainCard({
   onResolveContinuityFact,
   onUnlockCasting,
   onRedoDevItem,
+  onPatchTimeline,
+  onPatchSegment,
 }: {
   detail: Detail;
   active: boolean;
@@ -39,6 +42,8 @@ export function DevChainCard({
   onResolveContinuityFact: (factId: string) => void;
   onUnlockCasting: (characterId: string) => void;
   onRedoDevItem: (scope: DevItemScope, direction: string, wardrobeVariantId?: string | null) => void;
+  onPatchTimeline: (patch: Record<string, unknown>) => void;
+  onPatchSegment: (segmentId: string, patch: Record<string, unknown>) => void;
 }) {
   const { nextStep } = detail;
 
@@ -54,6 +59,8 @@ export function DevChainCard({
           onResolveContinuityFact={onResolveContinuityFact}
           onUnlockCasting={onUnlockCasting}
           onRedoDevItem={onRedoDevItem}
+          onPatchTimeline={onPatchTimeline}
+          onPatchSegment={onPatchSegment}
         />
       </div>
     );
@@ -65,15 +72,33 @@ export function DevChainCard({
     <div>
       <ContinueBanner detail={detail} active={active} busy={busy} onContinue={onContinue} />
 
-      <Panel title={stage ?? "Development"} empty emptyText="Not yet generated.">
-        <></>
-      </Panel>
+      {/* Every other stage's "next" panel is a placeholder — its content
+          shows in the history below once generated. The timeline is the
+          exception on purpose: reviewing and editing the arrangement is what
+          the approval click means here, so it has to be on screen *before*
+          the click, not filed under "generated so far" afterwards. */}
+      {stage === "timeline" && detail.timeline ? (
+        <Panel title="Production timeline" empty={false} emptyText="">
+          <TimelineStep
+            detail={detail}
+            busy={busy}
+            onPatchTimeline={onPatchTimeline}
+            onPatchSegment={onPatchSegment}
+          />
+        </Panel>
+      ) : (
+        <Panel title={stage ?? "Development"} empty emptyText="Not yet generated.">
+          <></>
+        </Panel>
+      )}
       <DevChainHistory
         detail={detail}
         busy={busy}
         onResolveContinuityFact={onResolveContinuityFact}
         onUnlockCasting={onUnlockCasting}
         onRedoDevItem={onRedoDevItem}
+        onPatchTimeline={onPatchTimeline}
+        onPatchSegment={onPatchSegment}
       />
     </div>
   );
@@ -96,12 +121,16 @@ function DevChainHistory({
   onResolveContinuityFact,
   onUnlockCasting,
   onRedoDevItem,
+  onPatchTimeline,
+  onPatchSegment,
 }: {
   detail: Detail;
   busy: boolean;
   onResolveContinuityFact: (factId: string) => void;
   onUnlockCasting: (characterId: string) => void;
   onRedoDevItem: (scope: DevItemScope, direction: string, wardrobeVariantId?: string | null) => void;
+  onPatchTimeline: (patch: Record<string, unknown>) => void;
+  onPatchSegment: (segmentId: string, patch: Record<string, unknown>) => void;
 }) {
   const byStage = new Map(detail.devArtifacts.map((row) => [row.stage, row]));
   const hasCharacters = detail.characters.length > 0;
@@ -111,6 +140,7 @@ function DevChainHistory({
   const hasStoryboards = detail.storyboardPanels.length > 0;
   const hasShotList = detail.shotListItems.length > 0;
   const hasPrevis = Boolean(detail.project.previsAssetId);
+  const hasTimeline = Boolean(detail.timeline);
   // Same shape `hasConceptArt` uses for locations/props: a portrait, not just
   // a cast row, is what makes this stage's own section worth showing.
   const hasCasting = detail.characters.some((character) => character.imageAssetId);
@@ -123,6 +153,7 @@ function DevChainHistory({
     if (stage === "storyboards") return hasStoryboards;
     if (stage === "shot_list") return hasShotList;
     if (stage === "previs") return hasPrevis;
+    if (stage === "timeline") return hasTimeline;
     if (stage === "casting") return hasCasting;
     return byStage.has(stage);
   });
@@ -156,6 +187,13 @@ function DevChainHistory({
                 <ShotListSection detail={detail} />
               ) : stage === "previs" ? (
                 <PrevisSection detail={detail} />
+              ) : stage === "timeline" ? (
+                <TimelineStep
+                  detail={detail}
+                  busy={busy}
+                  onPatchTimeline={onPatchTimeline}
+                  onPatchSegment={onPatchSegment}
+                />
               ) : stage === "casting" ? (
                 <CastingSection detail={detail} onUnlockCasting={onUnlockCasting} />
               ) : (

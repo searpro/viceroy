@@ -14,6 +14,8 @@ import {
   shotListItems,
   storyboardPanels,
   subtitleCues,
+  timelines,
+  timelineSegments,
   voiceovers,
   worldBuilding,
   type DevChainStage,
@@ -239,6 +241,22 @@ function devStageStatus(db: Db, projectId: string, stage: DevChainStage): DevSta
     return cast.length > 0 && cast.every((c) => c.castingLockedAt) ? "approved" : "empty";
   }
 
+  if (stage === "timeline") {
+    // Both halves have to be there: `runTimeline` writes the settings row and
+    // its segments together, so a settings row with no segments means the
+    // stage died mid-write, not that a human is looking at an empty timeline.
+    // Reporting that as "pending" would offer an approve button for nothing.
+    const row = db.select().from(timelines).where(eq(timelines.projectId, projectId)).get();
+    if (!row) return "empty";
+    const segments = db
+      .select({ id: timelineSegments.id })
+      .from(timelineSegments)
+      .where(eq(timelineSegments.projectId, projectId))
+      .all();
+    if (segments.length === 0) return "empty";
+    return row.approvedAt ? "approved" : "pending";
+  }
+
   const latest = db
     .select()
     .from(devArtifacts)
@@ -273,31 +291,30 @@ function devNextStep(db: Db, projectId: string): NextStep {
         status === "pending" ? `${stage} is waiting for review` : `${stage} has not been generated yet`,
     };
   }
-  // "Development approved, ready for Preproduction" was accurate while
-  // `DEV_CHAIN_STAGES` ended at `story_bible` (PR1-5) — once Preproduction
-  // PRs started appending their own stage names after it (PR6-PR12), reaching
-  // the end of the (growing) list stopped meaning "Development is done" and
-  // started meaning "everything currently built is done," which are
-  // different claims once any Preproduction stage exists. `story_bible` was
-  // the fixed point that meant Development specifically finished; now that
-  // `production_plan` (M7 PR13) closes out Preproduction's own 11-stage
-  // range — the last stage the M7 detail page's PR sequence names at all —
-  // it is the new, permanent fixed point: unlike `story_bible`, there is
-  // nothing left to append after it within this milestone, so this branch
-  // does not need the same "stays generic once later stages exist" hedge
-  // `story_bible`'s branch needed. The `story_bible` case is kept only for a
-  // project whose chain somehow stops there (there is none in practice once
-  // `DEV_CHAIN_STAGES` includes Preproduction, but keeping the check honest
-  // costs nothing).
+  // What "the end of the list" means depends on what the last stage is, and
+  // the list has now grown twice. `story_bible` was the fixed point that
+  // meant *Development* finished (PR1-5); Preproduction's own stages were
+  // appended after it (PR6-PR13) and `production_plan` became the fixed point
+  // that meant *Preproduction* finished.
+  //
+  // That entry used to claim it was permanent — "nothing left to append after
+  // it" — and M7.2 appended `timeline` anyway. The lesson is the one
+  // `story_bible` already taught and this comment talked itself out of: a
+  // terminal message is about which stage is last, not about the list being
+  // finished. So each known last stage names what it completes, and an
+  // unrecognised one falls back to the honest generic claim rather than
+  // asserting a phase boundary nobody has defined.
   const lastStage = DEV_CHAIN_STAGES[DEV_CHAIN_STAGES.length - 1];
   return {
     kind: "complete",
     reason:
-      lastStage === "production_plan"
-        ? "Preproduction approved, ready for Production"
-        : lastStage === "story_bible"
-          ? "Development approved, ready for Preproduction"
-          : "every Development/Preproduction stage built so far is approved",
+      lastStage === "timeline"
+        ? "Timeline approved, ready for Production"
+        : lastStage === "production_plan"
+          ? "Preproduction approved, ready for Production"
+          : lastStage === "story_bible"
+            ? "Development approved, ready for Preproduction"
+            : "every Development/Preproduction stage built so far is approved",
   };
 }
 
@@ -372,6 +389,16 @@ function approveDevStage(db: Db, projectId: string, stage: DevChainStage): void 
     // Never actually called, for the same reason "previs" above never is —
     // `devStageStatus` never reports "casting" as "pending" (see its own
     // comment above).
+    return;
+  }
+  if (stage === "timeline") {
+    // Unlike "previs"/"casting" this branch genuinely runs: a timeline has a
+    // real pending state, because the whole point of the stage is that a human
+    // looks at the arrangement and edits it before signing it off (M7.2).
+    db.update(timelines)
+      .set({ approvedAt: new Date() })
+      .where(eq(timelines.projectId, projectId))
+      .run();
     return;
   }
   db.update(devArtifacts)

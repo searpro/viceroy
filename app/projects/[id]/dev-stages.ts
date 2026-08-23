@@ -41,6 +41,10 @@ export const DEV_STAGE_LABELS: Record<string, string> = {
   shot_list: "Shot list",
   previs: "Previs",
   production_plan: "Production plan",
+  // Stage 22 (M7.2) — the handoff artifact between Preproduction and
+  // Production. "Production timeline", not "Timeline": `remotion/timeline.ts`
+  // means caption cues, and the two get confused in conversation.
+  timeline: "Production timeline",
 };
 
 export const DEV_CHAIN_ORDER = Object.keys(DEV_STAGE_LABELS);

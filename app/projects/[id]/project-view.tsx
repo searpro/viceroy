@@ -215,6 +215,36 @@ export function ProjectView({ initial }: { initial: Detail }) {
     setBusy(false);
   }
 
+  // M7.2. Both timeline mutations return the whole rebuilt `Timeline` (an
+  // edited duration reflows every later segment's derived start), but this
+  // refetches the full detail rather than merging that response in: approving
+  // and redoing both change `nextStep` too, and a screen holding a merged
+  // timeline next to a stale `nextStep` is exactly the kind of half-updated
+  // state the polling loop exists to avoid.
+  async function patchTimeline(patch: Record<string, unknown>) {
+    setBusy(true);
+    await fetch(`/api/projects/${detail.project.id}/timeline`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
+  async function patchTimelineSegment(segmentId: string, patch: Record<string, unknown>) {
+    setBusy(true);
+    await fetch(`/api/projects/${detail.project.id}/timeline/segments/${segmentId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
+    if (response.ok) setDetail(await response.json());
+    setBusy(false);
+  }
+
   async function continueProject() {
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
@@ -361,6 +391,8 @@ export function ProjectView({ initial }: { initial: Detail }) {
             onResolveContinuityFact={resolveContinuityFact}
             onUnlockCasting={unlockCharacterCasting}
             onRedoDevItem={regenerateDevItem}
+            onPatchTimeline={patchTimeline}
+            onPatchSegment={patchTimelineSegment}
           />
         </div>
       ) : layout === "stepper" ? (

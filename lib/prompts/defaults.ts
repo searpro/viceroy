@@ -147,6 +147,16 @@ const STORY_VARS = [
     name: "storyboardPanelPrompt",
     description: "The source storyboard panel's own assembled image prompt, for reference",
   },
+  // M7.2 — the numbered spoken lines belonging to this panel's scene, taken
+  // from the approved Fountain screenplay. Empty for a scene with no speech.
+  // The stage assigns lines to shots by the numbers the model returns, so it
+  // never sees a line it could reword: the authored words go into the row
+  // verbatim, which is what keeps captions authored text rather than a
+  // transcription once LTX speaks them.
+  {
+    name: "sceneDialogue",
+    description: "This scene's spoken lines, numbered, from the approved screenplay",
+  },
   {
     name: "characterArc",
     description: "How this character changes over the story, if the chain recorded one",
@@ -611,6 +621,46 @@ different outfit; if it does not, return one.
 Each description lists garments, materials and colours only — what someone
 would see on a hanger. No mood, no lighting, no camera language, no adjectives
 about the character's state of mind.`,
+  },
+  {
+    key: "casting.voice",
+    section: "Preproduction",
+    label: "Voice design prompt",
+    description:
+      "Locks one character's voice at casting — the audible half of the identity lock (M7.2, stage 16).",
+    // A sibling of `casting.wardrobe` above in every structural way: read by
+    // an LLM, returns JSON, degrades to nothing rather than failing the most
+    // expensive stage in the chain.
+    //
+    // It exists because `characters.voiceDesignNotes` shipped in M7 PR12 as a
+    // column nothing ever wrote, even though the milestone defined casting as
+    // locking visual reference *and voice design*. That was harmless while
+    // the movie engine had no audio at all. It stopped being harmless when
+    // LTX started speaking the lines: its documented form is `[Speaker] says,
+    // in a [delivery], "[line]"`, and without a locked delivery the same
+    // character is voiced differently in every shot — the audible version of
+    // exactly the drift ADR 0001's reference portraits exist to prevent.
+    //
+    // Deliberately short and physical. LTX takes performance direction as
+    // prose and responds to how a voice *sounds*, not to an emotion label;
+    // "gravelly, unhurried, faint Irish lilt" conditions a performance, while
+    // "sad" does not.
+    variables: pick("characterDescription", "characterArc"),
+    template: `A character in a film. Describe how their voice sounds, for a
+model that will speak their lines aloud.
+
+Character: {{characterDescription}}
+{{characterArc}}
+
+Return JSON: {"voice": string}
+
+One short phrase, at most twelve words: timbre, pace, and accent if they have
+a distinct one. Describe the sound of the voice, not the character's feelings
+— "gravelly, unhurried, faint Irish lilt", not "weary and full of regret".
+
+No stage direction, no adjectives about their mood, no mention of what they
+say. This phrase is reused for every line they speak, so it must be true of
+them in every scene, not just one.`,
   },
   {
     key: "character.reference_view",
@@ -1235,9 +1285,9 @@ the JSON object, no commentary before or after it.`,
     // refines a single already-approved panel's own content, one call per
     // panel, the same narrow-input discipline `dev.continuity` and
     // `dev.storyboards` already apply for the same reason (finding F10).
-    variables: pick("storyboardPanelPrompt", "shotDescriptor", "direction"),
+    variables: pick("storyboardPanelPrompt", "shotDescriptor", "sceneDialogue", "direction"),
     template: `You are a cinematographer turning one approved storyboard panel into a
-shot-list entry for a previs animatic.
+shot-list entry.
 
 Storyboard panel's own image prompt (included for reference only — ignore
 any rendering/technical language already baked into it: film stock, grade,
@@ -1246,6 +1296,7 @@ it should be rendered):
 {{storyboardPanelPrompt}}
 
 Shot: {{shotDescriptor}}
+{{sceneDialogue}}
 {{direction}}
 
 Split this into two different registers — collapsing them into one is a
@@ -1262,9 +1313,16 @@ Also estimate "durationHintMs": a plausible shot length in milliseconds for
 what this shot needs to do (typically 2000-6000; longer for a shot doing
 more dramatic work, shorter for a quick insert).
 
+If the scene above lists spoken lines, decide which of them — if any — are
+spoken during THIS shot, and return their numbers in "dialogueLines". A shot
+is a fragment of the scene, so most shots carry one line or none; return an
+empty array for a shot with no speech. Prefer a single speaker: a shot
+covering two people talking is harder to voice cleanly than two shots. Never
+invent a line, reword one, or return a number the list does not contain.
+
 Output only a JSON object of this exact shape: {"keyframePrompt": "...",
-"motionPrompt": "...", "durationHintMs": <integer>}. No commentary before or
-after it.`,
+"motionPrompt": "...", "durationHintMs": <integer>, "dialogueLines": [<integer>]}.
+No commentary before or after it.`,
   },
   {
     key: "dev.production_design",

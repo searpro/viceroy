@@ -56,9 +56,12 @@ export const REDO_CHAIN = [
   // Preproduction (M7 PR11) — same "listed but nothing calls it yet" story.
   "shot_list",
   "previs",
-  // Preproduction (M7 PR13) — same "listed but nothing calls it yet" story;
-  // the chain's own permanent last stage now.
+  // Preproduction (M7 PR13) — same "listed but nothing calls it yet" story.
   "production_plan",
+  // Stage 22 (M7.2) — the production timeline, the chain's last entry. It is
+  // reachable from the review UI, unlike the two above, since redoing it is
+  // how a human rebuilds the arrangement from a changed shot list.
+  "timeline",
 ] as const;
 
 export type RedoTarget = (typeof REDO_CHAIN)[number];

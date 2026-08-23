@@ -5,6 +5,7 @@ import { asc, eq } from "drizzle-orm";
 import { bundle } from "@remotion/bundler";
 import { ensureBrowser, renderMedia, selectComposition } from "@remotion/renderer";
 import { storeAsset } from "../assets";
+import { DEFAULT_SEGMENT_DURATION_MS } from "../timeline/build";
 import { previsSchema } from "../../remotion/schema";
 import { assets, projects, shotListItems } from "../db/schema";
 import {
@@ -21,8 +22,10 @@ const FPS = 30;
 // A shot list item's own `durationHintMs` is nullable (a row a stage failed
 // to write cleanly, or one hand-edited to blank) — this is what a shot holds
 // for when there's nothing better to go on, same mid-range choice
-// `runShotList`'s own default makes (dev.ts).
-const DEFAULT_SHOT_DURATION_MS = 4000;
+// `runShotList`'s own default makes (dev.ts) and the production timeline's
+// own `seedSegments` makes (M7.2). One constant now, so the animatic and the
+// timeline cannot describe different arrangements of the same shot list.
+const DEFAULT_SHOT_DURATION_MS = DEFAULT_SEGMENT_DURATION_MS;
 
 const remotionEntry = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

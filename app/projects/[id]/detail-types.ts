@@ -140,6 +140,30 @@ export type ShotListItem = {
   approvedAt: string | null;
 };
 
+// M7.2. The production timeline, as `buildTimeline` derives it — `startMs`
+// and `totalDurationMs` arrive computed, because deriving them twice is how
+// two clients end up disagreeing about what time it is. The structural types
+// live in `timeline-view.ts`, which is React-free and testable; re-exported
+// here so every consumer of `Detail` reaches for one place.
+export type { TimelineView, TimelineSegmentView, TimelineIssueView } from "./timeline-view";
+
+/** One registered production target's identity and capability profile. */
+export type TimelineTargetOption = {
+  id: string;
+  label: string;
+  constraints: {
+    fpsChoices: number[];
+    frameQuantum: { modulus: number; remainder: number } | null;
+    dimensionMultiple: number;
+    maxSegmentMs: number;
+    maxTotalMs: number | null;
+    maxSegments: number | null;
+    supportsEndKeyframe: boolean;
+    supportsGlobalPrompt: boolean;
+    supportsCustomAudio: boolean;
+  };
+};
+
 export type Cue = {
   id: string;
   index: number;
@@ -188,6 +212,14 @@ export type Detail = {
   storyboardPanels: StoryboardPanel[];
   wardrobeVariants?: WardrobeVariant[];
   shotListItems: ShotListItem[];
+  // M7.2. All optional for the same reason `previsAssetId` and
+  // `wardrobeVariants` are: fixtures built before this stage existed have no
+  // reason to carry them.
+  timeline?: import("./timeline-view").TimelineView | null;
+  timelineApprovedAt?: string | null;
+  timelineIssues?: import("./timeline-view").TimelineIssueView[];
+  timelineTargets?: TimelineTargetOption[];
+  timelineAssets?: { id: string; label: string }[];
   render?: { id: string; assetId: string | null; status: string } | null;
   voiceover?: {
     id: string;

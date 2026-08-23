@@ -1,5 +1,6 @@
 import { sqliteTable, text, integer, real, index, unique } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
+import type { DialogueLine } from "../timeline/speech";
 
 const id = () =>
   text("id")
@@ -731,12 +732,19 @@ export const DEV_CHAIN_STAGES = [
   // approved Preproduction artifact (script/scene breakdown, continuity,
   // visual bible, production design, cast, locations/props, storyboards/
   // shot list, previs) — same shape as "story_bible" closing out
-  // Development. Once this is the last entry in this array AND it's
-  // approved, `devNextStep` (chain.ts) returns its permanent terminal
-  // message, "Preproduction approved, ready for Production" — see that
-  // function's own comment for why "story_bible" was the prior fixed point
-  // and this is the new one.
+  // Development. It was the chain's last entry, and its own comment here
+  // claimed to be a permanent fixed point; M7.2 appends "timeline" after it,
+  // so it is now what "story_bible" became — the marker that one *phase*
+  // finished, not that the chain did. See `devNextStep` (chain.ts).
   "production_plan",
+  // Stage 22 (M7.2) — the production timeline, the handoff artifact between
+  // Preproduction and Production. Writes `timelines`/`timeline_segments`
+  // directly, not a `dev_artifacts` row: a timeline is an ordered set of
+  // segments with edit points, not a document, and the review surface needs
+  // to address one segment at a time. Like "production_plan" before it, this
+  // stage resolves no provider and makes no sd-api call — it arranges what
+  // the shot list already produced.
+  "timeline",
 ] as const;
 export type DevChainStage = (typeof DEV_CHAIN_STAGES)[number];
 
@@ -1055,6 +1063,16 @@ export const shotListItems = sqliteTable(
       .default("static"),
     lens: text("lens", { enum: STORYBOARD_LENSES }).notNull().default("standard"),
     characterIds: text("character_ids", { mode: "json" }).notNull().$type<string[]>().default([]),
+    // M7.2. The lines spoken during this shot, carried from the Fountain
+    // screenplay. Empty for a shot with no speech, which is most of them.
+    //
+    // This column exists because dialogue used to die at the breakdown: the
+    // screenplay stage writes it, the revision stage grades it, the PDF
+    // typesets it — and then nothing downstream carried a single word, so a
+    // "movie" reached Production mute. LTX generates audio natively from the
+    // words in its own prompt, so the lines have to travel this far to be
+    // spoken at all.
+    dialogue: text("dialogue", { mode: "json" }).notNull().$type<DialogueLine[]>().default([]),
     durationHintMs: integer("duration_hint_ms"),
     keyframeAssetId: text("keyframe_asset_id").references(() => assets.id),
     /** M7.1 PR-C — carried from the source panel; see `storyboardPanels`. */
@@ -1066,6 +1084,120 @@ export const shotListItems = sqliteTable(
   (t) => [
     index("shot_list_items_project_idx").on(t.projectId),
     index("shot_list_items_project_scene_idx").on(t.projectId, t.sceneId),
+  ],
+);
+
+/* --------------------------------------------------- production timeline */
+
+/**
+ * The production timeline's project-level settings (M7.2), one row per
+ * project — the `world_building`/`voiceovers` shape rather than a fistful of
+ * new `projects` columns, since these five fields only mean anything together.
+ *
+ * `approvedAt` lives here for the same reason it lives on `world_building`:
+ * this stage writes its own tables, so it has a row of its own to gate on and
+ * does not need a `projects.timelineApprovedAt` beside the six that already
+ * exist for stages that don't.
+ *
+ * `targetId` is deliberately NOT a `text({ enum })`. Targets are a code-level
+ * registry (`lib/timeline/targets`), and making the database the vocabulary
+ * would mean a migration every time one is added — while still not catching
+ * the case that actually matters, a stored id whose target has been removed.
+ * `resolveTarget` validates at the API boundary instead, and throws by name.
+ */
+export const timelines = sqliteTable(
+  "timelines",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    targetId: text("target_id").notNull().default("ltx-director"),
+    // 24, not the 30 the narrative pipeline's compositions use: LTX emits
+    // 24/25/50, and a rate the target cannot produce is resampling judder on
+    // every shot. The target's own `constraints.fpsChoices` is what a screen
+    // offers; this is only the starting point.
+    fps: integer("fps").notNull().default(24),
+    // Style and persistent world/character anchor, applied across every
+    // segment — the register that stays constant while `videoPrompt` varies.
+    globalPrompt: text("global_prompt").notNull().default(""),
+    approvedAt: integer("approved_at", { mode: "timestamp_ms" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [unique("timelines_project_unq").on(t.projectId)],
+);
+
+/**
+ * One planned clip (M7.2). Seeded 1:1 from `shot_list_items` and then
+ * editable — a segment says how a shot is rendered, never which shots exist.
+ * That stays the shot list's answer, so an upstream redo has one obvious
+ * consequence instead of a reconciliation problem.
+ *
+ * **There is no `start_ms` column, on purpose.** A segment's start is the
+ * prefix sum of every earlier segment's `durationMs`, derived on read by
+ * `buildTimeline`. Storing it would let an edited duration leave a stale
+ * offset two segments downstream — the same "a stored label disagrees with
+ * the artifacts" failure `nextStep()` avoids by deriving rather than
+ * recording, and one that would be invisible until a render came out wrong.
+ *
+ * `sceneId` is free text, not a `scenes` FK — same reasoning as
+ * `shotListItems.sceneId` and `storyboardPanels.sceneId` above.
+ *
+ * `shotListItemId` is nullable and `set null` on delete: it is provenance,
+ * not a dependency. A timeline outlives the exact row it was seeded from.
+ */
+export const timelineSegments = sqliteTable(
+  "timeline_segments",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    shotListItemId: text("shot_list_item_id").references(() => shotListItems.id, {
+      onDelete: "set null",
+    }),
+    sceneId: text("scene_id").notNull().default(""),
+    index: integer("index").notNull(),
+    label: text("label").notNull().default(""),
+    durationMs: integer("duration_ms").notNull(),
+    /** The motion register — what happens over the segment's span. */
+    videoPrompt: text("video_prompt").notNull().default(""),
+    /** The still register, carried from the shot list for display/provenance. */
+    keyframePrompt: text("keyframe_prompt").notNull().default(""),
+    startKeyframeAssetId: text("start_keyframe_asset_id").references(() => assets.id),
+    /** Null means "unconstrained ending", which is what every segment starts as. */
+    endKeyframeAssetId: text("end_keyframe_asset_id").references(() => assets.id),
+    guideStrength: real("guide_strength").notNull().default(1),
+    // M7.2 — the audio register.
+    //
+    // Stored as separate components rather than one prose blob because each
+    // target composes them differently: LTX wants them last in a six-element
+    // paragraph with dialogue in quotation marks, and a target that took a
+    // separate audio track would want them nowhere near the video prompt.
+    // Storing LTX's paragraph would make the timeline LTX's format, which is
+    // the one thing this table exists not to be.
+    dialogue: text("dialogue", { mode: "json" }).notNull().$type<DialogueLine[]>().default([]),
+    /** The ambient bed: room tone, wind, city hum — the space, not an event. */
+    ambience: text("ambience").notNull().default(""),
+    /** Sounds tied to motion: footsteps, a latch, fabric. "Specific beats generic." */
+    foley: text("foley").notNull().default(""),
+    /** Genre/instrumentation/tempo/mood, or empty for no score under this shot. */
+    music: text("music").notNull().default(""),
+    shotType: text("shot_type", { enum: STORYBOARD_SHOT_TYPES }).notNull().default("medium"),
+    cameraAngle: text("camera_angle", { enum: STORYBOARD_CAMERA_ANGLES }).notNull().default("eye-level"),
+    cameraMovement: text("camera_movement", { enum: STORYBOARD_CAMERA_MOVEMENTS })
+      .notNull()
+      .default("static"),
+    lens: text("lens", { enum: STORYBOARD_LENSES }).notNull().default("standard"),
+    characterIds: text("character_ids", { mode: "json" }).notNull().$type<string[]>().default([]),
+    notes: text("notes").notNull().default(""),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("timeline_segments_project_idx").on(t.projectId),
+    unique("timeline_segments_project_index_unq").on(t.projectId, t.index),
   ],
 );
 

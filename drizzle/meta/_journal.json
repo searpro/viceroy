@@ -169,6 +169,20 @@
       "when": 1788168400000,
       "tag": "0023_project_aspect_ratio",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1788254800000,
+      "tag": "0024_production_timeline",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1788258400000,
+      "tag": "0025_dialogue_and_audio",
+      "breakpoints": true
     }
   ]
 }

@@ -5,6 +5,7 @@ import { runCharacterImages, runSceneImages } from "./images";
 import { runSubtitleAlign, runVoiceover } from "./voiceover";
 import { runRender } from "./render";
 import { runPrevis } from "./previs";
+import { runTimeline } from "./timeline-stage";
 import {
   runBeatSheet,
   runCasting,
@@ -79,6 +80,9 @@ export const STAGE_HANDLERS: Partial<Record<JobType, StageHandler>> = {
   // range this milestone's own PR sequence scoped for Preproduction.
   casting: runCasting,
   // Preproduction (M7 PR13) — stage 21, the capstone that closes out the
-  // full 11-21 range and, with it, this entire milestone.
+  // full 11-21 range and, with it, M7 itself.
   production_plan: runProductionPlan,
+  // Stage 22 (M7.2) — the production timeline, the handoff artifact M8
+  // consumes. Like `production_plan`, an assembly: it resolves no provider.
+  timeline: runTimeline,
 };
