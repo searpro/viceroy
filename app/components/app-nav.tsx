@@ -19,6 +19,7 @@ import { PAGE_SHELL } from "./page-shell";
 const LINKS = [
   { href: "/", label: "Projects" },
   { href: "/jobs", label: "Jobs" },
+  { href: "/traces", label: "Traces" },
   { href: "/styles", label: "Styles" },
   { href: "/prompt-templates", label: "Prompts" },
   { href: "/providers", label: "Providers" },

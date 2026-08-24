@@ -18,6 +18,17 @@ export type GenerateOptions = {
   shouldAbort?: (() => boolean) | undefined;
   /** Narration for the job log — model loading, queue position, and the like. */
   log?: ((message: string, level?: "debug" | "info" | "warn" | "error") => void) | undefined;
+  /**
+   * What this adapter turned the request into, for the trace record.
+   *
+   * `ImageRequest`/`VideoRequest` are Viceroy's vocabulary; they say nothing
+   * about steps, cfg, sampler, or which workflow ran — all of which live in
+   * `providers.default_params` and in the workflow graph, and any of which can
+   * be the reason an image came out wrong. Only the adapter knows the answer,
+   * so the adapter reports it. Optional and best-effort: an adapter that says
+   * nothing still generates, it is just less debuggable.
+   */
+  onResolved?: ((detail: Record<string, unknown>) => void) | undefined;
 };
 
 export type ImageRequest = {

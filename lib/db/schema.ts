@@ -1285,6 +1285,109 @@ export const jobLogs = sqliteTable(
   (t) => [index("job_logs_job_idx").on(t.jobId)],
 );
 
+/* ------------------------------------------------------------- trace calls */
+
+export const TRACE_KINDS = ["llm", "image", "video"] as const;
+export type TraceKind = (typeof TRACE_KINDS)[number];
+
+/**
+ * One row per generation request actually sent to a provider.
+ *
+ * `job_logs` records what a stage *said* it was doing ("Generating concept
+ * with qwen3-30b"); this records what it *sent*. Those are not the same
+ * thing, and only the second one is debuggable: when a stage returns garbage
+ * the question is always whether the template was wrong, a variable was
+ * empty, the wrong provider row got resolved, or the model simply answered
+ * badly — and a log line saying "generating" distinguishes none of them.
+ *
+ * Deliberately one table across `llm`/`image`/`video` rather than three.
+ * Every kind answers the same four questions — which prompt, from which
+ * template, against which provider configuration, and what came back — and a
+ * single table is what lets one screen show a project's whole generation
+ * history in the order it happened.
+ *
+ * Rows cascade away with their job, exactly as `job_logs` do. That means
+ * "clear finished" on the Jobs screen prunes traces too, which is the only
+ * retention policy this needs: the trace of a job you have deleted is not
+ * evidence of anything.
+ */
+export const traceCalls = sqliteTable(
+  "trace_calls",
+  {
+    id: id(),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    // Denormalised from the job rather than joined: the trace screen filters
+    // and groups by both on every render, and the job row is one more table
+    // to reach through for two values that can never change after the fact.
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    stage: text("stage").notNull(),
+    kind: text("kind", { enum: TRACE_KINDS }).notNull(),
+    /** Which call on the client this was — "chat", "chatJson", "generate". */
+    operation: text("operation").notNull(),
+    /**
+     * Position within the job, from 1.
+     *
+     * A stage that calls the model once per scene produces a dozen rows a
+     * second apart, and `created_at` at millisecond resolution is not a
+     * reliable tiebreaker for ordering them.
+     */
+    sequence: integer("sequence").notNull(),
+    /** The job's attempt count when the call went out, so a retry is legible. */
+    attempt: integer("attempt").notNull().default(1),
+
+    providerId: text("provider_id"),
+    providerName: text("provider_name").notNull().default(""),
+    adapter: text("adapter").notNull().default(""),
+    model: text("model").notNull().default(""),
+    baseUrl: text("base_url").notNull().default(""),
+    /** The path under `base_url` the request went to, where one applies. */
+    requestPath: text("request_path").notNull().default(""),
+
+    /**
+     * Prompt-template keys whose rendered text appears in this request, and
+     * the variables each was rendered with.
+     *
+     * Attribution is by containment, not equality, because prompts are
+     * composed: an image prompt is `imageStyle.promptPrefix` + a rendered
+     * template + an optional redo direction + `imageStyle.promptSuffix`. The
+     * span between the affixes is the part a prompt template can change, and
+     * knowing which key owns it is the difference between editing the right
+     * template and guessing.
+     */
+    templates: text("templates", { mode: "json" })
+      .notNull()
+      .$type<{ key: string; vars: Record<string, string> }[]>()
+      .default([]),
+
+    /** The request in Viceroy's own vocabulary — messages, or an ImageRequest. */
+    request: text("request", { mode: "json" }).notNull().$type<Record<string, unknown>>().default({}),
+    /**
+     * What the adapter resolved the request into: the bound ComfyUI workflow
+     * variables, or the sd-api payload. This is the "configuration" half —
+     * steps, cfg, sampler and seed live in `providers.default_params` and in
+     * the workflow graph, never in the stage, so a request that looks right
+     * here can still have been generated at four steps.
+     */
+    resolved: text("resolved", { mode: "json" }).$type<Record<string, unknown>>(),
+
+    /** The model's raw text, before JSON extraction. Null for image/video. */
+    response: text("response"),
+    /** Token counts, byte counts — whatever the kind can say about the result. */
+    responseMeta: text("response_meta", { mode: "json" }).$type<Record<string, unknown>>(),
+
+    ok: integer("ok", { mode: "boolean" }).notNull().default(true),
+    error: text("error"),
+    durationMs: integer("duration_ms").notNull().default(0),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("trace_calls_job_idx").on(t.jobId, t.sequence),
+    index("trace_calls_project_idx").on(t.projectId, t.createdAt),
+  ],
+);
+
 export const providers = sqliteTable(
   "providers",
   {
@@ -1473,6 +1576,7 @@ export const schema = {
   assets,
   jobs,
   jobLogs,
+  traceCalls,
   providers,
   workflows,
   promptTemplates,

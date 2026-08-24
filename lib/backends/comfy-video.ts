@@ -57,6 +57,17 @@ export function comfyVideoBackend(options: ComfyVideoOptions): VideoBackend {
 
       const graph = applyTemplate(workflow.graph, values);
 
+      // See the same call in comfy-image.ts: `values` is where fps, num_frames
+      // and steps actually end up, merged from the provider's defaults and the
+      // stage's per-shot `params`.
+      options.onResolved?.({
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        workflowRole: request.audio ? "speech_to_video" : "image_to_video",
+        outputNodeId: workflow.outputNodeId,
+        values,
+      });
+
       let announcedLoading = false;
       const outputs = await client.generate(graph, {
         ...(options.shouldAbort ? { shouldAbort: options.shouldAbort } : {}),

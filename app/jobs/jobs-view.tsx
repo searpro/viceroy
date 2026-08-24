@@ -207,6 +207,16 @@ export function JobsView({ initial, limit }: { initial: Job[]; limit: number }) 
                   retry
                 </Action>
               )}
+              {/* The queue view says whether a stage ran; this is the way
+                  across to what it actually sent while running. */}
+              <Link
+                href={`/traces?jobId=${job.id}`}
+                className="shrink-0 text-white/40 transition hover:text-sky-300"
+                title="Prompts and responses this job sent"
+              >
+                trace
+              </Link>
+
               {!ACTIVE.has(job.status) && (
                 <Action onClick={() => remove(job.id)} disabled={busyId === job.id} tone="danger">
                   delete

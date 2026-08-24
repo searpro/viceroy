@@ -21,6 +21,8 @@ import {
 import { createSdApi } from "../lib/sdapi";
 import { awaitReview, STAGE_HANDLERS, type StageContext } from "../lib/pipeline";
 import { resolveImageBackend, resolveLlmClient, resolveVideoBackend } from "../lib/backends/resolve";
+import { beginPromptScope, endPromptScope } from "../lib/prompts";
+import { createTraceSink } from "../lib/trace";
 
 const IDLE_POLL_MS = 1000;
 
@@ -99,15 +101,23 @@ async function main() {
       throw new Error(`No handler registered for job type "${job.type}"`);
     }
 
+    // Everything this job sends to a provider gets a row, and every prompt
+    // template it renders gets attributed to the request it ended up in. The
+    // scope is opened and closed around the handler rather than left on,
+    // because a stage's renders must not be attributed to the next stage's
+    // calls — see lib/prompts/trace.ts.
+    const sink = createTraceSink(db, job);
+    beginPromptScope();
+
     const ctx: StageContext = {
       db,
       sdApi: baseSdApi,
       // Resolved per call, not per job: an LLM stage must not fail because no
       // image provider is configured, and picking the row at call time is what
       // lets a provider swapped in the admin UI take effect on the next job.
-      imageBackend: () => resolveImageBackend(db, config, baseSdApi),
-      videoBackend: () => resolveVideoBackend(db, config),
-      llmClient: (provider) => resolveLlmClient(provider, config, baseSdApi),
+      imageBackend: () => resolveImageBackend(db, config, baseSdApi, sink),
+      videoBackend: () => resolveVideoBackend(db, config, sink),
+      llmClient: (provider) => resolveLlmClient(provider, config, baseSdApi, sink),
       config,
       job,
       log: (message, level) => log(db, job.id, message, level),
@@ -115,7 +125,11 @@ async function main() {
       shouldAbort: () => isAbortRequested(db, job.id),
     };
 
-    await handler(ctx);
+    try {
+      await handler(ctx);
+    } finally {
+      endPromptScope();
+    }
   }
 }
 

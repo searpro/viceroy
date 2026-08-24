@@ -2,9 +2,11 @@ import { inArray } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { promptTemplates } from "../db/schema";
 import { missingVariables, renderTemplate } from "./render";
+import { recordPromptRender } from "./trace";
 
 export * from "./render";
 export * from "./defaults";
+export * from "./trace";
 
 /**
  * Load templates by key.
@@ -45,5 +47,10 @@ export function renderPrompt(db: Db, key: string, vars: Record<string, string>):
         `which the caller did not supply`,
     );
   }
-  return renderTemplate(template, vars);
+  const text = renderTemplate(template, vars);
+  // Recorded, not returned, so no call site has to change to get its prompt
+  // attributed in the trace — see lib/prompts/trace.ts for why it works this
+  // way and what it costs.
+  recordPromptRender({ key, vars, text });
+  return text;
 }

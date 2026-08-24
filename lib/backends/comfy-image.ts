@@ -76,6 +76,19 @@ export function comfyImageBackend(options: ComfyImageOptions): ImageBackend {
 
       const graph = applyTemplate(workflow.graph, values);
 
+      // `values` is the honest record of what this generation ran at: it is
+      // the request's fields merged over `provider.defaultParams`, which is
+      // where steps/cfg/sampler actually come from. The graph itself is not
+      // reported — it is tens of kilobytes of node wiring that does not change
+      // between runs, and the workflow name identifies it.
+      options.onResolved?.({
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        workflowRole: usingRefs ? "text_to_image_ref" : "text_to_image",
+        outputNodeId: workflow.outputNodeId,
+        values,
+      });
+
       let announcedLoading = false;
       const outputs = await client.generate(graph, {
         ...(options.shouldAbort ? { shouldAbort: options.shouldAbort } : {}),

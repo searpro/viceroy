@@ -26,7 +26,20 @@ type ChatCompletionResponse = {
 export const SD_API_CHAT_PATH = "/v1/llm/chat/completions";
 export const OPENAI_COMPATIBLE_CHAT_PATH = "/chat/completions";
 
-export class LlmClient {
+/**
+ * What a stage needs from an LLM host.
+ *
+ * An interface rather than the concrete class because `LlmClient` is not the
+ * only thing that satisfies it: the trace wrapper in `lib/trace` decorates a
+ * client with recording, and the stage tests inject a canned one. Stages are
+ * typed against this so neither has to pretend to be an `LlmClient`.
+ */
+export interface ChatClient {
+  chat(options: ChatOptions): Promise<{ content: string; completionTokens: number }>;
+  chatJson<T>(options: ChatOptions): Promise<T>;
+}
+
+export class LlmClient implements ChatClient {
   constructor(
     private readonly http: SdApiHttp,
     private readonly chatPath: string = SD_API_CHAT_PATH,
@@ -67,15 +80,26 @@ export class LlmClient {
    */
   async chatJson<T>(options: ChatOptions): Promise<T> {
     const { content } = await this.chat({ ...options, json: true });
-    const candidate = extractJsonObject(content);
-    if (!candidate) {
-      throw new Error(`LLM response contained no JSON object: ${truncate(content, 300)}`);
-    }
-    try {
-      return JSON.parse(candidate) as T;
-    } catch (cause) {
-      throw new Error(`LLM returned malformed JSON: ${truncate(candidate, 300)}`, { cause });
-    }
+    return parseJsonResponse<T>(content);
+  }
+}
+
+/**
+ * Extracted from `chatJson` so the trace wrapper can run the same parse over
+ * a response it has already recorded, rather than reimplementing it or losing
+ * the raw text to a nested `chat` call it cannot see into. A malformed-JSON
+ * failure is one of the most common things worth tracing, and it is only
+ * diagnosable next to the text that failed to parse.
+ */
+export function parseJsonResponse<T>(content: string): T {
+  const candidate = extractJsonObject(content);
+  if (!candidate) {
+    throw new Error(`LLM response contained no JSON object: ${truncate(content, 300)}`);
+  }
+  try {
+    return JSON.parse(candidate) as T;
+  } catch (cause) {
+    throw new Error(`LLM returned malformed JSON: ${truncate(candidate, 300)}`, { cause });
   }
 }
 

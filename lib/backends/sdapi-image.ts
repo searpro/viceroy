@@ -24,29 +24,33 @@ export function sdApiImageBackend(
     },
 
     async generate(request: ImageRequest, options: GenerateOptions = {}): Promise<Buffer> {
-      return sdApi.image.generate(
-        {
-          prompt: request.prompt,
-          ...(request.negativePrompt ? { negative_prompt: request.negativePrompt } : {}),
-          model: provider.model,
-          width: request.width,
-          height: request.height,
-          ...(request.seed !== undefined ? { seed: request.seed } : {}),
-          ...(provider.defaultParams as Record<string, never>),
-          ...(request.references.length > 0
-            ? {
-                ref_images: request.references,
-                // Distinct reference slots, so two people in one frame stay two
-                // people. Harmless with a single reference.
-                ...(request.references.length > 1 ? { increase_ref_index: true } : {}),
-              }
-            : {}),
-        },
-        {
-          ...(options.onProgress ? { onProgress: options.onProgress } : {}),
-          ...(options.shouldAbort ? { shouldAbort: options.shouldAbort } : {}),
-        },
-      );
+      const payload = {
+        prompt: request.prompt,
+        ...(request.negativePrompt ? { negative_prompt: request.negativePrompt } : {}),
+        model: provider.model,
+        width: request.width,
+        height: request.height,
+        ...(request.seed !== undefined ? { seed: request.seed } : {}),
+        ...(provider.defaultParams as Record<string, never>),
+        ...(request.references.length > 0
+          ? {
+              ref_images: request.references,
+              // Distinct reference slots, so two people in one frame stay two
+              // people. Harmless with a single reference.
+              ...(request.references.length > 1 ? { increase_ref_index: true } : {}),
+            }
+          : {}),
+      };
+
+      // Note the spread order above: `defaultParams` overrides the request's
+      // own width/height/seed, which is surprising often enough to be worth
+      // reporting the merged result rather than making anyone re-derive it.
+      options.onResolved?.({ payload });
+
+      return sdApi.image.generate(payload, {
+        ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+        ...(options.shouldAbort ? { shouldAbort: options.shouldAbort } : {}),
+      });
     },
 
     async uploadReference(bytes: Buffer, filename: string): Promise<string> {

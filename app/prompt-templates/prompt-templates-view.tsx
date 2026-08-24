@@ -45,12 +45,22 @@ type Flow = (typeof FLOWS)[number]["key"];
  * as one-line rows, open the one you want. Search and the pipeline filter cut
  * across sections for when you don't know which one it's in.
  */
-export function PromptTemplatesView({ templates }: { templates: Template[] }) {
+export function PromptTemplatesView({
+  templates,
+  initialKey = null,
+}: {
+  templates: Template[];
+  /** Arrived from a Traces row naming the template a prompt was rendered from. */
+  initialKey?: string | null;
+}) {
   const [rows, setRows] = useState(templates);
-  const [query, setQuery] = useState("");
+  // Seeded as the search rather than as a section selection, because search
+  // deliberately cuts across sections — landing on the right row does not
+  // depend on knowing which section holds it.
+  const [query, setQuery] = useState(initialKey ?? "");
   const [flow, setFlow] = useState<Flow>("all");
   const [editedOnly, setEditedOnly] = useState(false);
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(initialKey);
 
   const sections = useMemo(() => [...new Set(rows.map((row) => row.section))], [rows]);
   const [section, setSection] = useState<string | null>(null);
