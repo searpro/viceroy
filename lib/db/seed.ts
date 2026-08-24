@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { createDb, createSqlite, type Db } from "./client";
 import { runMigrations } from "./migrate";
 import { resolveConfig } from "../config";
+import { loadEnvFiles } from "../env";
 import {
   captionStyles,
   directionStyles,
@@ -451,6 +452,10 @@ export function seed(db: Db): { inserted: Record<string, number> } {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  // Run directly via tsx, which does not read .env files the way Next does —
+  // without this, `pnpm db:migrate` and `pnpm db:seed` operate on the default
+  // database while the app runs on the configured one.
+  loadEnvFiles();
   const config = resolveConfig();
   const sqlite = createSqlite(config.databasePath);
   const db = createDb(sqlite);

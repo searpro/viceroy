@@ -1,3 +1,10 @@
+// First import on purpose: `resolveConfig` runs while this module's import
+// graph is still being evaluated, so the env has to be in place before any
+// other import is touched. See `loadEnvFiles` for what this is fixing.
+import { loadEnvFiles } from "../lib/env";
+
+loadEnvFiles();
+
 import { resolveConfig, type Config } from "../lib/config";
 import { createDb, createSqlite, type Db } from "../lib/db/client";
 import { runMigrations } from "../lib/db/migrate";
