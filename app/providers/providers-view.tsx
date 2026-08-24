@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { PAGE_SHELL } from "@/app/components/page-shell";
 import { RunpodPanel, type Compute } from "./runpod-panel";
 import { ProviderStatusPanel } from "./provider-status-panel";
 import { ROLES_BY_KIND, WorkflowSection, type Workflow } from "./workflow-editor";
@@ -74,9 +75,9 @@ export function ProvidersView({
   const [flows, setFlows] = useState(workflows);
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-10">
+    <main className={`${PAGE_SHELL} py-10`}>
       <h1 className="text-2xl font-semibold tracking-tight">Providers</h1>
-      <p className="mt-2 text-sm text-white/45">
+      <p className="mt-2 max-w-2xl text-sm text-white/45">
         Where each kind of inference call goes. Exactly one provider per kind is the default —
         stages use whichever is marked default, falling back to any provider of that kind.
       </p>

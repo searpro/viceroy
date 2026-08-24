@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { PAGE_SHELL } from "@/app/components/page-shell";
 import { PROJECT_FORMATS } from "@/lib/labels";
 import { ASPECT_RATIOS, defaultAspectFor, resolutionPresetsFor } from "@/lib/resolution";
 
@@ -83,9 +84,9 @@ export function PreferencesView({
   const presets = resolutionPresetsFor(basePixels, effectiveAspect);
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-10">
+    <main className={`${PAGE_SHELL} py-10`}>
       <h1 className="text-2xl font-semibold tracking-tight">Preferences</h1>
-      <p className="mt-2 text-sm text-white/45">
+      <p className="mt-2 max-w-2xl text-sm text-white/45">
         Defaults for a new project. Each one only pre-fills the new-project form — a project can
         always be started with something different, and changing a default never touches a project
         that already exists.

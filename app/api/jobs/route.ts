@@ -41,8 +41,22 @@ export async function GET(request: Request) {
  * the list holds up to `LIST_LIMIT` jobs, and "clear finished" on a well-used
  * database meant hundreds of parallel requests contending for one sqlite write
  * lock. Running work is deliberately out of scope — see `removeFinished`.
+ *
+ * `?scope=finished` is required, and a bare `DELETE /api/jobs` is refused. A
+ * collection endpoint that destroys history on the strength of the method
+ * alone is one stray request away from wiping a queue nobody asked it to —
+ * requiring the caller to name what it is deleting means an accidental or
+ * replayed DELETE does nothing at all.
  */
 export async function DELETE(request: Request) {
-  const projectId = new URL(request.url).searchParams.get("projectId") ?? undefined;
+  const params = new URL(request.url).searchParams;
+  if (params.get("scope") !== "finished") {
+    return NextResponse.json(
+      { error: "Refusing to delete without an explicit scope — pass ?scope=finished" },
+      { status: 400 },
+    );
+  }
+
+  const projectId = params.get("projectId") ?? undefined;
   return NextResponse.json({ removed: removeFinished(getDb(), { projectId }) });
 }

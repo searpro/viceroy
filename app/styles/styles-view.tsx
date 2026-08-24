@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { PAGE_SHELL } from "@/app/components/page-shell";
 import { CaptionPreviewPlayer } from "./caption-preview-player";
 
 type NarrativeStyle = {
@@ -105,9 +106,9 @@ export function StylesView({
   const [productionDesign, setProductionDesign] = useState(productionDesignStyles);
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-10">
+    <main className={`${PAGE_SHELL} py-10`}>
       <h1 className="text-2xl font-semibold tracking-tight">Styles</h1>
-      <p className="mt-2 text-sm text-white/45">
+      <p className="mt-2 max-w-2xl text-sm text-white/45">
         Narrative, voice, image, caption and direction styles a project can be built with.
         Built-in styles can be edited but not deleted.
       </p>

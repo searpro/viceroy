@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { PAGE_SHELL } from "@/app/components/page-shell";
 
 type Template = {
   key: string;
@@ -79,7 +80,7 @@ export function PromptTemplatesView({ templates }: { templates: Template[] }) {
   const activeSection = section ?? sections[0] ?? null;
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-10">
+    <main className={`${PAGE_SHELL} py-10`}>
       <h1 className="text-2xl font-semibold tracking-tight">Prompt templates</h1>
       <p className="mt-2 max-w-2xl text-sm text-white/45">
         The exact text sent to the model for each generation task. A template may only use the

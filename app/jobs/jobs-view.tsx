@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { PAGE_SHELL } from "@/app/components/page-shell";
 import { formatLabel, isDevFormat, jobTypeFlow, jobTypeLabel } from "@/lib/labels";
 
 type Job = {
@@ -91,7 +92,7 @@ export function JobsView({ initial, limit }: { initial: Job[]; limit: number }) 
       return;
     }
     setBusyId("bulk");
-    await fetch("/api/jobs", { method: "DELETE" });
+    await fetch("/api/jobs?scope=finished", { method: "DELETE" });
     await refresh();
     setBusyId(null);
   }
@@ -115,7 +116,7 @@ export function JobsView({ initial, limit }: { initial: Job[]; limit: number }) 
   });
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-10">
+    <main className={`${PAGE_SHELL} py-10`}>
       <div className="flex items-baseline justify-between gap-4">
         <h1 className="text-2xl font-semibold tracking-tight">Jobs</h1>
         <button
@@ -126,7 +127,7 @@ export function JobsView({ initial, limit }: { initial: Job[]; limit: number }) 
           clear finished
         </button>
       </div>
-      <p className="mt-2 text-sm text-white/45">
+      <p className="mt-2 max-w-2xl text-sm text-white/45">
         Every job across every project, newest first. Per-project jobs are also visible on each
         project's own page.
       </p>

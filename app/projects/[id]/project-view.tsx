@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PAGE_SHELL } from "@/app/components/page-shell";
 import type { Detail } from "./detail-types";
 import { ACTIVE_JOB_STATUSES } from "./detail-types";
 import { JobsBar } from "./jobs-bar";
@@ -357,7 +358,7 @@ export function ProjectView({ initial, basePixels }: { initial: Detail; basePixe
   };
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-8 pb-24">
+    <main className={`${PAGE_SHELL} py-8 pb-24`}>
       {/* The layout toggle only governs the narrative stepper. A movie project
           has no stepper for it to switch, and a control that does nothing is
           worse than no control. The "all projects" link that sat beside it is

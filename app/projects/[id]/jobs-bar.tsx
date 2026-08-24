@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { PAGE_SHELL } from "@/app/components/page-shell";
 import { jobTypeLabel } from "@/lib/labels";
 import { ACTIVE_JOB_STATUSES, statusColour, type Job } from "./detail-types";
 
@@ -65,7 +66,7 @@ export function JobsBar({
       <button
         onClick={toggle}
         aria-expanded={expanded}
-        className="flex w-full items-center justify-between gap-4 px-6 py-2 text-xs text-white/50 transition hover:text-white/80"
+        className={`${PAGE_SHELL} flex items-center justify-between gap-4 py-2 text-xs text-white/50 transition hover:text-white/80`}
       >
         <span className="flex min-w-0 items-center gap-3">
           <span className="font-medium uppercase tracking-wide">Jobs</span>
@@ -93,7 +94,7 @@ export function JobsBar({
 
       {expanded && (
         <div className="border-t border-white/5">
-          <ul className="max-h-64 space-y-1.5 overflow-y-auto px-6 py-3">
+          <ul className={`${PAGE_SHELL} max-h-64 space-y-1.5 overflow-y-auto py-3`}>
             {jobs.length === 0 && <p className="text-xs text-white/35">No jobs for this project yet.</p>}
             {jobs.map((job) => (
               <li
@@ -146,7 +147,7 @@ export function JobsBar({
               </li>
             ))}
           </ul>
-          <div className="px-6 pb-2">
+          <div className={`${PAGE_SHELL} pb-2`}>
             <Link href="/jobs" className="text-[11px] text-white/35 transition hover:text-white/70">
               all jobs, every project →
             </Link>

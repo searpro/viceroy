@@ -12,6 +12,7 @@ import {
 import { formatLabel, isDevFormat } from "@/lib/labels";
 import { listPreferences } from "@/lib/preferences";
 import { listProjects } from "@/lib/projects";
+import { PAGE_SHELL } from "./components/page-shell";
 import { NewProjectForm } from "./new-project-form";
 
 export const dynamic = "force-dynamic";
@@ -35,7 +36,7 @@ export default async function Home() {
   const seeded = styles.narrativeStyles.length > 0;
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-10">
+    <main className={`${PAGE_SHELL} py-10`}>
       <h1 className="text-2xl font-semibold tracking-tight">New project</h1>
 
       {!seeded ? (

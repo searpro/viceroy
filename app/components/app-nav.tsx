@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { PAGE_SHELL } from "./page-shell";
 
 /**
  * The application's one navigation bar.
@@ -31,7 +32,7 @@ export function AppNav() {
 
   return (
     <header className="sticky top-0 z-20 border-b border-white/10 bg-surface/85 backdrop-blur">
-      <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3">
+      <div className={`${PAGE_SHELL} flex flex-wrap items-center gap-x-6 gap-y-2 py-3`}>
         <Link href="/" className="text-sm font-semibold tracking-tight text-white/90 hover:text-white">
           Viceroy
         </Link>
