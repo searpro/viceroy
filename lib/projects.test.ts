@@ -12,6 +12,7 @@ import {
   projects,
   props,
   renders,
+  sceneShots,
   scenes,
   storyboardPanels,
   voiceovers,
@@ -71,13 +72,31 @@ function projectWithSceneAndCharacter() {
       index: 0,
       description: "s",
       voiceoverScript: "One.",
+      visualBrief: "a brief",
       imagePrompt: "a prompt",
       storyboard: "a storyboard",
       imageAssetId: imageAsset().id,
     })
     .returning()
     .all();
-  return { project, character: character!, scene: scene! };
+  // M9 — two shots covering that scene, so a scoped redo has something to be
+  // scoped *to*. The scene keeps its pre-M9 fields as well, which is exactly
+  // the mixed shape a project upgraded mid-flight is in.
+  const shots = db
+    .insert(sceneShots)
+    .values([0, 1].map((index) => ({
+      projectId: project.id,
+      sceneId: scene!.id,
+      index,
+      startWord: index,
+      endWord: index,
+      imagePrompt: `shot prompt ${index}`,
+      storyboard: `shot storyboard ${index}`,
+      imageAssetId: imageAsset().id,
+    })))
+    .returning()
+    .all();
+  return { project, character: character!, scene: scene!, shots };
 }
 
 // A dev-format project with one panel, one location and one prop, each holding
@@ -129,23 +148,82 @@ describe("regenerate — per-row scoping", () => {
   // The image goes with the prompt that produced it (BUG-019). Keeping it
   // would leave every scene holding an image, so `nextStep` walks past
   // `scene_images` and the frame the user was looking at never changes.
-  it("clears the targeted scene's prompt and its now-stale image for an elements redo", () => {
+  it("clears the targeted scene's brief and its now-stale image for an elements redo", () => {
     const { project, scene } = projectWithSceneAndCharacter();
     regenerate(db, project.id, { target: "elements", sceneId: scene.id, direction: "darker" });
 
     const after = db.select().from(scenes).where(eq(scenes.id, scene.id)).get()!;
+    expect(after.visualBrief).toBeNull();
     expect(after.imagePrompt).toBeNull();
     expect(after.storyboard).toBeNull();
     expect(after.imageAssetId).toBeNull();
   });
 
-  it("clears only the targeted scene's image for a scene_images redo", () => {
+  // The shots go with the brief rather than being re-prompted under it: a
+  // redone brief can change what is in the scene and how long it reads as
+  // taking, so keeping the rows would pin a new scene to an old shot count.
+  it("re-cuts the scene's coverage entirely for a scene-scoped elements redo", () => {
+    const { project, scene } = projectWithSceneAndCharacter();
+    regenerate(db, project.id, { target: "elements", sceneId: scene.id });
+
+    expect(db.select().from(sceneShots).where(eq(sceneShots.sceneId, scene.id)).all()).toHaveLength(0);
+  });
+
+  // M9's narrowest and most-used redo: one picture out of a scene's several,
+  // without re-cutting the scene or spending the other frames again — which
+  // at ~142s a referenced frame (F30) is the difference between a click and
+  // an hour.
+  it("clears one shot's prompt and image, leaving the scene and its siblings alone", () => {
+    const { project, scene, shots } = projectWithSceneAndCharacter();
+    regenerate(db, project.id, { target: "elements", shotId: shots[0]!.id, direction: "closer" });
+
+    const redone = db.select().from(sceneShots).where(eq(sceneShots.id, shots[0]!.id)).get()!;
+    expect(redone.imagePrompt).toBeNull();
+    expect(redone.storyboard).toBeNull();
+    expect(redone.imageAssetId).toBeNull();
+    // The slot itself survives — same words, same coverage, new picture.
+    expect(redone.startWord).toBe(shots[0]!.startWord);
+    expect(redone.shotType).toBe(shots[0]!.shotType);
+
+    const sibling = db.select().from(sceneShots).where(eq(sceneShots.id, shots[1]!.id)).get()!;
+    expect(sibling.imagePrompt).toBe("shot prompt 1");
+    expect(sibling.imageAssetId).not.toBeNull();
+
+    expect(db.select().from(scenes).where(eq(scenes.id, scene.id)).get()!.visualBrief).toBe("a brief");
+  });
+
+  it("clears only the targeted shot's image for a shot-scoped scene_images redo", () => {
+    const { project, shots } = projectWithSceneAndCharacter();
+    regenerate(db, project.id, { target: "scene_images", shotId: shots[0]!.id });
+
+    const redone = db.select().from(sceneShots).where(eq(sceneShots.id, shots[0]!.id)).get()!;
+    expect(redone.imageAssetId).toBeNull();
+    expect(redone.imagePrompt).toBe("shot prompt 0");
+    expect(
+      db.select().from(sceneShots).where(eq(sceneShots.id, shots[1]!.id)).get()!.imageAssetId,
+    ).not.toBeNull();
+  });
+
+  // A scoped redo that clears nothing but still enqueues a job is the shape of
+  // BUG-002: the resumable stage finds nothing pending, succeeds, and the
+  // pipeline finishes something internally consistent but wrong.
+  it("refuses a shotId belonging to another project", () => {
+    const { project } = projectWithSceneAndCharacter();
+    const { shots: other } = projectWithSceneAndCharacter();
+
+    expect(() =>
+      regenerate(db, project.id, { target: "scene_images", shotId: other[0]!.id }),
+    ).toThrow(/No such shot/);
+  });
+
+  it("clears every shot of the targeted scene for a scene-scoped scene_images redo", () => {
     const { project, scene } = projectWithSceneAndCharacter();
     regenerate(db, project.id, { target: "scene_images", sceneId: scene.id });
 
-    const after = db.select().from(scenes).where(eq(scenes.id, scene.id)).get()!;
-    expect(after.imageAssetId).toBeNull();
-    expect(after.imagePrompt).toBe("a prompt");
+    const after = db.select().from(sceneShots).where(eq(sceneShots.sceneId, scene.id)).all();
+    expect(after.every((shot) => shot.imageAssetId === null)).toBe(true);
+    expect(after.every((shot) => shot.imagePrompt !== null)).toBe(true);
+    expect(db.select().from(scenes).where(eq(scenes.id, scene.id)).get()!.imageAssetId).toBeNull();
   });
 
   it("clears only the targeted character's portrait for a character_images redo", () => {
@@ -193,6 +271,14 @@ describe("regenerate — per-row scoping", () => {
     );
   });
 
+  it("carries shotId and direction through to the enqueued job's payload", () => {
+    const { project, shots } = projectWithSceneAndCharacter();
+    regenerate(db, project.id, { target: "scene_images", shotId: shots[0]!.id, direction: "closer" });
+
+    const job = listJobs(db, { projectId: project.id }).find((j) => j.type === "scene_images");
+    expect(job?.payload).toMatchObject({ shotId: shots[0]!.id, direction: "closer" });
+  });
+
   it("carries sceneId and direction through to the enqueued job's payload", () => {
     const { project, scene } = projectWithSceneAndCharacter();
     regenerate(db, project.id, { target: "elements", sceneId: scene.id, direction: "darker" });
@@ -201,13 +287,39 @@ describe("regenerate — per-row scoping", () => {
     expect(job?.payload).toMatchObject({ sceneId: scene.id, direction: "darker" });
   });
 
-  it("leaves every scene alone when no sceneId is given", () => {
-    const { project, scene } = projectWithSceneAndCharacter();
+  it("leaves every scene and shot alone when nothing is scoped", () => {
+    const { project, scene, shots } = projectWithSceneAndCharacter();
     regenerate(db, project.id, { target: "elements" });
 
-    expect(db.select().from(scenes).where(eq(scenes.id, scene.id)).get()!.imagePrompt).toBe(
-      "a prompt",
-    );
+    expect(db.select().from(scenes).where(eq(scenes.id, scene.id)).get()!.visualBrief).toBe("a brief");
+    expect(
+      db.select().from(sceneShots).where(eq(sceneShots.id, shots[0]!.id)).get()!.imagePrompt,
+    ).toBe("shot prompt 0");
+  });
+
+  // The stages *after* elements are what an unscoped redo discards, and a
+  // shot's picture is one of them — it hangs off `scene_shots` now rather than
+  // off the scene, so clearing only the scene would leave every frame in place
+  // and `nextStep` would walk straight past `scene_images`.
+  it("clears every shot's image when an upstream stage is redone unscoped", () => {
+    const { project } = projectWithSceneAndCharacter();
+    regenerate(db, project.id, { target: "elements" });
+
+    const after = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all();
+    expect(after.every((shot) => shot.imageAssetId === null)).toBe(true);
+  });
+
+  it("clears every shot's timeline position when alignment is invalidated", () => {
+    const { project } = projectWithSceneAndCharacter();
+    db.update(sceneShots)
+      .set({ startMs: 0, endMs: 2500 })
+      .where(eq(sceneShots.projectId, project.id))
+      .run();
+
+    regenerate(db, project.id, { target: "voiceover" });
+
+    const after = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all();
+    expect(after.every((shot) => shot.startMs === null && shot.endMs === null)).toBe(true);
   });
 });
 

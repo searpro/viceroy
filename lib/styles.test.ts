@@ -34,6 +34,7 @@ import {
   listNarrativeStyles,
   listProductionDesignStyles,
   listVoiceStyles,
+  assertOrderedShotPacing,
   narrativeStyleSchema,
   productionDesignStyleSchema,
   updateCaptionStyle,
@@ -390,5 +391,38 @@ describe("production design styles (M7 PR6)", () => {
   it("is not resolved for a short_video_narrative project", () => {
     const project = createProject(db, { idea: "a plumber became mayor by wits" });
     expect(project.productionDesignStyleId).toBeNull();
+  });
+});
+
+// M9 — the three pacing values only mean anything as an ordered trio, and no
+// per-field rule can see the ordering. Left unchecked, `planShotCount`
+// silently prefers the ceiling and half of what the user typed is ignored.
+describe("assertOrderedShotPacing", () => {
+  it("accepts an ordered trio", () => {
+    expect(() =>
+      assertOrderedShotPacing({ shotMinMs: 1500, shotTargetMs: 2500, shotMaxMs: 3500 }),
+    ).not.toThrow();
+  });
+
+  it("refuses a floor above the ceiling", () => {
+    expect(() => assertOrderedShotPacing({ shotMinMs: 4000, shotMaxMs: 3000 })).toThrow(
+      /cannot be longer than/i,
+    );
+  });
+
+  it("refuses a target outside its own window", () => {
+    expect(() =>
+      assertOrderedShotPacing({ shotMinMs: 2000, shotTargetMs: 1000, shotMaxMs: 3000 }),
+    ).toThrow(/below the shortest/i);
+    expect(() =>
+      assertOrderedShotPacing({ shotMinMs: 2000, shotTargetMs: 9000, shotMaxMs: 3000 }),
+    ).toThrow(/above the longest/i);
+  });
+
+  // A PATCH sends one field; its neighbours come from the row, and the caller
+  // merges before validating. On its own, one value is always fine.
+  it("accepts a partial payload with nothing to compare against", () => {
+    expect(() => assertOrderedShotPacing({ shotTargetMs: 2500 })).not.toThrow();
+    expect(() => assertOrderedShotPacing({})).not.toThrow();
   });
 });

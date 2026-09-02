@@ -14,6 +14,9 @@ type NarrativeStyle = {
   evaluationChecklist: { key: string; description: string }[];
   targetSceneCount: number;
   targetWordCount: number;
+  shotTargetMs: number;
+  shotMinMs: number;
+  shotMaxMs: number;
   isBuiltin: boolean;
 };
 
@@ -154,6 +157,9 @@ const EMPTY_NARRATIVE = {
   checklistText: "",
   targetSceneCount: 8,
   targetWordCount: 320,
+  shotTargetMs: 2500,
+  shotMinMs: 1500,
+  shotMaxMs: 3500,
 };
 
 function checklistToText(checklist: { key: string; description: string }[]): string {
@@ -276,6 +282,8 @@ function NarrativeTab({
               onChange={(v) => setForm({ ...form, targetWordCount: Number(v) || 0 })}
             />
           </div>
+          <ShotPacingFields form={form} setForm={setForm} />
+
         </div>
         {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
         <button
@@ -308,6 +316,9 @@ function NarrativeCard({
     sceneGuidance: style.sceneGuidance,
     checklistText: checklistToText(style.evaluationChecklist),
     targetSceneCount: style.targetSceneCount,
+    shotTargetMs: style.shotTargetMs,
+    shotMinMs: style.shotMinMs,
+    shotMaxMs: style.shotMaxMs,
     targetWordCount: style.targetWordCount,
   });
   const [error, setError] = useState<string | null>(null);
@@ -350,6 +361,7 @@ function NarrativeCard({
       <p className="mt-1 text-xs text-white/50">{style.description}</p>
       <p className="mt-1 text-[11px] text-white/30">
         {style.targetSceneCount} scenes · {style.targetWordCount} words ·{" "}
+        {(style.shotTargetMs / 1000).toFixed(1)}s a shot ·{" "}
         {style.evaluationChecklist.length} checklist items
       </p>
 
@@ -397,6 +409,8 @@ function NarrativeCard({
               onChange={(v) => setForm({ ...form, targetWordCount: Number(v) || 0 })}
             />
           </div>
+          <ShotPacingFields form={form} setForm={setForm} />
+
           {error && <p className="text-xs text-red-400">{error}</p>}
           <button
             onClick={save}
@@ -1522,6 +1536,49 @@ function ProductionDesignCard({
 }
 
 /* ----------------------------------------------------------------- shared */
+
+/**
+ * Shot pacing — how often the picture changes.
+ *
+ * Shown in seconds and stored in milliseconds, because nobody thinks about
+ * cutting rhythm in thousandths. The note underneath is not decoration: on
+ * this hardware every shot is minutes of generation, so halving this number
+ * roughly doubles how long a project takes to make (findings F12, F30), and
+ * that is not something a user should have to discover by waiting.
+ */
+function ShotPacingFields<
+  T extends { shotTargetMs: number; shotMinMs: number; shotMaxMs: number },
+>({ form, setForm }: { form: T; setForm: (next: T) => void }) {
+  const seconds = (ms: number) => String(ms / 1000);
+  const toMs = (value: string) => Math.round(Number(value) * 1000) || 0;
+
+  return (
+    <div>
+      <div className="flex gap-2">
+        <Field
+          label="Shot length (s)"
+          value={seconds(form.shotTargetMs)}
+          onChange={(v) => setForm({ ...form, shotTargetMs: toMs(v) })}
+        />
+        <Field
+          label="Shortest (s)"
+          value={seconds(form.shotMinMs)}
+          onChange={(v) => setForm({ ...form, shotMinMs: toMs(v) })}
+        />
+        <Field
+          label="Longest (s)"
+          value={seconds(form.shotMaxMs)}
+          onChange={(v) => setForm({ ...form, shotMaxMs: toMs(v) })}
+        />
+      </div>
+      <p className="mt-1 text-[11px] leading-relaxed text-white/30">
+        How long one image holds before the video cuts to the next. Viewers start dropping off a
+        shot that stops changing at around five seconds. Shorter means more images, and every image
+        is minutes of generation — halving this roughly doubles how long a project takes to make.
+      </p>
+    </div>
+  );
+}
 
 function Field({
   label,

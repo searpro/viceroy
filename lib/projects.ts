@@ -425,6 +425,17 @@ export function getProjectDetail(db: Db, projectId: string) {
       .where(eq(scenes.projectId, projectId))
       .orderBy(asc(scenes.index))
       .all(),
+    // Flat across the project with `sceneId` on each row, the same shape (and
+    // for the same reason) as `wardrobeVariants` below: the review screen
+    // groups them per scene, and grouping here would only be regrouped
+    // client-side. Ordered by `index` alone — the scene ordering comes from
+    // `scenes` above, which the client already walks in order.
+    shots: db
+      .select()
+      .from(sceneShots)
+      .where(eq(sceneShots.projectId, projectId))
+      .orderBy(asc(sceneShots.index))
+      .all(),
     characters: db.select().from(characters).where(eq(characters.projectId, projectId)).all(),
     voiceover: db.select().from(voiceovers).where(eq(voiceovers.projectId, projectId)).get(),
     render: db

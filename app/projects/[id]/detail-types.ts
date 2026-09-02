@@ -28,9 +28,28 @@ export type Scene = {
   index: number;
   description: string;
   storyboard: string | null;
+  // Pre-M9 projects only — a scene visualised since carries a `visualBrief`
+  // and its pictures live on `Shot` below. Both are kept so an old project
+  // still renders on this screen rather than showing an empty row.
   imagePrompt: string | null;
+  visualBrief?: string | null;
   voiceoverScript: string;
   imageAssetId: string | null;
+};
+
+// M9 — one picture covering part of a scene. Optional on `Detail` for the
+// same "existing fixtures don't need updating" reason `castingLockedAt` gives
+// below; a project that predates M9 simply has none.
+export type Shot = {
+  id: string;
+  sceneId: string;
+  index: number;
+  shotType: string;
+  storyboard: string | null;
+  imagePrompt: string | null;
+  imageAssetId: string | null;
+  startMs: number | null;
+  endMs: number | null;
 };
 
 export type Character = {
@@ -213,6 +232,7 @@ export type Detail = {
   nextStep: { kind: "run" | "dev" | "complete"; type?: string; stage?: string; reason: string };
   stalled: boolean;
   scenes: Scene[];
+  shots?: Shot[];
   characters: Character[];
   devArtifacts: DevArtifact[];
   worldBuilding?: WorldBuilding | null;

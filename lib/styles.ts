@@ -26,8 +26,45 @@ export const narrativeStyleSchema = z.object({
   // insert.
   targetSceneCount: z.number().int().positive().optional(),
   targetWordCount: z.number().int().positive().optional(),
+  // M9 — how long one picture may hold. Bounded rather than merely positive:
+  // below ~800ms a shot is a flash frame, and above ~10s it is the unchanging
+  // still M9 exists to stop. `refineShotPacing` below enforces the ordering
+  // between the three, which no per-field rule can see.
+  shotTargetMs: z.number().int().min(800).max(10_000).optional(),
+  shotMinMs: z.number().int().min(500).max(10_000).optional(),
+  shotMaxMs: z.number().int().min(800).max(20_000).optional(),
 });
 export type NarrativeStyleInput = z.infer<typeof narrativeStyleSchema>;
+
+/**
+ * Shot pacing only means anything as an ordered trio.
+ *
+ * A floor above the ceiling asks `planShotCount` for a count that satisfies
+ * neither, and it resolves that by preferring the ceiling — so the setting
+ * would appear to work while quietly ignoring half of what was typed. Refusing
+ * is the honest answer.
+ *
+ * Checked across whatever the payload actually carries: a PATCH may send one
+ * field, and its neighbours are then whatever the row already holds, so the
+ * caller merges before validating.
+ */
+export function assertOrderedShotPacing(pacing: {
+  shotTargetMs?: number | undefined;
+  shotMinMs?: number | undefined;
+  shotMaxMs?: number | undefined;
+}): void {
+  const { shotMinMs: min, shotMaxMs: max, shotTargetMs: target } = pacing;
+  if (min !== undefined && max !== undefined && min > max) {
+    throw new Error("Shortest shot cannot be longer than the longest");
+  }
+  if (target === undefined) return;
+  if (min !== undefined && target < min) {
+    throw new Error("Target shot length cannot be below the shortest");
+  }
+  if (max !== undefined && target > max) {
+    throw new Error("Target shot length cannot be above the longest");
+  }
+}
 
 export const voiceStyleSchema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -150,11 +187,21 @@ export function listNarrativeStyles(db: Db) {
   return db.select().from(narrativeStyles).all();
 }
 export function createNarrativeStyle(db: Db, input: NarrativeStyleInput) {
+  // An omitted pacing field falls through to the column default, which is
+  // ordered by construction, so only what was actually sent needs checking.
+  assertOrderedShotPacing(input);
   return db.insert(narrativeStyles).values(input).returning().get();
 }
 export function updateNarrativeStyle(db: Db, id: string, input: Partial<NarrativeStyleInput>) {
   const existing = db.select().from(narrativeStyles).where(eq(narrativeStyles.id, id)).get();
   if (!existing) throw new Error("No such narrative style");
+  // Merged against the row first: a PATCH raising only the floor has to be
+  // judged against the ceiling already stored, not against nothing.
+  assertOrderedShotPacing({
+    shotTargetMs: input.shotTargetMs ?? existing.shotTargetMs,
+    shotMinMs: input.shotMinMs ?? existing.shotMinMs,
+    shotMaxMs: input.shotMaxMs ?? existing.shotMaxMs,
+  });
   return db.update(narrativeStyles).set(input).where(eq(narrativeStyles.id, id)).returning().get();
 }
 export function deleteNarrativeStyle(db: Db, id: string): void {
