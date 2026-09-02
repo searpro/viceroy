@@ -313,13 +313,66 @@ describe("runElements", () => {
     ).toHaveLength(SHOT_COUNT);
   });
 
+  // A `prompt_templates` row a user has edited is deliberately never
+  // overwritten by seeding, so M9's rewrite of `elements.scene` does not reach
+  // it and an installed pre-M9 copy keeps asking for `imagePrompt`. The model
+  // complies, and before this the stage died at scene 0 on a perfectly usable
+  // answer. Found by the first real run, not by a test.
+  it("accepts the pre-M9 field name from an un-reset template, and says so", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    const oldShape = {
+      json: {
+        storyboard: "A flooded basement.",
+        imagePrompt: "A flooded basement under a single bare bulb, ochre and slate.",
+        characters: ["the plumber"],
+      },
+    };
+
+    const logs: [string, string | undefined][] = [];
+    await runElements(
+      stubContext(db, job, {
+        llm: [CAST, BEATS, oldShape, oldShape, oldShape, shotPrompt(1)],
+        onLog: (message, level) => logs.push([message, level]),
+      }),
+    );
+
+    const scene = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()[0]!;
+    expect(scene.visualBrief).toBe("A flooded basement under a single bare bulb, ochre and slate.");
+    expect(
+      logs.some(([message, level]) => level === "warn" && message.includes("should be reset")),
+    ).toBe(true);
+  });
+
+  it("prefers visualBrief when the model sends both", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    const both = {
+      json: {
+        storyboard: "x",
+        visualBrief: "The right one.",
+        imagePrompt: "The stale one.",
+        characters: [],
+      },
+    };
+
+    await runElements(
+      stubContext(db, job, { llm: [CAST, BEATS, both, both, both, shotPrompt(1)] }),
+    );
+
+    const scene = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()[0]!;
+    expect(scene.visualBrief).toBe("The right one.");
+  });
+
   it("fails when a scene comes back without a visual brief", async () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "elements", projectId: project.id });
 
     await expect(
       runElements(
-        stubContext(db, job, { llm: [CAST, BEATS, { json: { storyboard: "x", visualBrief: "" } }] }),
+        stubContext(db, job, {
+          llm: [CAST, BEATS, { json: { storyboard: "x", visualBrief: "", imagePrompt: "" } }],
+        }),
       ),
     ).rejects.toThrow(/without a visual brief/);
   });

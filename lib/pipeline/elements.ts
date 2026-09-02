@@ -23,6 +23,8 @@ type CharacterPayload = {
 type ScenePayload = {
   storyboard?: unknown;
   visualBrief?: unknown;
+  // The pre-M9 name for this field, still accepted. See `briefFrom` below.
+  imagePrompt?: unknown;
   characters?: unknown;
 };
 
@@ -123,6 +125,40 @@ function sanitiseProse(
     throw new Error(`${label} was entirely negation or framing restatement after stripping`);
   }
   return framing.prompt;
+}
+
+/**
+ * The scene's brief, whichever field name it came back under.
+ *
+ * M9 renamed this stage's output from `imagePrompt` to `visualBrief`, and a
+ * model asked for the new name will sometimes hand back the old one anyway —
+ * they are both plausible names for "describe this scene" and a 12B model
+ * answers with the one its training saw most.
+ *
+ * More to the point, the *template* can still be asking for the old name. A
+ * row a user has edited is deliberately never overwritten by seeding
+ * (`builtinTemplate` is what tells an edit apart from a merely old row), so a
+ * shipped template change does not reach it — which is precisely how this
+ * showed up: an installed `elements.scene` edited before M9 kept asking for
+ * `imagePrompt`, the model complied, and the stage died at scene 0.
+ *
+ * Failing there is the wrong response to a usable answer. Taking either name
+ * and logging the fallback keeps the stage running and still says, in the job
+ * log, that a template needs resetting.
+ */
+function briefFrom(payload: ScenePayload, log: StageContext["log"], label: string): string {
+  const brief = typeof payload.visualBrief === "string" ? payload.visualBrief.trim() : "";
+  if (brief) return brief;
+
+  const legacy = typeof payload.imagePrompt === "string" ? payload.imagePrompt.trim() : "";
+  if (legacy) {
+    log(
+      `${label}: the model returned "imagePrompt" rather than "visualBrief" — using it, but the ` +
+        `elements.scene template is probably an edited pre-M9 copy and should be reset`,
+      "warn",
+    );
+  }
+  return legacy;
 }
 
 /**
@@ -313,7 +349,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
       temperature: 0.6,
     });
 
-    const rawBrief = typeof payload.visualBrief === "string" ? payload.visualBrief.trim() : "";
+    const rawBrief = briefFrom(payload, ctx.log, `Scene ${scene.index + 1}`);
     if (!rawBrief) throw new Error(`Scene ${scene.index} came back without a visual brief`);
 
     ctx.db
