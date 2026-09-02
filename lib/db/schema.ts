@@ -42,6 +42,15 @@ export const narrativeStyles = sqliteTable("narrative_styles", {
     .$type<{ key: string; description: string }[]>(),
   targetSceneCount: integer("target_scene_count").notNull().default(8),
   targetWordCount: integer("target_word_count").notNull().default(320),
+  // How long one image may hold before the picture stops changing (M9). A
+  // scene is narration, not imagery: these decide how many shots cover it.
+  // They live on the style rather than in config because pacing is an
+  // editorial choice — a bedtime story and a true-crime short want different
+  // answers — and because on this hardware the target is also the single
+  // biggest lever on how long a project takes to generate (F12, F30).
+  shotTargetMs: integer("shot_target_ms").notNull().default(2500),
+  shotMinMs: integer("shot_min_ms").notNull().default(1500),
+  shotMaxMs: integer("shot_max_ms").notNull().default(3500),
   isBuiltin: integer("is_builtin", { mode: "boolean" }).notNull().default(false),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -476,6 +485,25 @@ export const characterReferenceImages = sqliteTable(
   ],
 );
 
+// The coverage vocabulary a scene's shots are drawn from (M9). Closed, because
+// it is what the prompt writer is told not to repeat within a scene — an open
+// string would let the model return "medium shot", "medium", and "mid shot"
+// and believe it had varied anything.
+//
+// `insert` and `detail` earn their place by being the shots that need no face:
+// a hand on a doorknob costs ~51s where a face costs ~142s (F30), so having
+// names for them is also what keeps a project's generation time survivable.
+export const SHOT_TYPES = [
+  "establishing",
+  "wide",
+  "medium",
+  "close_up",
+  "over_shoulder",
+  "insert",
+  "detail",
+] as const;
+export type ShotType = (typeof SHOT_TYPES)[number];
+
 export const scenes = sqliteTable(
   "scenes",
   {
@@ -489,7 +517,15 @@ export const scenes = sqliteTable(
     // as soon as their narration span is known, then filled in one at a time.
     // A run that dies at scene 6 of 8 resumes rather than restarting.
     storyboard: text("storyboard"),
+    // Superseded by `visualBrief` + `sceneShots.imagePrompt` in M9, and kept
+    // because migrations are append-only and a project finished before M9 has
+    // no shots to derive: it is what `runRender` falls back to so an old
+    // project still opens and still re-renders.
     imagePrompt: text("image_prompt"),
+    // The scene's look in prose — setting, time of day, light, palette, who is
+    // present (M9). Written once and handed to every shot in the scene, which
+    // is what stops five shots of one moment disagreeing about where they are.
+    visualBrief: text("visual_brief"),
     // A verbatim span of the approved narration, never separately written text
     // — concatenating these must reproduce the story exactly, because the
     // voiceover is generated from the whole thing in one shot.
@@ -509,6 +545,65 @@ export const scenes = sqliteTable(
     updatedAt: updatedAt(),
   },
   (t) => [unique("scenes_project_index_uq").on(t.projectId, t.index)],
+);
+
+// M9 — a scene is a span of narration; a shot is one picture covering part of
+// it. Split out rather than widened onto `scenes` because the relationship is
+// genuinely one-to-many and because the two rows answer different questions: a
+// scene owns narration (which the voiceover reproduces verbatim), a shot owns
+// a frame.
+//
+// Named `scene_shots`, not `shots`: M8's film pipeline has its own shot
+// concept and M7 already sidestepped the same collision by calling its table
+// `shot_list_items`. Three tables that all mean "shot" is bad enough without
+// two of them competing for the bare name.
+export const sceneShots = sqliteTable(
+  "scene_shots",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => scenes.id, { onDelete: "cascade" }),
+    index: integer("index").notNull(),
+
+    // Inclusive word offsets into this scene's `voiceoverScript`, NOT into the
+    // whole narration. Scene-relative means re-splitting one scene cannot
+    // renumber another, and it survives a scene's own words being re-timed.
+    //
+    // Storing a range rather than a duration is the load-bearing choice: the
+    // ~150 wpm estimate decides how many shots there are, and nothing else.
+    // Where each one actually sits comes from the aligned words it covers
+    // (`runSubtitleAlign`), so a scene that speaks slower than predicted gets
+    // longer shots rather than shots that have drifted off the audio.
+    startWord: integer("start_word").notNull(),
+    endWord: integer("end_word").notNull(),
+
+    shotType: text("shot_type", { enum: SHOT_TYPES }).notNull().default("medium"),
+    // Nullable for the same reason the scene fields are: rows are written as
+    // soon as their word range is known, then filled one at a time, so a run
+    // that dies at shot 40 of 70 resumes instead of restarting.
+    storyboard: text("storyboard"),
+    imagePrompt: text("image_prompt"),
+    // Who is in *this* frame — a subset of the scene's cast, and what decides
+    // which reference portraits condition the generation (ADR 0001).
+    characterIds: text("character_ids", { mode: "json" }).notNull().$type<string[]>().default([]),
+    imageAssetId: text("image_asset_id").references(() => assets.id),
+
+    // Filled by subtitle alignment, from the first and last word this shot
+    // covers. Null until then.
+    startMs: integer("start_ms"),
+    endMs: integer("end_ms"),
+
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique("scene_shots_scene_index_uq").on(t.sceneId, t.index),
+    index("scene_shots_project_idx").on(t.projectId),
+  ],
 );
 
 // Shared by the narrative pipeline's story_eval/story_revise loop (story.ts)
