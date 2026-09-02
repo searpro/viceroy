@@ -99,6 +99,62 @@ export function stripFramingSentences(prose: string): { prompt: string; stripped
 }
 
 /**
+ * What to call a character in a prompt, when their name cannot be written.
+ *
+ * `elements.characters` requires an appearance to open with apparent gender
+ * and age ("a woman in her late fifties, slim..."), so the noun is reliably
+ * in the first few words. Anything unrecognised falls back to "figure", which
+ * is vague but never wrong — and a vague referent is a far smaller loss than
+ * a name painted across the frame.
+ */
+function referentFor(appearanceTag: string | null): string {
+  const match = /\b(man|woman|boy|girl|child|person)\b/i.exec(appearanceTag ?? "");
+  return match ? match[1]!.toLowerCase() : "figure";
+}
+
+/**
+ * Replace every character name in a prompt with a description of them.
+ *
+ * Finding F14: FLUX.2 renders text well enough that a name in a prompt gets
+ * literally stencilled into the picture — a bag labelled "HAL GRIFFIN".
+ * `elements.shot` forbids names at length, and on the first real M9 run the
+ * model wrote one into six shots of eight anyway ("a close-up of Edgar's
+ * face"). A rule the model is asked to follow is not a guarantee; this is.
+ *
+ * Substitution rather than removal, because prose has nowhere to put a hole:
+ * dropping the sentence would take a quarter of the prompt with it, and
+ * deleting just the token leaves "a close-up of 's face". "the man's face"
+ * says the same thing and generates the same picture.
+ *
+ * Names shorter than three characters are left alone. A one- or two-letter
+ * cast name is nearly always also a common word, and corrupting every "a" in
+ * a prompt is worse than the risk it guards.
+ */
+export function stripCharacterNames(
+  prompt: string,
+  cast: { name: string; appearanceTag: string | null }[],
+): { prompt: string; stripped: string[] } {
+  const stripped: string[] = [];
+  let out = prompt;
+
+  for (const character of cast) {
+    const name = character.name.trim();
+    if (name.length < 3) continue;
+
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const referent = referentFor(character.appearanceTag);
+    // Possessive first: replacing the bare name would leave a stranded "'s".
+    const possessive = new RegExp(`\\b${escaped}['\u2019]s\\b`, "gi");
+    const bare = new RegExp(`\\b${escaped}\\b`, "gi");
+
+    if (possessive.test(out) || bare.test(out)) stripped.push(name);
+    out = out.replace(possessive, `the ${referent}'s`).replace(bare, `the ${referent}`);
+  }
+
+  return { prompt: out, stripped };
+}
+
+/**
  * Run both guards over one model-written prose prompt, logging what went.
  *
  * Everything being stripped is a hard failure rather than an empty prompt
@@ -110,8 +166,18 @@ function sanitiseProse(
   prose: string,
   label: string,
   log: StageContext["log"],
+  cast: { name: string; appearanceTag: string | null }[] = [],
 ): string {
-  const negation = stripNegatedSentences(prose);
+  const named = stripCharacterNames(prose, cast);
+  if (named.stripped.length > 0) {
+    log(
+      `${label}: replaced character name(s) with a description — ${named.stripped.join(", ")} ` +
+        `(a name in a prompt gets painted into the picture, finding F14)`,
+      "warn",
+    );
+  }
+
+  const negation = stripNegatedSentences(named.prompt);
   if (negation.stripped.length > 0) {
     log(`${label}: stripped negated sentence(s): ${negation.stripped.join(" ")}`, "warn");
   }
@@ -356,7 +422,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
       .update(scenes)
       .set({
         storyboard: typeof payload.storyboard === "string" ? payload.storyboard.trim() : "",
-        visualBrief: sanitiseProse(rawBrief, `Scene ${scene.index + 1}'s visual brief`, ctx.log),
+        visualBrief: sanitiseProse(rawBrief, `Scene ${scene.index + 1}'s visual brief`, ctx.log, cast),
         characterIds: namedCharacterIds(payload.characters),
       })
       .where(eq(scenes.id, scene.id))
@@ -494,6 +560,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
           rawPrompt,
           `Scene ${scene.index + 1} shot ${shot.index + 1}`,
           ctx.log,
+          cast,
         ),
         // Who is visible in THIS frame, not everyone in the scene — an insert
         // of a hand on a doorknob returns nobody, and that is what spares it

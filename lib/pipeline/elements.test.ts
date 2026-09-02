@@ -7,7 +7,7 @@ import type { Db } from "../db/client";
 import { assets, characters, imageStyles, projects, providers, sceneShots, scenes } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
-import { runElements, stripNegatedSentences } from "./elements";
+import { runElements, stripCharacterNames, stripNegatedSentences } from "./elements";
 import {
   composeShotPrompt,
   filterLiveRefs,
@@ -678,6 +678,33 @@ describe("runElements", () => {
     ).toBe(true);
   });
 
+  // The end-to-end half of the F14 guard: a name the model wrote must not
+  // survive into the stored prompt, and the job log must say it happened.
+  it("replaces a character name the model wrote into a shot prompt, and logs it", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    const named = {
+      json: {
+        storyboard: "A close-up.",
+        imagePrompt: "A close-up of the plumber's face, lit from one side. The plumber squints.",
+        characters: ["the plumber"],
+      },
+    };
+
+    const logs: [string, string | undefined][] = [];
+    await runElements(
+      stubContext(db, job, {
+        llm: [CAST, BEATS, sceneBrief(1), sceneBrief(2), sceneBrief(3), named],
+        onLog: (message, level) => logs.push([message, level]),
+      }),
+    );
+
+    const shot = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all()[0]!;
+    expect(shot.imagePrompt).not.toMatch(/plumber/i);
+    expect(shot.imagePrompt).toContain("the man's face");
+    expect(logs.some(([m, level]) => level === "warn" && m.includes("finding F14"))).toBe(true);
+  });
+
   it("strips a framing rule the model restated as prompt content, and logs it", async () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "elements", projectId: project.id });
@@ -723,6 +750,73 @@ describe("runElements", () => {
         }),
       ),
     ).rejects.toThrow(/entirely negation/);
+  });
+});
+
+// F14: FLUX.2 renders text well enough that a name in a prompt gets literally
+// stencilled into the picture. `elements.shot` forbids names at length; on the
+// first real M9 run the model wrote one into six shots of eight regardless. A
+// rule the model is asked to follow is not a guarantee.
+describe("stripCharacterNames", () => {
+  const cast = [{ name: "Edgar", appearanceTag: "a man in his forties, sturdy build" }];
+
+  it("replaces a possessive with a description rather than leaving a hole", () => {
+    expect(
+      stripCharacterNames("A close-up of Edgar's face, brows furrowed.", cast).prompt,
+    ).toBe("A close-up of the man's face, brows furrowed.");
+  });
+
+  it("replaces a bare name too", () => {
+    expect(stripCharacterNames("The lamp lights Edgar from below.", cast).prompt).toBe(
+      "The lamp lights the man from below.",
+    );
+  });
+
+  it("handles a curly apostrophe, which is what a model actually writes", () => {
+    expect(stripCharacterNames("the glow that caught Edgar\u2019s eye", cast).prompt).toBe(
+      "the glow that caught the man's eye",
+    );
+  });
+
+  it("takes the referent from the appearance, not from a guess", () => {
+    const she = [{ name: "Marisol", appearanceTag: "a woman in her thirties, short curly hair" }];
+    expect(stripCharacterNames("Marisol's hands on the wheel.", she).prompt).toBe(
+      "the woman's hands on the wheel.",
+    );
+  });
+
+  it("falls back to a vague referent rather than an inaccurate one", () => {
+    const unknown = [{ name: "Rook", appearanceTag: "tall, in a long coat" }];
+    expect(stripCharacterNames("Rook stands in the doorway.", unknown).prompt).toBe(
+      "the figure stands in the doorway.",
+    );
+    expect(stripCharacterNames("Rook stands in the doorway.", [{ name: "Rook", appearanceTag: null }]).prompt)
+      .toBe("the figure stands in the doorway.");
+  });
+
+  it("reports what it replaced, so the log can name it", () => {
+    expect(stripCharacterNames("Edgar turns.", cast).stripped).toEqual(["Edgar"]);
+    expect(stripCharacterNames("A bare wall.", cast).stripped).toEqual([]);
+  });
+
+  // A one- or two-letter cast name is nearly always also a common word, and
+  // corrupting every "a" in a prompt is worse than the risk it guards.
+  it("leaves a very short name alone", () => {
+    const short = [{ name: "Al", appearanceTag: "a man in his fifties" }];
+    expect(stripCharacterNames("A lamp above Al.", short).prompt).toBe("A lamp above Al.");
+  });
+
+  it("does not touch a name that merely appears inside another word", () => {
+    expect(stripCharacterNames("The edgars of the sill are worn.", cast).prompt).toBe(
+      "The edgars of the sill are worn.",
+    );
+  });
+
+  it("handles a multi-word cast name", () => {
+    const role = [{ name: "the plumber", appearanceTag: "a man in his fifties, navy overalls" }];
+    expect(stripCharacterNames("A wrench in the plumber's grip.", role).prompt).toBe(
+      "A wrench in the man's grip.",
+    );
   });
 });
 
