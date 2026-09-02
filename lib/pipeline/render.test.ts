@@ -3,12 +3,12 @@ import { eq } from "drizzle-orm";
 import { createTestDb } from "../db/testing";
 import { seed } from "../db/seed";
 import type { Db } from "../db/client";
-import { assets, captionStyles, projects, scenes, voiceovers } from "../db/schema";
+import { assets, captionStyles, projects, sceneShots, scenes, voiceovers } from "../db/schema";
 import { claim, enqueue } from "../queue";
 import { createProject } from "../projects";
 import { resolveConfig } from "../config";
 import { captionStyleSchema, DEFAULT_CAPTION_STYLE } from "../../remotion/schema";
-import { resolveRenderCaptionStyle, resolveRenderDimensions, runRender } from "./render";
+import { renderShots, resolveRenderCaptionStyle, resolveRenderDimensions, runRender } from "./render";
 import { stubContext } from "./test-support";
 
 let db: Db;
@@ -184,6 +184,67 @@ describe("resolveRenderDimensions", () => {
   });
 });
 
+describe("renderShots", () => {
+  /** Two scenes, `shotsPerScene` shots each, in a deliberately jumbled order. */
+  function covered(shotsPerScene: number) {
+    const created = project({ narrated: true });
+    const [second] = db
+      .insert(scenes)
+      .values({ projectId: created.id, index: 1, description: "s1", voiceoverScript: "Two." })
+      .returning()
+      .all();
+    const sceneRows = db.select().from(scenes).where(eq(scenes.projectId, created.id)).all();
+
+    // Inserted back-to-front so the ordering under test is the code's, not the
+    // insertion order's.
+    for (const scene of [...sceneRows].reverse()) {
+      for (let index = shotsPerScene - 1; index >= 0; index--) {
+        db.insert(sceneShots)
+          .values({
+            projectId: created.id,
+            sceneId: scene.id,
+            index,
+            startWord: index,
+            endWord: index,
+            startMs: index * 1000,
+            endMs: (index + 1) * 1000,
+          })
+          .run();
+      }
+    }
+    expect(second).toBeTruthy();
+    return { project: created, sceneRows };
+  }
+
+  it("orders shots by scene, then by their place within the scene", () => {
+    const { project: created, sceneRows } = covered(3);
+    const shots = renderShots(db, created.id, sceneRows);
+
+    expect(shots.map((shot) => shot.label)).toEqual([
+      "scene-00-shot-00",
+      "scene-00-shot-01",
+      "scene-00-shot-02",
+      "scene-01-shot-00",
+      "scene-01-shot-01",
+      "scene-01-shot-02",
+    ]);
+  });
+
+  // A project finished before M9 has no shots at all: its scenes carry the
+  // image and the timing directly. Falling back is what keeps it openable and
+  // re-renderable rather than stranded.
+  it("falls back to a pre-M9 project's scene stills", () => {
+    const created = project({ timed: true, images: true, narrated: true });
+    const sceneRows = db.select().from(scenes).where(eq(scenes.projectId, created.id)).all();
+
+    const shots = renderShots(db, created.id, sceneRows);
+    expect(shots).toHaveLength(1);
+    expect(shots[0]!.label).toBe("scene-00");
+    expect(shots[0]!.imageAssetId).toBe(sceneRows[0]!.imageAssetId);
+    expect(shots[0]!.startMs).toBe(0);
+  });
+});
+
 describe("runRender refusals", () => {
   it("refuses a project with no narration", async () => {
     const p = project({ timed: true, images: true });
@@ -202,15 +263,29 @@ describe("runRender refusals", () => {
 
   // Without alignment there is nothing to say when each image appears, and
   // guessing would produce a video whose pictures drift from its words.
-  it("refuses when scenes have no timeline position", async () => {
+  it("refuses when shots have no timeline position", async () => {
     const p = project({ images: true, narrated: true });
     const job = enqueue(db, { type: "render", projectId: p.id });
     await expect(runRender(stubContext(db, job))).rejects.toThrow(/no timeline position/);
   });
 
-  it("refuses when a scene has no image", async () => {
+  it("refuses when a shot has no image", async () => {
     const p = project({ timed: true, narrated: true });
     const job = enqueue(db, { type: "render", projectId: p.id });
     await expect(runRender(stubContext(db, job))).rejects.toThrow(/no image/);
+  });
+
+  // The refusal has to follow the shots, not the scenes. A scene still holding
+  // a pre-M9 image while its own shots have none would otherwise render a
+  // video out of pictures nothing had drawn.
+  it("refuses an untimed shot even when its scene is timed and illustrated", async () => {
+    const p = project({ timed: true, images: true, narrated: true });
+    const scene = db.select().from(scenes).where(eq(scenes.projectId, p.id)).get()!;
+    db.insert(sceneShots)
+      .values({ projectId: p.id, sceneId: scene.id, index: 0, startWord: 0, endWord: 0 })
+      .run();
+
+    const job = enqueue(db, { type: "render", projectId: p.id });
+    await expect(runRender(stubContext(db, job))).rejects.toThrow(/no timeline position/);
   });
 });

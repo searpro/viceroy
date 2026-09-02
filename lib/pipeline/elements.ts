@@ -1,6 +1,7 @@
 import { asc, eq } from "drizzle-orm";
-import { characters, scenes } from "../db/schema";
+import { characters, sceneShots, scenes } from "../db/schema";
 import { renderPrompt } from "../prompts";
+import { splitWords } from "./align";
 import { enqueue } from "../queue";
 import {
   awaitReview,
@@ -13,6 +14,7 @@ import {
   type StageContext,
 } from "./context";
 import { normaliseSpans, numberSentences, spanText, splitSentences } from "./segment";
+import { assignShotTypes, partitionWords, planShotCount } from "./shots";
 
 type CharacterPayload = {
   characters?: { name?: unknown; description?: unknown; appearance?: unknown }[];
@@ -20,78 +22,118 @@ type CharacterPayload = {
 
 type ScenePayload = {
   storyboard?: unknown;
+  visualBrief?: unknown;
+  characters?: unknown;
+};
+
+type ShotPayload = {
+  storyboard?: unknown;
   imagePrompt?: unknown;
   characters?: unknown;
 };
 
-// Matches the negation forms `elements.scene` explicitly forbids ("no X",
-// "without X", "not X") anchored to the start of a comma-separated phrase.
-// A diffusion prompt has no grammatical negation — "no fantasy elements"
-// reads as a request for fantasy elements — but the instruction sits below
-// the narration it governs, and on a 12B model source-text mimicry beats an
+// Matches a negation anywhere in a sentence of a prose image prompt.
+//
+// A diffusion prompt has no grammatical negation — "a room with no windows"
+// reads as a request for windows (F15) — but the instruction sits below the
+// narration it governs, and on a 12B model source-text mimicry beats an
 // instruction stated once (BUG-023). The rule is restated next to the
-// `imagePrompt` field in the template too, but that only improves
-// compliance; this strip is the guarantee that does not depend on it.
-const NEGATED_PHRASE = /^(no|not|without)\b/i;
+// `imagePrompt` field in the template too, but that only improves compliance;
+// this strip is the guarantee that does not depend on it.
+//
+// Wider than the M9-predecessor's `^(no|not|without)` because prose puts a
+// negation mid-sentence where a tag list put it first: "the desk holds nothing
+// but a lamp" inverts exactly the way "no papers" does.
+const NEGATION = /\b(no|not|nor|none|never|nothing|neither|without|cannot|can't|isn't|aren't|doesn't|don't)\b/i;
 
-// Matches the framing rule restated as if it were a description of the
-// frame, rather than applied to it — "The composition is vertical 9:16,
-// with the man placed centrally for a tall frame" (BUG-24). The instruction
-// sits in the rules block as a comma-phrase ("vertical 9:16 composition,
-// subject placed for a tall frame"), one short step from being copied as
-// content, same as the negation rule. It is redundant even when copied
-// correctly: the real 9:16 frame comes from the width/height the image
-// stage passes to the provider (see `runSceneImages`), not from tokens in
-// the prompt, so any phrase naming the aspect ratio or restating "tall
-// frame"/"portrait orientation" is noise to strip rather than a
-// legitimate compositional instruction like "wide shot" or "close-up".
+// Matches the framing rule restated as if it were a description of the frame,
+// rather than applied to it — "The composition is vertical 9:16, with the man
+// placed centrally for a tall frame" (BUG-24). The instruction sits one short
+// step from being copied as content, same as the negation rule. It is
+// redundant even when copied correctly: the real 9:16 frame comes from the
+// width/height the image stage passes to the provider, not from tokens in the
+// prompt, so any phrase naming the aspect ratio or restating "tall frame" /
+// "portrait orientation" is noise to strip rather than a legitimate
+// compositional instruction like "wide shot" or "close-up".
 const FRAMING_RESTATEMENT = /\d{1,2}\s*:\s*\d{1,2}|aspect ratio|tall frame|portrait orientation/i;
 
 /**
- * Drops any phrase of an image prompt matching `pattern`, mirroring
- * `styles.ts`'s `refuseNegations` guard on style prefix/suffix text — same
- * failure class, but this prompt is model-authored rather than
- * user-authored, so the pipeline strips and logs instead of rejecting
- * outright: failing the whole scene over one clause the model shouldn't
- * have written just forces an identical retry.
+ * Drop any sentence of a prose prompt matching `pattern`.
  *
- * Splits on both commas and periods: the template asks for comma-separated
- * phrases, but the failure this guards is the model dropping into a full
- * sentence to restate an instruction (BUG-24) rather than obeying that
- * format, so a stray period is exactly where a copied instruction is likely
- * to sit and cannot be assumed away.
+ * Mirrors `styles.ts`'s `refuseNegations` guard on style prefix/suffix text —
+ * same failure class, but this prompt is model-authored rather than
+ * user-authored, so the pipeline strips and logs instead of rejecting
+ * outright: failing the whole shot over one clause the model shouldn't have
+ * written just forces an identical retry.
+ *
+ * A whole sentence goes, not a clause, and that is deliberate. M9 moved these
+ * prompts from comma-separated tags to prose (FLUX-family models read prose
+ * considerably better than tags), and a prose sentence has no reliable
+ * sub-boundary: splitting "the room is bare, with no windows and a single
+ * door" on its comma leaves "with" dangling, while splitting on the period —
+ * which the tag-era guard did — shreds every prose prompt into fragments.
+ * Losing a quarter of the prompt is the cheaper mistake, because the sentence
+ * being dropped is one the generator would have rendered backwards.
  */
-function stripPhrasesMatching(prompt: string, pattern: RegExp): { prompt: string; stripped: string[] } {
+function stripSentencesMatching(prose: string, pattern: RegExp): { prompt: string; stripped: string[] } {
   const stripped: string[] = [];
-  const kept = prompt
-    .split(/[,.]+/)
-    .map((phrase) => phrase.trim())
-    .filter((phrase) => {
-      if (!phrase) return false;
-      if (pattern.test(phrase)) {
-        stripped.push(phrase);
-        return false;
-      }
-      return true;
-    });
-  return { prompt: kept.join(", "), stripped };
+  const kept = splitSentences(prose).filter((sentence) => {
+    if (pattern.test(sentence)) {
+      stripped.push(sentence);
+      return false;
+    }
+    return true;
+  });
+  return { prompt: kept.join(" "), stripped };
 }
 
-export function stripNegatedPhrases(prompt: string): { prompt: string; stripped: string[] } {
-  return stripPhrasesMatching(prompt, NEGATED_PHRASE);
+export function stripNegatedSentences(prose: string): { prompt: string; stripped: string[] } {
+  return stripSentencesMatching(prose, NEGATION);
 }
 
 /** See `FRAMING_RESTATEMENT` above. */
-export function stripFramingRestatements(prompt: string): { prompt: string; stripped: string[] } {
-  return stripPhrasesMatching(prompt, FRAMING_RESTATEMENT);
+export function stripFramingSentences(prose: string): { prompt: string; stripped: string[] } {
+  return stripSentencesMatching(prose, FRAMING_RESTATEMENT);
+}
+
+/**
+ * Run both guards over one model-written prose prompt, logging what went.
+ *
+ * Everything being stripped is a hard failure rather than an empty prompt
+ * reaching the image stage: an empty prompt generates a picture of nothing,
+ * which looks like a working pipeline producing bad art rather than a
+ * malformed request.
+ */
+function sanitiseProse(
+  prose: string,
+  label: string,
+  log: StageContext["log"],
+): string {
+  const negation = stripNegatedSentences(prose);
+  if (negation.stripped.length > 0) {
+    log(`${label}: stripped negated sentence(s): ${negation.stripped.join(" ")}`, "warn");
+  }
+
+  const framing = stripFramingSentences(negation.prompt);
+  if (framing.stripped.length > 0) {
+    log(`${label}: stripped framing restatement(s): ${framing.stripped.join(" ")}`, "warn");
+  }
+
+  if (!framing.prompt.trim()) {
+    throw new Error(`${label} was entirely negation or framing restatement after stripping`);
+  }
+  return framing.prompt;
 }
 
 /**
  * Stage 4 — turn the approved story into scenes and a cast.
  *
- * Done in three passes rather than one call, because llama-server runs at a
+ * Done in four passes rather than one call, because llama-server runs at a
  * fixed 4096-token context (finding F10) and one whole-story request asking
- * for eight fully-specified scenes silently truncates.
+ * for eight fully-specified scenes silently truncates. M9's fourth pass —
+ * covering each scene with several shots — makes that ceiling tighter still,
+ * which is why a shot's prompt is its own small call rather than a scene's
+ * worth of them asked for at once.
  *
  * The whole stage is resumable: rows are written as soon as they are known and
  * skipped on a retry, so a failure at scene six does not redo the first five —
@@ -213,13 +255,20 @@ export async function runElements(ctx: StageContext): Promise<void> {
 
   ctx.progress(0.25);
 
-  /* Pass 3 — one storyboard and image prompt per scene. */
+  /* Pass 3 — the scene's visual brief. */
   // Appearance only — never `description`. See the extraction filter above.
   const castBlock =
     cast
       .filter((c) => c.appearanceTag)
       .map((c) => `- ${c.name}: ${c.appearanceTag}`)
       .join("\n") || "(nobody)";
+
+  const namedCharacterIds = (named: unknown): string[] => {
+    const names = Array.isArray(named) ? named.filter((n): n is string => typeof n === "string") : [];
+    return cast
+      .filter((c) => names.some((n) => n.toLowerCase().includes(c.name.toLowerCase())))
+      .map((c) => c.id);
+  };
 
   // A per-scene redo clears just that scene's prompt before enqueueing, but it
   // is not necessarily the only one pending: an earlier run that died partway
@@ -229,15 +278,17 @@ export async function runElements(ctx: StageContext): Promise<void> {
   const jobDirection = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction : "";
   const jobSceneId = typeof ctx.job.payload.sceneId === "string" ? ctx.job.payload.sceneId : undefined;
 
-  const pending = sceneRows.filter((scene) => !scene.imagePrompt);
-  for (const [position, scene] of pending.entries()) {
-    checkAbort(ctx);
+  // The heading travels with the value: rendering "Additional direction…"
+  // above an empty slot on every non-redo run leaves the model a labelled
+  // blank to fill in.
+  const directionFor = (sceneId: string): string => {
+    const steer = jobDirection && (!jobSceneId || jobSceneId === sceneId) ? jobDirection : "";
+    return steer ? `\nAdditional direction from the writer for this redo:\n${steer}` : "";
+  };
 
-    // The heading travels with the value: rendering "Additional direction…"
-    // above an empty slot on every non-redo run leaves the model a labelled
-    // blank to fill in.
-    const steer = jobDirection && (!jobSceneId || jobSceneId === scene.id) ? jobDirection : "";
-    const direction = steer ? `\nAdditional direction from the writer for this redo:\n${steer}` : "";
+  const briefless = sceneRows.filter((scene) => !scene.visualBrief);
+  for (const [position, scene] of briefless.entries()) {
+    checkAbort(ctx);
 
     const payload = await ctx.llmClient(provider).chatJson<ScenePayload>({
       model: provider.model,
@@ -254,7 +305,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
             // the wrapper — "richly saturated" into a ", desaturated colour"
             // suffix was the observed case (BUG-008).
             imageStyleGuidance: imageStyle.renderGuidance,
-            direction,
+            direction: directionFor(scene.id),
             groundingInstruction: grounding,
           }),
         },
@@ -262,49 +313,162 @@ export async function runElements(ctx: StageContext): Promise<void> {
       temperature: 0.6,
     });
 
-    const rawImagePrompt = typeof payload.imagePrompt === "string" ? payload.imagePrompt.trim() : "";
-    if (!rawImagePrompt) {
-      throw new Error(`Scene ${scene.index} came back without an image prompt`);
-    }
-
-    const negationPass = stripNegatedPhrases(rawImagePrompt);
-    if (negationPass.stripped.length > 0) {
-      ctx.log(
-        `Scene ${scene.index + 1}: stripped negated phrase(s) from image prompt: ${negationPass.stripped.join("; ")}`,
-        "warn",
-      );
-    }
-
-    const { prompt: imagePrompt, stripped: framingStripped } = stripFramingRestatements(negationPass.prompt);
-    if (framingStripped.length > 0) {
-      ctx.log(
-        `Scene ${scene.index + 1}: stripped framing restatement(s) from image prompt: ${framingStripped.join("; ")}`,
-        "warn",
-      );
-    }
-    if (!imagePrompt) {
-      throw new Error(`Scene ${scene.index}'s image prompt was entirely negation/framing restatement after stripping`);
-    }
-
-    const named = Array.isArray(payload.characters)
-      ? payload.characters.filter((n): n is string => typeof n === "string")
-      : [];
-    const characterIds = cast
-      .filter((c) => named.some((n) => n.toLowerCase().includes(c.name.toLowerCase())))
-      .map((c) => c.id);
+    const rawBrief = typeof payload.visualBrief === "string" ? payload.visualBrief.trim() : "";
+    if (!rawBrief) throw new Error(`Scene ${scene.index} came back without a visual brief`);
 
     ctx.db
       .update(scenes)
       .set({
         storyboard: typeof payload.storyboard === "string" ? payload.storyboard.trim() : "",
-        imagePrompt,
-        characterIds,
+        visualBrief: sanitiseProse(rawBrief, `Scene ${scene.index + 1}'s visual brief`, ctx.log),
+        characterIds: namedCharacterIds(payload.characters),
       })
       .where(eq(scenes.id, scene.id))
       .run();
 
-    ctx.progress(0.25 + (0.75 * (position + 1)) / pending.length);
-    ctx.log(`Scene ${scene.index + 1}/${sceneRows.length} visualised`);
+    ctx.progress(0.25 + (0.25 * (position + 1)) / briefless.length);
+    ctx.log(`Scene ${scene.index + 1}/${sceneRows.length} briefed`);
+  }
+
+  /* Pass 4 — cover each scene with shots (M9). */
+  //
+  // A scene used to be one picture held for its whole narration span, which on
+  // a real project is fifteen to twenty-five seconds of a frame with nothing
+  // moving but the Ken Burns drift.
+  //
+  // The word ranges are computed here, not asked for: `partitionWords`
+  // guarantees they tile the scene exactly, where a model asked for ranges
+  // routinely returns gaps and overlaps — the same reason `normaliseSpans`
+  // repairs the scene grouping rather than trusting it. A gap here would be a
+  // stretch of narration with no picture behind it.
+  const pacing = {
+    targetMs: narrativeStyle.shotTargetMs,
+    minMs: narrativeStyle.shotMinMs,
+    maxMs: narrativeStyle.shotMaxMs,
+  };
+
+  const briefed = ctx.db
+    .select()
+    .from(scenes)
+    .where(eq(scenes.projectId, projectId))
+    .orderBy(asc(scenes.index))
+    .all();
+
+  for (const scene of briefed) {
+    const existing = ctx.db.select().from(sceneShots).where(eq(sceneShots.sceneId, scene.id)).all();
+    if (existing.length > 0) continue;
+
+    const words = splitWords(scene.voiceoverScript).length;
+    const ranges = partitionWords(scene.voiceoverScript, planShotCount(words, pacing));
+    if (ranges.length === 0) continue;
+
+    const types = assignShotTypes(ranges.length);
+    ctx.db
+      .insert(sceneShots)
+      .values(
+        ranges.map((range, index) => ({
+          projectId,
+          sceneId: scene.id,
+          index,
+          startWord: range.startWord,
+          endWord: range.endWord,
+          shotType: types[index]!,
+        })),
+      )
+      .run();
+  }
+
+  const plannedShots = ctx.db
+    .select()
+    .from(sceneShots)
+    .where(eq(sceneShots.projectId, projectId))
+    .orderBy(asc(sceneShots.index))
+    .all();
+  const sceneById = new Map(briefed.map((scene) => [scene.id, scene]));
+
+  const pendingShots = plannedShots
+    .filter((shot) => !shot.imagePrompt)
+    .sort((a, b) => {
+      const byScene = sceneById.get(a.sceneId)!.index - sceneById.get(b.sceneId)!.index;
+      return byScene !== 0 ? byScene : a.index - b.index;
+    });
+
+  ctx.log(
+    `Covering ${briefed.length} scene(s) with ${plannedShots.length} shot(s); ` +
+      `${pendingShots.length} still to write`,
+  );
+
+  for (const [position, shot] of pendingShots.entries()) {
+    checkAbort(ctx);
+    const scene = sceneById.get(shot.sceneId)!;
+
+    // Each shot is written knowing what the scene's earlier shots already
+    // showed. Without it every call writes the same framing: a model cannot
+    // vary coverage across calls it cannot see, which is the lesson M7.1 PR-A2
+    // learned about references. `shotType` is assigned rather than chosen for
+    // the same reason; this is the half of it the model can actually act on.
+    const written = ctx.db
+      .select()
+      .from(sceneShots)
+      .where(eq(sceneShots.sceneId, shot.sceneId))
+      .all()
+      .filter((other) => other.index < shot.index && other.storyboard)
+      // The last few only: under a 4096-token ceiling (F10) a long scene's
+      // history would crowd out the instructions it is meant to support.
+      .slice(-3)
+      .map((other) => `- [${other.shotType}] ${other.storyboard}`)
+      .join("\n");
+
+    const priorShots = written
+      ? `\nShots already used in this scene — do not repeat these framings:\n${written}`
+      : "";
+
+    const payload = await ctx.llmClient(provider).chatJson<ShotPayload>({
+      model: provider.model,
+      messages: [
+        {
+          role: "user",
+          content: renderPrompt(ctx.db, "elements.shot", {
+            visualBrief: scene.visualBrief ?? "",
+            shotText: shotNarration(scene.voiceoverScript, shot),
+            sceneText: scene.voiceoverScript,
+            shotType: shot.shotType,
+            characters: castBlock,
+            sceneGuidance: narrativeStyle.sceneGuidance,
+            imageStyleGuidance: imageStyle.renderGuidance,
+            priorShots,
+            direction: directionFor(scene.id),
+            groundingInstruction: grounding,
+          }),
+        },
+      ],
+      temperature: 0.6,
+    });
+
+    const rawPrompt = typeof payload.imagePrompt === "string" ? payload.imagePrompt.trim() : "";
+    if (!rawPrompt) {
+      throw new Error(`Scene ${scene.index + 1} shot ${shot.index + 1} came back without an image prompt`);
+    }
+
+    ctx.db
+      .update(sceneShots)
+      .set({
+        storyboard: typeof payload.storyboard === "string" ? payload.storyboard.trim() : "",
+        imagePrompt: sanitiseProse(
+          rawPrompt,
+          `Scene ${scene.index + 1} shot ${shot.index + 1}`,
+          ctx.log,
+        ),
+        // Who is visible in THIS frame, not everyone in the scene — an insert
+        // of a hand on a doorknob returns nobody, and that is what spares it
+        // the ~142s a reference-conditioned frame costs (F30).
+        characterIds: namedCharacterIds(payload.characters),
+      })
+      .where(eq(sceneShots.id, shot.id))
+      .run();
+
+    ctx.progress(0.5 + (0.5 * (position + 1)) / pendingShots.length);
+    ctx.log(`Scene ${scene.index + 1} shot ${shot.index + 1}/${plannedShots.length} written`);
   }
 
   // `stage` records how far the project has got, so a one-scene redo on a
@@ -321,7 +485,24 @@ export async function runElements(ctx: StageContext): Promise<void> {
   // fire the whole downstream chain (portraits, images, voiceover...) for a
   // click that only asked for one prompt back (BUG-6).
   if (jobSceneId) return;
-  // Portraits before scenes: scene images reference them, so this order is
+  // Portraits before shots: shot images reference them, so this order is
   // load-bearing rather than incidental. See docs/adr/0001.
   enqueue(ctx.db, { type: "character_images", projectId });
+}
+
+/**
+ * The slice of a scene's narration one shot covers.
+ *
+ * Exported because the image stage needs the same answer when it logs which
+ * line a frame belongs to, and two implementations of "which words are these"
+ * is exactly how a range drifts from what it names.
+ */
+export function shotNarration(
+  script: string,
+  shot: { startWord: number; endWord: number },
+): string {
+  return splitWords(script)
+    .slice(shot.startWord, shot.endWord + 1)
+    .map((word) => word.surface)
+    .join(" ");
 }

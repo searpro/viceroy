@@ -4,10 +4,10 @@ import { asc, eq } from "drizzle-orm";
 import { createTestDb } from "../db/testing";
 import { seed } from "../db/seed";
 import type { Db } from "../db/client";
-import { assets, characters, imageStyles, projects, providers, scenes } from "../db/schema";
+import { assets, characters, imageStyles, projects, providers, sceneShots, scenes } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
-import { runElements, stripNegatedPhrases } from "./elements";
+import { runElements, stripNegatedSentences } from "./elements";
 import { filterLiveRefs, negativePromptFor, runCharacterImages, runSceneImages } from "./images";
 import { stubContext } from "./test-support";
 
@@ -53,13 +53,41 @@ const BEATS = {
   },
 };
 
-const sceneDetail = (n: number) => ({
+const sceneBrief = (n: number) => ({
   json: {
     storyboard: `Storyboard ${n}`,
-    imagePrompt: `wiry man in his fifties, navy overalls, scene ${n}`,
+    visualBrief: `A flooded basement under a bare bulb, scene ${n}.`,
     characters: ["the plumber"],
   },
 });
+
+const shotPrompt = (n: number) => ({
+  json: {
+    storyboard: `Shot ${n}`,
+    imagePrompt:
+      `A wiry man in his fifties in navy overalls kneels by a burst pipe, jaw set, shot ${n}. ` +
+      `A bare bulb overhead throws hard shadows across the wet floor.`,
+    characters: ["the plumber"],
+  },
+});
+
+/**
+ * One whole element-extraction run's worth of canned answers: the cast, the
+ * scene grouping, a brief per scene, then shot prompts.
+ *
+ * Only one `shotPrompt` is needed however many shots there are — the stub
+ * repeats its last response once the list runs out, and the exact wording of
+ * shot four is not what any of these tests are about.
+ */
+const RUN = [CAST, BEATS, sceneBrief(1), sceneBrief(2), sceneBrief(3), shotPrompt(1)];
+
+/**
+ * How many shots the fixture story is covered by, at the seeded 2.5s pacing.
+ *
+ * Three scenes of 13, 10 and 12 words, which at 150 wpm is 5.2s, 4.0s and
+ * 4.8s — each over the 3.5s ceiling, so each takes two shots.
+ */
+const SHOT_COUNT = 6;
 
 /** The image style a project actually resolved to, for negative-prompt assertions. */
 function imageStyleOf(project: { imageStyleId: string | null }) {
@@ -97,7 +125,7 @@ describe("runElements", () => {
     const job = enqueue(db, { type: "elements", projectId: project.id });
 
     await runElements(
-      stubContext(db, job, { llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)] }),
+      stubContext(db, job, { llm: RUN }),
     );
 
     const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
@@ -111,8 +139,101 @@ describe("runElements", () => {
       .orderBy(asc(scenes.index))
       .all();
     expect(rows).toHaveLength(3);
-    expect(rows.every((s) => s.imagePrompt && s.storyboard)).toBe(true);
+    expect(rows.every((s) => s.visualBrief && s.storyboard)).toBe(true);
     expect(rows[0]!.characterIds).toEqual([cast[0]!.id]);
+
+    // M9: every scene is covered by shots, and it is the shots that carry the
+    // prompt an image is generated from.
+    const shots = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all();
+    expect(shots).toHaveLength(SHOT_COUNT);
+    expect(shots.every((shot) => shot.imagePrompt && shot.storyboard)).toBe(true);
+    expect(shots.every((shot) => shot.characterIds.length === 1)).toBe(true);
+  });
+
+  // The property that makes a shot's on-screen window measurable rather than
+  // estimated: its word range must tile its scene exactly, or some narration
+  // has no picture behind it.
+  it("covers every word of every scene with exactly one shot", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    await runElements(stubContext(db, job, { llm: RUN }));
+
+    const rows = db
+      .select()
+      .from(scenes)
+      .where(eq(scenes.projectId, project.id))
+      .orderBy(asc(scenes.index))
+      .all();
+
+    for (const scene of rows) {
+      const shots = db
+        .select()
+        .from(sceneShots)
+        .where(eq(sceneShots.sceneId, scene.id))
+        .all()
+        .sort((a, b) => a.index - b.index);
+
+      expect(shots.length).toBeGreaterThan(0);
+      expect(shots[0]!.startWord).toBe(0);
+      expect(shots[shots.length - 1]!.endWord).toBe(scene.voiceoverScript.split(/\s+/).length - 1);
+      for (let i = 1; i < shots.length; i++) {
+        expect(shots[i]!.startWord).toBe(shots[i - 1]!.endWord + 1);
+      }
+    }
+  });
+
+  // The whole reason a scene is covered by several pictures rather than one.
+  it("never leaves one picture on screen longer than the style's ceiling", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    await runElements(stubContext(db, job, { llm: RUN }));
+
+    const rows = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all();
+    for (const scene of rows) {
+      const shots = db.select().from(sceneShots).where(eq(sceneShots.sceneId, scene.id)).all();
+      const words = scene.voiceoverScript.split(/\s+/).length;
+      // 150 wpm, the same estimate the planner used.
+      const estimatedMs = (words / 150) * 60_000;
+      expect(estimatedMs / shots.length).toBeLessThanOrEqual(3500);
+    }
+  });
+
+  // Each shot is written knowing what the scene's earlier shots showed. A model
+  // cannot vary coverage across calls it cannot see.
+  it("tells each shot what the scene's earlier shots already framed", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+
+    const prompts: Record<string, unknown>[] = [];
+    await runElements(stubContext(db, job, { llm: RUN, onChatJsonRequest: (r) => prompts.push(r) }));
+
+    const contents = prompts.map((p) => (p.messages as { content: string }[])[0]!.content);
+    // characters, beats, three briefs, then the shots.
+    const firstShot = contents[5]!;
+    const secondShot = contents[6]!;
+    expect(firstShot).not.toContain("do not repeat these framings");
+    expect(secondShot).toContain("do not repeat these framings");
+    expect(secondShot).toContain("Shot 1");
+  });
+
+  // Assigned by the pipeline, not chosen by the model, so variety is
+  // structural rather than a thing each isolated call has to remember.
+  it("opens each scene on an establishing shot and varies the rest", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    await runElements(stubContext(db, job, { llm: RUN }));
+
+    const rows = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all();
+    for (const scene of rows) {
+      const shots = db
+        .select()
+        .from(sceneShots)
+        .where(eq(sceneShots.sceneId, scene.id))
+        .all()
+        .sort((a, b) => a.index - b.index);
+      expect(shots[0]!.shotType).toBe("establishing");
+      expect(new Set(shots.map((shot) => shot.shotType)).size).toBe(shots.length);
+    }
   });
 
   // The property the whole design rests on: the voiceover is generated once,
@@ -122,7 +243,7 @@ describe("runElements", () => {
     const job = enqueue(db, { type: "elements", projectId: project.id });
 
     await runElements(
-      stubContext(db, job, { llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)] }),
+      stubContext(db, job, { llm: RUN }),
     );
 
     const rows = db
@@ -139,7 +260,7 @@ describe("runElements", () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "elements", projectId: project.id });
     await runElements(
-      stubContext(db, job, { llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)] }),
+      stubContext(db, job, { llm: RUN }),
     );
 
     const queued = listJobs(db, { projectId: project.id }).map((j) => j.type);
@@ -151,7 +272,7 @@ describe("runElements", () => {
     const project = projectWithStory("manual");
     const job = enqueue(db, { type: "elements", projectId: project.id });
     await runElements(
-      stubContext(db, job, { llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)] }),
+      stubContext(db, job, { llm: RUN }),
     );
 
     expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.awaitingReview).toBe(
@@ -166,30 +287,53 @@ describe("runElements", () => {
   it("resumes rather than restarting when scenes are already visualised", async () => {
     const project = projectWithStory();
     const first = enqueue(db, { type: "elements", projectId: project.id });
+    await runElements(stubContext(db, first, { llm: RUN }));
 
-    // Fail partway: two scene details, then nothing left to serve.
-    await expect(
-      runElements(stubContext(db, first, { llm: [CAST, BEATS, sceneDetail(1)] })),
-    ).resolves.toBeUndefined();
+    expect(db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()).toHaveLength(3);
 
-    const afterFirst = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all();
-    expect(afterFirst).toHaveLength(3);
-
-    // A second run must not create a second cast or a second set of scenes.
+    // A second run must not create a second cast, a second set of scenes, or a
+    // second set of shots — on this hardware a restart costs hours, not minutes.
     const second = enqueue(db, { type: "elements", projectId: project.id });
-    await runElements(stubContext(db, second, { llm: [sceneDetail(9)] }));
+    const prompts: Record<string, unknown>[] = [];
+    await runElements(
+      stubContext(db, second, { llm: [shotPrompt(9)], onChatJsonRequest: (r) => prompts.push(r) }),
+    );
 
+    expect(prompts).toHaveLength(0);
     expect(db.select().from(characters).where(eq(characters.projectId, project.id)).all()).toHaveLength(1);
     expect(db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()).toHaveLength(3);
+    expect(
+      db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all(),
+    ).toHaveLength(SHOT_COUNT);
   });
 
-  it("fails when a scene comes back without an image prompt", async () => {
+  it("fails when a scene comes back without a visual brief", async () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "elements", projectId: project.id });
 
     await expect(
       runElements(
-        stubContext(db, job, { llm: [CAST, BEATS, { json: { storyboard: "x", imagePrompt: "" } }] }),
+        stubContext(db, job, { llm: [CAST, BEATS, { json: { storyboard: "x", visualBrief: "" } }] }),
+      ),
+    ).rejects.toThrow(/without a visual brief/);
+  });
+
+  it("fails when a shot comes back without an image prompt", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+
+    await expect(
+      runElements(
+        stubContext(db, job, {
+          llm: [
+            CAST,
+            BEATS,
+            sceneBrief(1),
+            sceneBrief(2),
+            sceneBrief(3),
+            { json: { storyboard: "x", imagePrompt: "" } },
+          ],
+        }),
       ),
     ).rejects.toThrow(/without an image prompt/);
   });
@@ -207,16 +351,17 @@ describe("runElements", () => {
       const p = projectWithStory();
       const first = enqueue(db, { type: "elements", projectId: p.id });
       await runElements(
-        stubContext(db, first, { llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)] }),
+        stubContext(db, first, { llm: RUN }),
       );
       return p;
     })();
 
     const target = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()[0]!;
     db.update(scenes)
-      .set({ imagePrompt: null, storyboard: null })
+      .set({ visualBrief: null, storyboard: null })
       .where(eq(scenes.id, target.id))
       .run();
+    db.delete(sceneShots).where(eq(sceneShots.sceneId, target.id)).run();
 
     const job = enqueue(db, {
       type: "elements",
@@ -226,12 +371,14 @@ describe("runElements", () => {
 
     const prompts: Record<string, unknown>[] = [];
     await runElements(
-      stubContext(db, job, { llm: [sceneDetail(9)], onChatJsonRequest: (r) => prompts.push(r) }),
+      stubContext(db, job, { llm: [sceneBrief(9), shotPrompt(9)], onChatJsonRequest: (r) => prompts.push(r) }),
     );
 
-    expect(prompts).toHaveLength(1);
-    const messages = prompts[0]!.messages as { content: string }[];
-    expect(messages[0]!.content).toContain("make it rain");
+    // The scene's brief, then its two shots — all of them steered.
+    expect(prompts).toHaveLength(3);
+    for (const prompt of prompts) {
+      expect((prompt.messages as { content: string }[])[0]!.content).toContain("make it rain");
+    }
   });
 
   // BUG-008: the model composing a scene prompt must see the register its
@@ -246,7 +393,7 @@ describe("runElements", () => {
     const prompts: Record<string, unknown>[] = [];
     await runElements(
       stubContext(db, job, {
-        llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        llm: RUN,
         onChatJsonRequest: (r) => prompts.push(r),
       }),
     );
@@ -275,7 +422,7 @@ describe("runElements", () => {
     const prompts: Record<string, unknown>[] = [];
     await runElements(
       stubContext(db, job, {
-        llm: [castWithGap, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        llm: [castWithGap, ...RUN.slice(1)],
         onChatJsonRequest: (r) => prompts.push(r),
       }),
     );
@@ -297,7 +444,7 @@ describe("runElements", () => {
     const prompts: Record<string, unknown>[] = [];
     await runElements(
       stubContext(db, job, {
-        llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        llm: RUN,
         onChatJsonRequest: (r) => prompts.push(r),
       }),
     );
@@ -317,8 +464,8 @@ describe("runElements", () => {
       .run();
     db.insert(scenes)
       .values([
-        { projectId: project.id, index: 0, description: "the burst pipe", voiceoverScript: "a.", imagePrompt: null },
-        { projectId: project.id, index: 1, description: "the election", voiceoverScript: "b.", imagePrompt: null },
+        { projectId: project.id, index: 0, description: "the burst pipe", voiceoverScript: "a.", visualBrief: null },
+        { projectId: project.id, index: 1, description: "the election", voiceoverScript: "b.", visualBrief: null },
       ])
       .run();
     const target = db.select().from(scenes).where(eq(scenes.index, 1)).get()!;
@@ -332,12 +479,14 @@ describe("runElements", () => {
     const prompts: Record<string, unknown>[] = [];
     await runElements(
       stubContext(db, job, {
-        llm: [sceneDetail(1), sceneDetail(2)],
+        llm: [sceneBrief(1), sceneBrief(2), shotPrompt(1)],
         onChatJsonRequest: (r) => prompts.push(r),
       }),
     );
 
-    expect(prompts).toHaveLength(2);
+    // Two briefs, then one shot each — both scenes are a single word long, so
+    // each takes exactly one shot.
+    expect(prompts).toHaveLength(4);
     const contentFor = (index: number) =>
       (prompts[index]!.messages as { content: string }[])[0]!.content;
 
@@ -358,9 +507,9 @@ describe("runElements", () => {
       .run();
     db.insert(scenes)
       .values([
-        { projectId: project.id, index: 0, description: "a", voiceoverScript: "a.", imagePrompt: "prompt a" },
-        { projectId: project.id, index: 1, description: "b", voiceoverScript: "b.", imagePrompt: null },
-        { projectId: project.id, index: 2, description: "c", voiceoverScript: "c.", imagePrompt: "prompt c" },
+        { projectId: project.id, index: 0, description: "a", voiceoverScript: "a.", visualBrief: "brief a" },
+        { projectId: project.id, index: 1, description: "b", voiceoverScript: "b.", visualBrief: null },
+        { projectId: project.id, index: 2, description: "c", voiceoverScript: "c.", visualBrief: "brief c" },
       ])
       .run();
     const target = db.select().from(scenes).where(eq(scenes.index, 1)).get()!;
@@ -370,7 +519,7 @@ describe("runElements", () => {
       projectId: project.id,
       payload: { sceneId: target.id },
     });
-    await runElements(stubContext(db, job, { llm: [sceneDetail(9)] }));
+    await runElements(stubContext(db, job, { llm: [sceneBrief(9), shotPrompt(9)] }));
 
     expect(listJobs(db, { projectId: project.id }).map((j) => j.type)).not.toContain(
       "character_images",
@@ -383,7 +532,7 @@ describe("runElements", () => {
 
     await runElements(
       stubContext(db, job, {
-        llm: [{ json: { characters: [] } }, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        llm: [{ json: { characters: [] } }, ...RUN.slice(1)],
       }),
     );
 
@@ -409,7 +558,7 @@ describe("runElements", () => {
     const prompts: Record<string, unknown>[] = [];
     await runElements(
       stubContext(db, job, {
-        llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        llm: RUN,
         onChatJsonRequest: (r) => prompts.push(r),
       }),
     );
@@ -426,7 +575,7 @@ describe("runElements", () => {
     const prompts: Record<string, unknown>[] = [];
     await runElements(
       stubContext(db, job, {
-        llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        llm: RUN,
         onChatJsonRequest: (r) => prompts.push(r),
       }),
     );
@@ -440,35 +589,34 @@ describe("runElements", () => {
   // ("no larger than necessary") into the diffusion-bound prompt. The rule
   // is stated in `elements.scene`, but a deterministic strip is the part of
   // the fix that does not depend on the model listening to it.
-  it("strips a negated phrase the model copied into a scene's image prompt, and logs it", async () => {
+  it("strips a negated sentence the model wrote into a shot's image prompt, and logs it", async () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "elements", projectId: project.id });
     const negated = {
       json: {
         storyboard: "A humble sign outside city hall.",
-        imagePrompt: "a humble sign, no larger than necessary, listing the town's annual budget",
+        imagePrompt:
+          "A weathered noticeboard lists the town's annual budget in faded type. " +
+          "There are no larger signs anywhere on the wall.",
         characters: [],
       },
     };
     const logs: [string, string | undefined][] = [];
     await runElements(
       stubContext(db, job, {
-        llm: [CAST, BEATS, negated, sceneDetail(2), sceneDetail(3)],
+        llm: [CAST, BEATS, sceneBrief(1), sceneBrief(2), sceneBrief(3), negated],
         onLog: (message, level) => logs.push([message, level]),
       }),
     );
 
-    const rows = db
-      .select()
-      .from(scenes)
-      .where(eq(scenes.projectId, project.id))
-      .orderBy(asc(scenes.index))
-      .all();
-    expect(rows[0]!.imagePrompt).toBe("a humble sign, listing the town's annual budget");
-    expect(rows[0]!.imagePrompt).not.toMatch(/\bno\b/i);
-    expect(logs.some(([message, level]) => level === "warn" && message.includes("no larger than necessary"))).toBe(
-      true,
+    const shot = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all()[0]!;
+    expect(shot.imagePrompt).toBe(
+      "A weathered noticeboard lists the town's annual budget in faded type.",
     );
+    expect(shot.imagePrompt).not.toMatch(/\bno\b/i);
+    expect(
+      logs.some(([message, level]) => level === "warn" && message.includes("no larger signs")),
+    ).toBe(true);
   });
 
   it("strips a framing rule the model restated as prompt content, and logs it", async () => {
@@ -478,51 +626,79 @@ describe("runElements", () => {
       json: {
         storyboard: "A man stands alone in a doorway.",
         imagePrompt:
-          "a man standing in a doorway, warm evening light. The composition is vertical 9:16, with the man placed centrally for a tall frame.",
+          "A man stands in a doorway under warm evening light. " +
+          "The composition is vertical 9:16, with the man placed centrally for a tall frame.",
         characters: [],
       },
     };
     const logs: [string, string | undefined][] = [];
     await runElements(
       stubContext(db, job, {
-        llm: [CAST, BEATS, restated, sceneDetail(2), sceneDetail(3)],
+        llm: [CAST, BEATS, sceneBrief(1), sceneBrief(2), sceneBrief(3), restated],
         onLog: (message, level) => logs.push([message, level]),
       }),
     );
 
-    const rows = db
-      .select()
-      .from(scenes)
-      .where(eq(scenes.projectId, project.id))
-      .orderBy(asc(scenes.index))
-      .all();
-    expect(rows[0]!.imagePrompt).toBe("a man standing in a doorway, warm evening light");
-    expect(rows[0]!.imagePrompt).not.toMatch(/9:16|tall frame/i);
+    const shot = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all()[0]!;
+    expect(shot.imagePrompt).toBe("A man stands in a doorway under warm evening light.");
+    expect(shot.imagePrompt).not.toMatch(/9:16|tall frame/i);
     expect(
       logs.some(([message, level]) => level === "warn" && message.includes("vertical 9:16")),
     ).toBe(true);
   });
+
+  // A prompt that was nothing but negation leaves nothing to generate from.
+  // An empty prompt draws a picture of nothing, which reads as a working
+  // pipeline producing bad art rather than as a malformed request.
+  it("fails rather than generating from a prompt that was entirely negation", async () => {
+    const project = projectWithStory();
+    const job = enqueue(db, { type: "elements", projectId: project.id });
+    const allNegation = {
+      json: { storyboard: "x", imagePrompt: "There is nothing in the room.", characters: [] },
+    };
+
+    await expect(
+      runElements(
+        stubContext(db, job, {
+          llm: [CAST, BEATS, sceneBrief(1), sceneBrief(2), sceneBrief(3), allNegation],
+        }),
+      ),
+    ).rejects.toThrow(/entirely negation/);
+  });
 });
 
-describe("stripNegatedPhrases", () => {
-  it("drops a comma-separated phrase that opens with no/not/without", () => {
-    expect(stripNegatedPhrases("a wooden desk, no papers on it, warm lamplight").prompt).toBe(
-      "a wooden desk, warm lamplight",
-    );
-    expect(stripNegatedPhrases("an empty street, not a soul in sight").prompt).toBe("an empty street");
-    expect(stripNegatedPhrases("a hallway, without any furniture, bare walls").prompt).toBe(
-      "a hallway, bare walls",
-    );
+describe("stripNegatedSentences", () => {
+  it("drops a whole sentence carrying a negation, wherever it sits in it", () => {
+    expect(
+      stripNegatedSentences(
+        "A wooden desk sits under a window. There are no papers on it. Warm lamplight falls across the grain.",
+      ).prompt,
+    ).toBe("A wooden desk sits under a window. Warm lamplight falls across the grain.");
+
+    // Mid-sentence, which is where prose puts it and the tag-era guard missed.
+    expect(
+      stripNegatedSentences("An empty street at dawn, not a soul in sight. Frost on the kerb.").prompt,
+    ).toBe("Frost on the kerb.");
+
+    expect(
+      stripNegatedSentences("A hallway without any furniture. Bare plaster walls.").prompt,
+    ).toBe("Bare plaster walls.");
   });
 
   it("leaves a prompt with no negation untouched", () => {
-    const prompt = "a wiry man in his fifties, navy overalls, kneeling by a burst pipe";
-    expect(stripNegatedPhrases(prompt)).toEqual({ prompt, stripped: [] });
+    const prompt =
+      "A wiry man in his fifties in navy overalls kneels by a burst pipe. Hard overhead light picks out the water.";
+    expect(stripNegatedSentences(prompt)).toEqual({ prompt, stripped: [] });
   });
 
   it("does not touch a word that merely contains no/not as a substring", () => {
-    const prompt = "a piano in the corner, notebook on the desk";
-    expect(stripNegatedPhrases(prompt)).toEqual({ prompt, stripped: [] });
+    const prompt = "A piano stands in the corner. A notebook lies open on the desk.";
+    expect(stripNegatedSentences(prompt)).toEqual({ prompt, stripped: [] });
+  });
+
+  it("reports what it removed, so the log can name it", () => {
+    const { stripped } = stripNegatedSentences("A bare wall. Nothing hangs on it.");
+    expect(stripped).toEqual(["Nothing hangs on it."]);
   });
 });
 
@@ -531,7 +707,7 @@ describe("runCharacterImages", () => {
     const project = projectWithStory(mode);
     const job = enqueue(db, { type: "elements", projectId: project.id });
     await runElements(
-      stubContext(db, job, { llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)] }),
+      stubContext(db, job, { llm: RUN }),
     );
     return project;
   }
@@ -639,7 +815,7 @@ describe("runCharacterImages", () => {
     const elements = enqueue(db, { type: "elements", projectId: project.id });
     await runElements(
       stubContext(db, elements, {
-        llm: [{ json: { characters: [] } }, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)],
+        llm: [{ json: { characters: [] } }, ...RUN.slice(1)],
       }),
     );
 
@@ -749,7 +925,7 @@ describe("runSceneImages", () => {
     const project = projectWithStory(mode);
     const job = enqueue(db, { type: "elements", projectId: project.id });
     await runElements(
-      stubContext(db, job, { llm: [CAST, BEATS, sceneDetail(1), sceneDetail(2), sceneDetail(3)] }),
+      stubContext(db, job, { llm: RUN }),
     );
     return project;
   }
@@ -810,10 +986,10 @@ describe("runSceneImages", () => {
       .all()
       .find((c) => c.name === "second")!;
 
-    const target = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()[0]!;
-    db.update(scenes)
+    const target = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all()[0]!;
+    db.update(sceneShots)
       .set({ imageAssetId: null, characterIds: [cast[0]!.id, second.id] })
-      .where(eq(scenes.id, target.id))
+      .where(eq(sceneShots.id, target.id))
       .run();
 
     const multi = enqueue(db, { type: "scene_images", projectId: project.id });
@@ -823,7 +999,7 @@ describe("runSceneImages", () => {
     expect(multiRequests[0]!.references).toHaveLength(2);
   });
 
-  it("generates one image per scene and stores each as an asset", async () => {
+  it("generates one image per shot, not per scene, and stores each as an asset", async () => {
     const project = await elementsDone();
     const job = enqueue(db, { type: "scene_images", projectId: project.id });
 
@@ -835,9 +1011,69 @@ describe("runSceneImages", () => {
       }),
     );
 
-    expect(requests).toHaveLength(3);
-    const rows = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all();
-    expect(rows.every((s) => s.imageAssetId)).toBe(true);
+    // Three scenes, six shots — the whole point of M9.
+    expect(requests).toHaveLength(SHOT_COUNT);
+    const shots = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all();
+    expect(shots.every((shot) => shot.imageAssetId)).toBe(true);
+  });
+
+  // A shot with nobody in frame — an insert of a hand, a detail of a wall —
+  // costs ~51s against a referenced frame's ~142s (F12, F30). Making that
+  // cheap is why `elements.shot` asks for the cast visible in *this* frame.
+  it("sends no references for a shot with nobody in it", async () => {
+    const project = await portraitsDone();
+    db.update(sceneShots)
+      .set({ characterIds: [] })
+      .where(eq(sceneShots.projectId, project.id))
+      .run();
+
+    const job = enqueue(db, { type: "scene_images", projectId: project.id });
+    const requests: Record<string, unknown>[] = [];
+    await runSceneImages(stubContext(db, job, { onImageRequest: (r) => requests.push(r) }));
+
+    expect(requests.every((request) => (request.references as string[]).length === 0)).toBe(true);
+  });
+
+  // F30: references cost ~130s each and sd-api's 600s job timeout hard-fails
+  // at about five, so the budget is capped below whatever a workflow claims.
+  it("caps a crowded shot at the measured reference budget", async () => {
+    const project = await portraitsDone();
+    const extra = ["b", "c", "d", "e"].map((name) => {
+      db.insert(characters)
+        .values({
+          projectId: project.id,
+          name,
+          description: "another",
+          refInputName: `uploaded-${name}.png`,
+        })
+        .run();
+      return db
+        .select()
+        .from(characters)
+        .where(eq(characters.projectId, project.id))
+        .all()
+        .find((c) => c.name === name)!;
+    });
+    const cast = db.select().from(characters).where(eq(characters.projectId, project.id)).all();
+
+    db.update(sceneShots)
+      .set({ characterIds: cast.map((c) => c.id) })
+      .where(eq(sceneShots.projectId, project.id))
+      .run();
+    expect(extra).toHaveLength(4);
+
+    const job = enqueue(db, { type: "scene_images", projectId: project.id });
+    const requests: Record<string, unknown>[] = [];
+    const logs: [string, string | undefined][] = [];
+    await runSceneImages(
+      stubContext(db, job, {
+        onImageRequest: (r) => requests.push(r),
+        onLog: (message, level) => logs.push([message, level]),
+      }),
+    );
+
+    expect(requests[0]!.references).toHaveLength(3);
+    expect(logs.some(([, level]) => level === "warn")).toBe(true);
   });
 
   it("asks for the configured source frame size", async () => {
@@ -871,7 +1107,7 @@ describe("runSceneImages", () => {
     expect(requests[0]!.negativePrompt).toContain(imageStyleOf(project).negativePrompt);
   });
 
-  it("wraps the scene prompt in the image style's prefix and suffix", async () => {
+  it("wraps the shot prompt in the image style's prefix and suffix", async () => {
     const project = await elementsDone();
     const job = enqueue(db, { type: "scene_images", projectId: project.id });
 
@@ -882,7 +1118,7 @@ describe("runSceneImages", () => {
     expect(requests[0]!.prompt).toMatch(/shallow depth of field$/);
   });
 
-  it("skips scenes that already have an image", async () => {
+  it("skips shots that already have an image", async () => {
     const project = await elementsDone();
 
     const first = enqueue(db, { type: "scene_images", projectId: project.id });
@@ -904,18 +1140,18 @@ describe("runSceneImages", () => {
   // A per-scene redo clears just that scene's image; the direction supplied
   // with the job must land in that scene's prompt, between the base prompt
   // and the image style's suffix.
-  it("inserts a direction before the image style's suffix for a redone scene", async () => {
+  it("inserts a direction before the image style's suffix for a redone shot", async () => {
     const project = await elementsDone();
     const first = enqueue(db, { type: "scene_images", projectId: project.id });
     await runSceneImages(stubContext(db, first));
 
-    const target = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()[0]!;
-    db.update(scenes).set({ imageAssetId: null }).where(eq(scenes.id, target.id)).run();
+    const target = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all()[0]!;
+    db.update(sceneShots).set({ imageAssetId: null }).where(eq(sceneShots.id, target.id)).run();
 
     const job = enqueue(db, {
       type: "scene_images",
       projectId: project.id,
-      payload: { sceneId: target.id, direction: "storm clouds overhead" },
+      payload: { shotId: target.id, direction: "storm clouds overhead" },
     });
 
     const requests: Record<string, unknown>[] = [];
@@ -931,26 +1167,26 @@ describe("runSceneImages", () => {
 
   // BUG-6: a "redo image" click on one scene must not cascade into
   // voiceover generation behind the user's back.
-  it("does not enqueue the next stage after a sceneId-scoped redo", async () => {
-    // The other scenes' images are faked in directly rather than by running
+  it("does not enqueue the next stage after a shotId-scoped redo", async () => {
+    // The other shots' images are faked in directly rather than by running
     // `scene_images` unscoped first — that pass would itself legitimately
     // cascade to `voiceover` and mask the regression this test guards.
     const project = await elementsDone();
-    const rows = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all();
+    const rows = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all();
     const [target, ...rest] = rows;
-    for (const scene of rest) {
+    for (const shot of rest) {
       const asset = db
         .insert(assets)
         .values({ kind: "image", path: "/tmp/fake.png", mimeType: "image/png", bytes: 1 })
         .returning()
         .all()[0]!;
-      db.update(scenes).set({ imageAssetId: asset.id }).where(eq(scenes.id, scene.id)).run();
+      db.update(sceneShots).set({ imageAssetId: asset.id }).where(eq(sceneShots.id, shot.id)).run();
     }
 
     const job = enqueue(db, {
       type: "scene_images",
       projectId: project.id,
-      payload: { sceneId: target!.id },
+      payload: { shotId: target!.id },
     });
     await runSceneImages(stubContext(db, job));
 
@@ -964,10 +1200,10 @@ describe("runSceneImages", () => {
     const job = enqueue(db, { type: "scene_images", projectId: project.id });
     await runSceneImages(stubContext(db, job, { images: [Buffer.from("real-png-bytes")] }));
 
-    const scene = db.select().from(scenes).where(eq(scenes.projectId, project.id)).get()!;
-    expect(scene.imageAssetId).toBeTruthy();
+    const shot = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).get()!;
+    expect(shot.imageAssetId).toBeTruthy();
 
-    const stored = db.select().from(assets).where(eq(assets.id, scene.imageAssetId!)).get()!;
+    const stored = db.select().from(assets).where(eq(assets.id, shot.imageAssetId!)).get()!;
     expect(fs.readFileSync(stored.path).toString()).toBe("real-png-bytes");
     expect(stored.bytes).toBe("real-png-bytes".length);
   });
@@ -1012,10 +1248,9 @@ describe("runSceneImages", () => {
       .where(eq(characters.projectId, project.id))
       .all()
       .find((c) => c.name === "second")!;
-    const target = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()[0]!;
-    db.update(scenes)
+    db.update(sceneShots)
       .set({ characterIds: [cast[0]!.id, second.id] })
-      .where(eq(scenes.id, target.id))
+      .where(eq(sceneShots.projectId, project.id))
       .run();
 
     const job = enqueue(db, { type: "scene_images", projectId: project.id });

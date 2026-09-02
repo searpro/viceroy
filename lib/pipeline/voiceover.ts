@@ -1,6 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import { readAsset, storeAsset } from "../assets";
-import { assets, scenes, subtitleCues, voiceovers } from "../db/schema";
+import { assets, sceneShots, scenes, subtitleCues, voiceovers } from "../db/schema";
 import { enqueue } from "../queue";
 import {
   awaitReview,
@@ -11,7 +11,7 @@ import {
   setStage,
   type StageContext,
 } from "./context";
-import { alignWords, buildCues, splitWords } from "./align";
+import { alignWords, buildCues, splitWords, type AlignedWord } from "./align";
 
 /**
  * Stage 7 — the whole narration, spoken once.
@@ -178,6 +178,7 @@ export async function runSubtitleAlign(ctx: StageContext): Promise<void> {
   ctx.db.delete(subtitleCues).where(eq(subtitleCues.projectId, projectId)).run();
 
   let cueIndex = 0;
+  let timedShots = 0;
   for (const { scene, range } of ranges) {
     const cues = buildCues(aligned, range);
     if (cues.length === 0) continue;
@@ -197,17 +198,21 @@ export async function runSubtitleAlign(ctx: StageContext): Promise<void> {
       )
       .run();
 
-    // Where this scene's image sits on the timeline.
+    // Where this scene's narration sits on the timeline.
     ctx.db
       .update(scenes)
       .set({ startMs: cues[0]!.startMs, endMs: cues[cues.length - 1]!.endMs })
       .where(eq(scenes.id, scene.id))
       .run();
+
+    timedShots += timeShots(ctx.db, scene.id, range.from, aligned);
   }
 
   setStage(ctx.db, projectId, "subtitle_align");
   ctx.progress(1);
-  ctx.log(`${cueIndex} caption cue(s) across ${sceneRows.length} scene(s)`);
+  ctx.log(
+    `${cueIndex} caption cue(s) and ${timedShots} shot window(s) across ${sceneRows.length} scene(s)`,
+  );
 
   if (project.mode === "manual") {
     awaitReview(ctx.db, projectId);
@@ -215,6 +220,48 @@ export async function runSubtitleAlign(ctx: StageContext): Promise<void> {
     return;
   }
   enqueue(ctx.db, { type: "render", projectId });
+}
+
+/**
+ * Place a scene's shots on the timeline, from the words each one covers.
+ *
+ * This is the whole point of `scene_shots` storing a word range rather than a
+ * duration. The ~150 wpm estimate that decided how many shots a scene has is
+ * an estimate and will be wrong; the words themselves have been timed against
+ * the real audio by this point, so a shot's window is measured, not scaled.
+ * A scene that speaks slower than predicted gets proportionally longer shots
+ * rather than shots that have slid off the narration — which is the failure
+ * mode findings F1 and F5 were both opened for.
+ *
+ * `sceneStart` is where this scene's words begin in the whole narration;
+ * `startWord`/`endWord` are relative to the scene, so the two compose.
+ *
+ * Returns how many shots were placed. Deliberately tolerant of a shot whose
+ * range falls outside the aligned words — a scene re-split after alignment
+ * would leave one — because the alternative is failing the caption stage over
+ * a picture, and captions are the thing that must not break.
+ */
+export function timeShots(
+  db: StageContext["db"],
+  sceneId: string,
+  sceneStart: number,
+  aligned: AlignedWord[],
+): number {
+  const shots = db.select().from(sceneShots).where(eq(sceneShots.sceneId, sceneId)).all();
+
+  let placed = 0;
+  for (const shot of shots) {
+    const first = aligned[sceneStart + shot.startWord];
+    const last = aligned[sceneStart + shot.endWord];
+    if (!first || !last) continue;
+
+    db.update(sceneShots)
+      .set({ startMs: first.startMs, endMs: last.endMs })
+      .where(eq(sceneShots.id, shot.id))
+      .run();
+    placed++;
+  }
+  return placed;
 }
 
 /** Slowest and fastest plausible narration, in words per minute. */

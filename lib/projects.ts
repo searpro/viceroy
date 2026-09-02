@@ -21,6 +21,7 @@ import {
   projects,
   props,
   renders,
+  sceneShots,
   scenes,
   shotListItems,
   storyboardPanels,
@@ -577,6 +578,14 @@ export const regenerateSchema = z.object({
   ttsInstruct: z.string().trim().max(1000).optional(),
   /** Scopes an "elements" or "scene_images" redo to one scene. */
   sceneId: z.string().optional(),
+  /**
+   * Scopes an "elements" or "scene_images" redo to one shot of one scene (M9).
+   *
+   * Narrower than `sceneId`, and the one a user reaches for most: re-rolling
+   * one picture out of a scene's five, without re-cutting the scene or
+   * spending the other four frames again.
+   */
+  shotId: z.string().optional(),
   /** Scopes a "character_images" or "casting" redo to one character. */
   characterId: z.string().optional(),
   /** Scopes a "storyboards" redo to one panel (M7.1 PR-D0). */
@@ -678,6 +687,14 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
       .run();
   },
   scene_images: (db, projectId) => {
+    // Both, because both can hold a picture: a project covered since M9 keeps
+    // its frames on `scene_shots`, and one finished before it keeps a single
+    // still on the scene. Clearing only one would leave a redo that appears to
+    // do nothing on whichever shape this project happens to be.
+    db.update(sceneShots)
+      .set({ imageAssetId: null })
+      .where(eq(sceneShots.projectId, projectId))
+      .run();
     db.update(scenes).set({ imageAssetId: null }).where(eq(scenes.projectId, projectId)).run();
   },
   // Nulled rather than deleted, to keep `ttsInstruct`: a user who redirected
@@ -695,6 +712,12 @@ const DISCARD: Record<InvalidationStage, (db: Db, projectId: string) => void> = 
     db.update(scenes)
       .set({ startMs: null, endMs: null })
       .where(eq(scenes.projectId, projectId))
+      .run();
+    // A shot's window is derived from the same aligned words as a cue, so it
+    // goes stale at exactly the same moment (M9).
+    db.update(sceneShots)
+      .set({ startMs: null, endMs: null })
+      .where(eq(sceneShots.projectId, projectId))
       .run();
   },
   render: (db, projectId) => {
@@ -965,7 +988,12 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
   }
 
   const scoped =
-    input.sceneId ?? input.characterId ?? input.panelId ?? input.locationId ?? input.propId;
+    input.sceneId ??
+    input.shotId ??
+    input.characterId ??
+    input.panelId ??
+    input.locationId ??
+    input.propId;
 
   // A scoped redo touches exactly one row and skips the downstream cascade, so
   // an id belonging to a different project would quietly clear that project's
@@ -984,12 +1012,46 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
     // `nextStep` walks straight past `scene_images` — so the redo the user
     // asked for never reaches the frame they were looking at.
     db.update(scenes)
-      .set({ imagePrompt: null, storyboard: null, imageAssetId: null })
+      .set({ visualBrief: null, imagePrompt: null, storyboard: null, imageAssetId: null })
       .where(eq(scenes.id, input.sceneId))
       .run();
+    // The shots go with the brief, rather than being re-prompted under it.
+    // A redone brief can change how long the scene reads as taking and what is
+    // in it, so the coverage is re-planned from scratch — keeping the old rows
+    // would pin the new scene to the old scene's shot count.
+    db.delete(sceneShots).where(eq(sceneShots.sceneId, input.sceneId)).run();
+  }
+  if (input.target === "elements" && input.shotId) {
+    // Narrower than the scene redo above: the word range, the shot type and
+    // the scene's brief all stay, so the picture is re-planned in the same
+    // slot rather than the scene being re-cut around it.
+    const cleared = db
+      .update(sceneShots)
+      .set({ storyboard: null, imagePrompt: null, imageAssetId: null })
+      .where(and(eq(sceneShots.id, input.shotId), eq(sceneShots.projectId, projectId)))
+      .returning()
+      .all();
+    if (cleared.length === 0) {
+      throw new Error(`No such shot on this project: ${input.shotId}`);
+    }
   }
   if (input.target === "scene_images" && input.sceneId) {
+    db.update(sceneShots)
+      .set({ imageAssetId: null })
+      .where(eq(sceneShots.sceneId, input.sceneId))
+      .run();
     db.update(scenes).set({ imageAssetId: null }).where(eq(scenes.id, input.sceneId)).run();
+  }
+  if (input.target === "scene_images" && input.shotId) {
+    const cleared = db
+      .update(sceneShots)
+      .set({ imageAssetId: null })
+      .where(and(eq(sceneShots.id, input.shotId), eq(sceneShots.projectId, projectId)))
+      .returning()
+      .all();
+    if (cleared.length === 0) {
+      throw new Error(`No such shot on this project: ${input.shotId}`);
+    }
   }
   if (input.target === "character_images" && input.characterId) {
     // A redo on a previously-uploaded character (a "revert to generated")
@@ -1093,6 +1155,7 @@ export function regenerate(db: Db, projectId: string, input: z.infer<typeof rege
       ...(input.direction ? { direction: input.direction } : {}),
       ...(input.ttsInstruct ? { ttsInstruct: input.ttsInstruct } : {}),
       ...(input.sceneId ? { sceneId: input.sceneId } : {}),
+      ...(input.shotId ? { shotId: input.shotId } : {}),
       ...(input.characterId ? { characterId: input.characterId } : {}),
       ...(input.panelId ? { panelId: input.panelId } : {}),
       ...(input.locationId ? { locationId: input.locationId } : {}),

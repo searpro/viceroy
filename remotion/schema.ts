@@ -18,7 +18,10 @@ export type CaptionStyle = z.infer<typeof captionStyleSchema>;
 export const storyVideoSchema = z.object({
   /** Filenames inside the staging directory Remotion is bundled against. */
   audioSrc: z.string(),
-  scenes: z.array(
+  // One entry per picture on screen. Named `shots` since M9: a scene is a span
+  // of narration covered by several of these, and a pre-M9 project's single
+  // scene still arrives here as a one-shot scene rather than as a second shape.
+  shots: z.array(
     z.object({
       src: z.string(),
       startMs: z.number(),
