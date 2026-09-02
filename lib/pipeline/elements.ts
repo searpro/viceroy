@@ -379,12 +379,16 @@ export async function runElements(ctx: StageContext): Promise<void> {
   // mirroring the guard `runSceneImages` already applies.
   const jobDirection = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction : "";
   const jobSceneId = typeof ctx.job.payload.sceneId === "string" ? ctx.job.payload.sceneId : undefined;
+  // M9's narrowest redo: one shot's prompt, without re-cutting its scene.
+  const jobShotId = typeof ctx.job.payload.shotId === "string" ? ctx.job.payload.shotId : undefined;
 
   // The heading travels with the value: rendering "Additional direction…"
   // above an empty slot on every non-redo run leaves the model a labelled
   // blank to fill in.
-  const directionFor = (sceneId: string): string => {
-    const steer = jobDirection && (!jobSceneId || jobSceneId === sceneId) ? jobDirection : "";
+  const directionFor = (sceneId: string, shotId?: string): string => {
+    const scoped =
+      (!jobSceneId || jobSceneId === sceneId) && (!jobShotId || (shotId !== undefined && jobShotId === shotId));
+    const steer = jobDirection && scoped ? jobDirection : "";
     return steer ? `\nAdditional direction from the writer for this redo:\n${steer}` : "";
   };
 
@@ -407,7 +411,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
             // the wrapper — "richly saturated" into a ", desaturated colour"
             // suffix was the observed case (BUG-008).
             imageStyleGuidance: imageStyle.renderGuidance,
-            direction: directionFor(scene.id),
+            direction: jobShotId ? "" : directionFor(scene.id),
             groundingInstruction: grounding,
           }),
         },
@@ -539,7 +543,7 @@ export async function runElements(ctx: StageContext): Promise<void> {
             sceneGuidance: narrativeStyle.sceneGuidance,
             imageStyleGuidance: imageStyle.renderGuidance,
             priorShots,
-            direction: directionFor(scene.id),
+            direction: directionFor(scene.id, shot.id),
             groundingInstruction: grounding,
           }),
         },
@@ -574,20 +578,25 @@ export async function runElements(ctx: StageContext): Promise<void> {
     ctx.log(`Scene ${scene.index + 1} shot ${shot.index + 1}/${plannedShots.length} written`);
   }
 
-  // `stage` records how far the project has got, so a one-scene redo on a
-  // finished project must not report it back at `elements`.
-  if (!jobSceneId) setStage(ctx.db, projectId, "elements");
+  // `stage` records how far the project has got, so a one-scene or one-shot
+  // redo on a finished project must not report it back at `elements`.
+  if (!jobSceneId && !jobShotId) setStage(ctx.db, projectId, "elements");
 
   if (project.mode === "manual") {
     awaitReview(ctx.db, projectId);
     ctx.log("Stopping for review (manual mode)");
     return;
   }
-  // A `sceneId`-scoped job is a user-requested redo of one scene's prompt,
-  // not the stage completing its own pending list — advancing past it would
-  // fire the whole downstream chain (portraits, images, voiceover...) for a
-  // click that only asked for one prompt back (BUG-6).
-  if (jobSceneId) return;
+  // A `sceneId`- or `shotId`-scoped job is a user-requested redo of one
+  // prompt, not the stage completing its own pending list — advancing past it
+  // would fire the whole downstream chain (portraits, images, voiceover...)
+  // for a click that only asked for one prompt back (BUG-6).
+  //
+  // `shotId` was missed when M9 added it: the schema, the API and
+  // `runSceneImages` all learned the new scope, and this one guard did not, so
+  // re-rolling a single shot's prompt walked the stage back and re-ran the
+  // entire pipeline. Caught by the first real run, not by a test.
+  if (jobSceneId || jobShotId) return;
   // Portraits before shots: shot images reference them, so this order is
   // load-bearing rather than incidental. See docs/adr/0001.
   enqueue(ctx.db, { type: "character_images", projectId });

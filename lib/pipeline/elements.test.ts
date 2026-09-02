@@ -585,6 +585,68 @@ describe("runElements", () => {
     );
   });
 
+  // BUG-6's class, reintroduced by M9 and caught by the first real run: the
+  // schema, the API and `runSceneImages` all learned about `shotId` and this
+  // guard did not, so re-rolling one shot's prompt walked the stage back and
+  // re-ran the whole pipeline behind the user.
+  it("does not enqueue the next stage after a shotId-scoped redo", async () => {
+    const project = projectWithStory();
+    const first = enqueue(db, { type: "elements", projectId: project.id });
+    await runElements(stubContext(db, first, { llm: RUN }));
+
+    const target = db.select().from(sceneShots).where(eq(sceneShots.projectId, project.id)).all()[0]!;
+    db.update(sceneShots).set({ imagePrompt: null }).where(eq(sceneShots.id, target.id)).run();
+    db.update(projects).set({ stage: "complete" }).where(eq(projects.id, project.id)).run();
+
+    // Snapshot first: the initial unscoped run legitimately enqueued
+    // `character_images` itself, so the assertion is that the scoped redo adds
+    // nothing, not that the queue is empty of it.
+    const job = enqueue(db, {
+      type: "elements",
+      projectId: project.id,
+      payload: { shotId: target.id },
+    });
+    const before = listJobs(db, { projectId: project.id }).map((j) => j.id);
+    await runElements(stubContext(db, job, { llm: [shotPrompt(9)] }));
+
+    const added = listJobs(db, { projectId: project.id }).filter((j) => !before.includes(j.id));
+    expect(added).toHaveLength(0);
+    // And it must not report a finished project back at `elements`.
+    expect(db.select().from(projects).where(eq(projects.id, project.id)).get()!.stage).toBe("complete");
+  });
+
+  it("steers only the redone shot, and leaves the scene's brief out of it", async () => {
+    const project = projectWithStory();
+    const first = enqueue(db, { type: "elements", projectId: project.id });
+    await runElements(stubContext(db, first, { llm: RUN }));
+
+    const shots = db
+      .select()
+      .from(sceneShots)
+      .where(eq(sceneShots.projectId, project.id))
+      .all()
+      .sort((a, b) => a.index - b.index);
+    db.update(sceneShots)
+      .set({ imagePrompt: null })
+      .where(eq(sceneShots.projectId, project.id))
+      .run();
+
+    const job = enqueue(db, {
+      type: "elements",
+      projectId: project.id,
+      payload: { shotId: shots[1]!.id, direction: "from much closer" },
+    });
+
+    const prompts: Record<string, unknown>[] = [];
+    await runElements(
+      stubContext(db, job, { llm: [shotPrompt(9)], onChatJsonRequest: (r) => prompts.push(r) }),
+    );
+
+    const contents = prompts.map((p) => (p.messages as { content: string }[])[0]!.content);
+    const steered = contents.filter((c) => c.includes("from much closer"));
+    expect(steered).toHaveLength(1);
+  });
+
   it("carries on when the story has no characters in it", async () => {
     const project = projectWithStory();
     const job = enqueue(db, { type: "elements", projectId: project.id });
