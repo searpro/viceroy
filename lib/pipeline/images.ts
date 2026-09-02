@@ -83,6 +83,31 @@ export function negativePromptFor(
 }
 
 /**
+ * Wrap a shot's prose prompt in the image style's rendering register.
+ *
+ * The wrapper is comma-separated tags and stays that way: it is shared with
+ * the character portraits and with every Development-chain image stage, all of
+ * which still speak tags, and it is a *register* — grade, stock, lighting
+ * quality — which tags express perfectly well. M9 changed the format of the
+ * body, not of the frame around it.
+ *
+ * The only thing that had to give is the seam. A prose prompt ends in a full
+ * stop, and appending ", desaturated colour, 35mm" to that yields ". ,", so
+ * the trailing stop is dropped where a suffix follows and the register reads
+ * as a continuation of the sentence instead of debris after it. The stored
+ * prompt keeps its punctuation; this is only how it is composed.
+ */
+export function composeShotPrompt(
+  style: { promptPrefix: string; promptSuffix: string },
+  prompt: string,
+  direction: string,
+): string {
+  const tail = `${direction}${style.promptSuffix}`;
+  const body = tail ? prompt.trim().replace(/[.\s]+$/, "") : prompt;
+  return `${style.promptPrefix}${body}${tail}`;
+}
+
+/**
  * How many reference portraits one generation may carry, whatever the
  * workflow advertises.
  *
@@ -218,7 +243,7 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
 
     const bytes = await backend.generate(
       {
-        prompt: `${imageStyle.promptPrefix}${shot.imagePrompt}${direction}${imageStyle.promptSuffix}`,
+        prompt: composeShotPrompt(imageStyle, shot.imagePrompt, direction),
         negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
         width: sourceSize.width,
         height: sourceSize.height,

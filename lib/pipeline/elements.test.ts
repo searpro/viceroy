@@ -8,7 +8,13 @@ import { assets, characters, imageStyles, projects, providers, sceneShots, scene
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
 import { runElements, stripNegatedSentences } from "./elements";
-import { filterLiveRefs, negativePromptFor, runCharacterImages, runSceneImages } from "./images";
+import {
+  composeShotPrompt,
+  filterLiveRefs,
+  negativePromptFor,
+  runCharacterImages,
+  runSceneImages,
+} from "./images";
 import { stubContext } from "./test-support";
 
 let db: Db;
@@ -1264,6 +1270,31 @@ describe("runSceneImages", () => {
 
     expect(requests[0]!.references).toEqual(["live.png"]);
     expect(logs.some((l) => l.includes("no longer available"))).toBe(true);
+  });
+});
+
+// M9 — the wrapper stays comma-separated tags (it is shared with the portraits
+// and every Development-chain image stage, and a rendering register is what
+// tags are good at); only the seam between prose and tags had to change.
+describe("composeShotPrompt", () => {
+  const style = { promptPrefix: "documentary photograph, ", promptSuffix: ", 35mm, film grain" };
+
+  it("drops the prose's final stop so the register reads as a continuation", () => {
+    expect(composeShotPrompt(style, "A man kneels by a burst pipe.", "")).toBe(
+      "documentary photograph, A man kneels by a burst pipe, 35mm, film grain",
+    );
+  });
+
+  it("puts a direction between the prompt and the register", () => {
+    const composed = composeShotPrompt(style, "A man kneels by a burst pipe.", ", storm overhead");
+    expect(composed).toContain(", storm overhead, 35mm");
+    expect(composed.indexOf("storm overhead")).toBeLessThan(composed.indexOf("film grain"));
+  });
+
+  it("leaves the prompt's own punctuation alone when nothing follows it", () => {
+    expect(composeShotPrompt({ promptPrefix: "", promptSuffix: "" }, "A man kneels.", "")).toBe(
+      "A man kneels.",
+    );
   });
 });
 
