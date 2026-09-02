@@ -1,4 +1,4 @@
-import { SdApiHttp } from "./client";
+import { SdApiHttp, SdFormData } from "./client";
 
 /**
  * ASR word offsets come back in the MODEL's sample rate, not the audio file's.
@@ -29,20 +29,15 @@ export type SpeechResult = {
   durationMs: number;
 };
 
-export type SpeechJob = {
-  id: string;
-  status: "queued" | "running" | "completed" | "failed" | "cancelled";
-  progress: number;
-  result?: { audio_path?: string; audio_url?: string } | undefined;
-  error?: { code: string; message: string } | undefined;
-};
-
 export type SpeechOptions = {
+  /**
+   * Narration is one synchronous call, so there is no intermediate signal to
+   * report — 0 on the way in, 1 on the way out. Deliberately not faked into a
+   * creeping bar: a progress number nothing measures is worse than none.
+   */
   onProgress?: (progress: number) => void;
-  /** Called between polls; returning true abandons the job and cancels it upstream. */
+  /** Checked before the request is issued; mid-flight cancellation is `signal`. */
   shouldAbort?: () => boolean;
-  pollIntervalMs?: number;
-  timeoutMs?: number;
   signal?: AbortSignal;
 };
 
@@ -86,56 +81,30 @@ export function wavDurationMs(buffer: Buffer): number | null {
 export class AudioClient {
   constructor(private readonly http: SdApiHttp) {}
 
-  async createSpeechJob(params: {
-    model: string;
-    text: string;
-    instruct?: string | undefined;
-  }): Promise<SpeechJob> {
-    return this.http.postJson<SpeechJob>("/v1/jobs/audio", {
-      model: params.model,
-      // Pepper's field names, not viceroy's: `input` and `instructions`.
-      input: params.text,
-      ...(params.instruct ? { instructions: params.instruct } : {}),
-    });
-  }
-
-  async getSpeechJob(id: string): Promise<SpeechJob> {
-    return this.http.json<SpeechJob>(`/v1/jobs/${id}`);
-  }
-
-  async cancelSpeechJob(id: string): Promise<void> {
-    await this.http.request(`/v1/jobs/${id}`, { method: "DELETE" }).catch(() => undefined);
-  }
-
-  /** Fetch a generated output, e.g. from `result.audio_url`. */
-  async fetchOutput(nameOrUrl: string): Promise<Buffer> {
-    const route = nameOrUrl.startsWith("/v1/")
-      ? nameOrUrl
-      : `/v1/outputs/${encodeURIComponent(nameOrUrl)}`;
-    const response = await this.http.request(route);
-    return Buffer.from(await response.arrayBuffer());
-  }
-
   /**
-   * Generate speech with voice design, through the job queue.
+   * Generate narration with voice design.
    *
-   * Voice design used to require `POST /v1/audio/tasks/run`, because
-   * `/v1/audio/speech` accepted an `instruct` field and silently ignored it
-   * (finding F2). Pepper has since removed the task runner outright — it now
-   * 404s with "unknown endpoint" — and renamed the field to `instructions`,
-   * which both remaining endpoints honour. Re-measured on
-   * qwen3-tts-voicedesign: "a high-pitched young girl" and "a deep, gravelly
-   * older man" give 343 Hz and 80 Hz median F0 here, so the instruction is
-   * genuinely reaching the model. F2's workaround is therefore superseded.
+   * Through `POST /v1/audio/tasks/run`, and specifically NOT through the
+   * dedicated `POST /v1/audio/speech`, even though sd-api's own route
+   * documentation says voice-design models take `instruct` there. They do not.
+   * sd-api forwards the body to audiocpp_server unmodified, and
+   * audiocpp_server's OpenAI-shape endpoint drops the field — the same trap
+   * sd-api itself documents one route down, where `words_out` on
+   * `/v1/audio/transcriptions` only works by proxying to the task runner.
    *
-   * The queued route is chosen over the synchronous `/v1/audio/speech` because
-   * a full narration takes ~6 minutes (finding F18), and holding a connection
-   * open that long is precisely what cost this project four silent failures in
-   * finding F19. Polling also gives abort a checkpoint, matching how images
-   * are generated.
+   * Measured on qwen3-tts-voicedesign, same sentence, opposite instructions
+   * (finding F2, re-confirmed 2026-09-02):
    *
-   * Pepper persists the clip and returns a URL rather than base64 inline, so
-   * the bytes are fetched in a second call.
+   *   /v1/audio/tasks/run   "high-pitched young girl" 249.0 Hz | "deep,
+   *                         gravelly older man" 84.4 Hz  — separated, correct
+   *   /v1/audio/speech      107.4 Hz | 183.9 Hz — unrelated to the instruction,
+   *                         and backwards
+   *
+   * Duration is measured from the returned WAV rather than read from
+   * `timing.audio_duration_ms`. The two agree today (3040 ms against 3040 ms),
+   * but this number feeds the caption drift guard, and that guard exists
+   * precisely to catch a duration that is not the length of the audio — so it
+   * is measured, not trusted. See findings F1.
    */
   async speech(
     params: {
@@ -145,61 +114,79 @@ export class AudioClient {
     },
     options: SpeechOptions = {},
   ): Promise<SpeechResult> {
-    const pollIntervalMs = options.pollIntervalMs ?? 2000;
-    const timeoutMs = options.timeoutMs ?? 30 * 60_000;
-    const deadline = Date.now() + timeoutMs;
+    if (options.shouldAbort?.()) throw new Error("Narration aborted");
+    options.onProgress?.(0);
 
-    const job = await this.createSpeechJob(params);
+    const payload = await this.http.json<{
+      audio?: unknown;
+      timing?: { audio_duration_ms?: unknown };
+    }>("/v1/audio/tasks/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      signal: options.signal ?? null,
+      body: JSON.stringify({
+        model: params.model,
+        request: {
+          task: "vdes",
+          text: params.text,
+          ...(params.instruct ? { instruct: params.instruct } : {}),
+        },
+      }),
+    });
 
-    while (true) {
-      if (options.shouldAbort?.()) {
-        await this.cancelSpeechJob(job.id);
-        throw new Error("Narration aborted");
-      }
-      if (Date.now() > deadline) {
-        await this.cancelSpeechJob(job.id);
-        throw new Error(`Narration timed out after ${timeoutMs}ms`);
-      }
-
-      const current = await this.getSpeechJob(job.id);
-      options.onProgress?.(current.progress);
-
-      if (current.status === "completed") {
-        const output = current.result?.audio_url ?? current.result?.audio_path;
-        if (!output) throw new Error(`Job ${job.id} completed without audio`);
-
-        const audio = await this.fetchOutput(
-          output.startsWith("/v1/") ? output : basename(output),
-        );
-        const durationMs = wavDurationMs(audio);
-        if (durationMs === null || durationMs <= 0) {
-          throw new Error("Narration came back as something other than a readable WAV");
-        }
-        return { audio, durationMs };
-      }
-      if (current.status === "failed" || current.status === "cancelled") {
-        throw new Error(
-          `Narration ${current.status}: ${current.error?.message ?? "unknown error"}`,
-        );
-      }
-
-      await sleep(pollIntervalMs, options.signal);
+    if (typeof payload.audio !== "string" || payload.audio.length === 0) {
+      throw new Error("Voice-design response carried no audio");
     }
+
+    const audio = Buffer.from(payload.audio, "base64");
+    const durationMs = wavDurationMs(audio);
+    if (durationMs === null || durationMs <= 0) {
+      throw new Error("Narration came back as something other than a readable WAV");
+    }
+
+    options.onProgress?.(1);
+    return { audio, durationMs };
   }
 
   /**
-   * Word-level transcription, from the narration bytes themselves.
+   * Upload narration and get back the absolute server-side path sd-api needs.
    *
-   * This used to take two calls and a detour. `words_out` only worked on the
-   * JSON body form of `/v1/audio/transcriptions`, which takes a path on the
-   * server's own filesystem, so the narration was uploaded as a *voice
-   * reference* purely to be handed back an absolute path — finding F3.
+   * `words_out` only works on the JSON body form of
+   * `/v1/audio/transcriptions`, which takes a path rather than an upload — and
+   * a bare output name resolves against sd-api's own working directory and
+   * 404s. The multipart form, which would accept the bytes directly, cannot
+   * do word timings at all: sd-api's own route description says so outright,
+   * because there is no server-local path to hand the task runner.
    *
-   * Pepper now exposes the word-timed transcript directly, taking the clip as
-   * a raw body, so neither the upload nor the path survives. F3 is superseded:
-   * the plain `/v1/audio/transcriptions` still answers with text only, because
-   * audio.cpp's own endpoint does, and `words` come from the task runner
-   * behind this route.
+   * Going through voice-refs is what squares that circle, and it also means
+   * viceroy never has to share a filesystem with sd-api. See findings F3.
+   */
+  async uploadAudio(audio: Buffer, filename = "narration.wav"): Promise<string> {
+    const form = new SdFormData();
+    form.append("file", new Blob([new Uint8Array(audio)], { type: "audio/wav" }), filename);
+
+    const payload = await this.http.json<{ voiceRefs?: { path?: string }[] }>(
+      "/v1/audio-voice-refs",
+      { method: "POST", body: form as never },
+    );
+
+    const path = payload.voiceRefs?.[0]?.path;
+    if (!path) throw new Error("Audio upload response missing voiceRefs[0].path");
+    return path;
+  }
+
+  /**
+   * Word-level transcription of the narration.
+   *
+   * Two calls, and the detour is not incidental: `words_out` is only honoured
+   * on the JSON body form of `/v1/audio/transcriptions`, which names a file on
+   * sd-api's own filesystem, so the clip is uploaded as a *voice reference*
+   * purely to be handed back an absolute path. Finding F3, and sd-api's route
+   * description states the same constraint in its own words.
+   *
+   * The upload lives in here rather than in the calling stage because knowing
+   * sd-api's traps is this client's whole job — a stage asking for "the words
+   * in this audio" should not have to know that it takes two round trips.
    *
    * `expectedDurationMs` is not optional in spirit: it is the drift guard. If
    * the offsets' sample rate ever changes, alignment must fail loudly here
@@ -211,17 +198,16 @@ export class AudioClient {
     expectedDurationMs?: number | undefined;
     signal?: AbortSignal;
   }): Promise<{ words: TranscribedWord[]; text: string }> {
+    const serverPath = await this.uploadAudio(params.audio);
+
     const data = await this.http.json<{
       text?: string;
       words?: { word?: string; start_sample?: number; end_sample?: number }[];
-    }>(`/v1/audio/transcriptions/words?model=${encodeURIComponent(params.model)}`, {
+    }>("/v1/audio/transcriptions", {
       method: "POST",
-      // A raw body, not a form: Pepper writes what it receives straight to the
-      // file audio.cpp opens, so a multipart envelope would land inside the
-      // WAV. It refuses multipart outright rather than store a corrupt clip.
-      headers: { "content-type": "application/octet-stream" },
+      headers: { "content-type": "application/json" },
       signal: params.signal ?? null,
-      body: new Uint8Array(params.audio) as never,
+      body: JSON.stringify({ model: params.model, audio: serverPath, words_out: true }),
     });
 
     const words: TranscribedWord[] = (data.words ?? [])
@@ -257,21 +243,4 @@ export class AudioClient {
   }
 }
 
-function basename(filePath: string): string {
-  return filePath.split("/").pop() ?? filePath;
-}
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(new Error("aborted"));
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new Error("aborted"));
-      },
-      { once: true },
-    );
-  });
-}

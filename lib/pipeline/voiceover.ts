@@ -22,9 +22,12 @@ import { alignWords, buildCues, splitWords, type AlignedWord } from "./align";
  * verbatim spans of the narration: concatenating them reproduces exactly the
  * text that was reviewed.
  *
- * Voice design goes through Pepper's audio job queue, which honours the
- * instruction and survives the ~6 minutes a full narration takes. See the note
- * on `AudioClient.speech`, which supersedes finding F2.
+ * Voice design goes through sd-api's task runner, which is the only path that
+ * applies the instruction — `/v1/audio/speech` accepts it and drops it
+ * (finding F2, re-measured 2026-09-02). The call is synchronous and a full
+ * narration takes ~6 minutes (F18), which is why the sd-api client carries its
+ * own undici agent with the timeouts lifted clear of Node's 300s default
+ * (F19). See the note on `AudioClient.speech`.
  */
 export async function runVoiceover(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
