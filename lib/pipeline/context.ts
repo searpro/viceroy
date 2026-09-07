@@ -15,8 +15,25 @@ import {
 } from "../db/schema";
 import type { ProviderKind } from "../providers";
 import type { Job } from "../queue";
-import type { LlmClient, SdApi } from "../sdapi";
+import type { ChatClient, SdApi } from "../sdapi";
 import type { ImageBackend, VideoBackend } from "../backends/types";
+
+/**
+ * The parts of a resolved "llm" provider row a client needs.
+ *
+ * `baseUrl`/`apiKey` are what the client is built from; the rest is identity,
+ * recorded on every traced call so a trace row can say which provider row
+ * produced it. Optional so a test double does not have to invent them —
+ * every real caller passes a whole `providers` row and satisfies this by
+ * construction.
+ */
+export type LlmProviderRef = {
+  id?: string;
+  name?: string;
+  model?: string;
+  baseUrl: string;
+  apiKey: string | null;
+};
 
 export type StageContext = {
   db: Db;
@@ -45,7 +62,7 @@ export type StageContext = {
    * it, instead of reaching for `sdApi.llm` and silently talking to the local
    * host with a model name it may not recognise.
    */
-  llmClient: (provider: { baseUrl: string; apiKey: string | null }) => LlmClient;
+  llmClient: (provider: LlmProviderRef) => ChatClient;
   config: Config;
   job: Job;
   log: (message: string, level?: "debug" | "info" | "warn" | "error") => void;

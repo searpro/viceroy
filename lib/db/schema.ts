@@ -42,6 +42,15 @@ export const narrativeStyles = sqliteTable("narrative_styles", {
     .$type<{ key: string; description: string }[]>(),
   targetSceneCount: integer("target_scene_count").notNull().default(8),
   targetWordCount: integer("target_word_count").notNull().default(320),
+  // How long one image may hold before the picture stops changing (M9). A
+  // scene is narration, not imagery: these decide how many shots cover it.
+  // They live on the style rather than in config because pacing is an
+  // editorial choice — a bedtime story and a true-crime short want different
+  // answers — and because on this hardware the target is also the single
+  // biggest lever on how long a project takes to generate (F12, F30).
+  shotTargetMs: integer("shot_target_ms").notNull().default(2500),
+  shotMinMs: integer("shot_min_ms").notNull().default(1500),
+  shotMaxMs: integer("shot_max_ms").notNull().default(3500),
   isBuiltin: integer("is_builtin", { mode: "boolean" }).notNull().default(false),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -476,6 +485,25 @@ export const characterReferenceImages = sqliteTable(
   ],
 );
 
+// The coverage vocabulary a scene's shots are drawn from (M9). Closed, because
+// it is what the prompt writer is told not to repeat within a scene — an open
+// string would let the model return "medium shot", "medium", and "mid shot"
+// and believe it had varied anything.
+//
+// `insert` and `detail` earn their place by being the shots that need no face:
+// a hand on a doorknob costs ~51s where a face costs ~142s (F30), so having
+// names for them is also what keeps a project's generation time survivable.
+export const SHOT_TYPES = [
+  "establishing",
+  "wide",
+  "medium",
+  "close_up",
+  "over_shoulder",
+  "insert",
+  "detail",
+] as const;
+export type ShotType = (typeof SHOT_TYPES)[number];
+
 export const scenes = sqliteTable(
   "scenes",
   {
@@ -489,7 +517,15 @@ export const scenes = sqliteTable(
     // as soon as their narration span is known, then filled in one at a time.
     // A run that dies at scene 6 of 8 resumes rather than restarting.
     storyboard: text("storyboard"),
+    // Superseded by `visualBrief` + `sceneShots.imagePrompt` in M9, and kept
+    // because migrations are append-only and a project finished before M9 has
+    // no shots to derive: it is what `runRender` falls back to so an old
+    // project still opens and still re-renders.
     imagePrompt: text("image_prompt"),
+    // The scene's look in prose — setting, time of day, light, palette, who is
+    // present (M9). Written once and handed to every shot in the scene, which
+    // is what stops five shots of one moment disagreeing about where they are.
+    visualBrief: text("visual_brief"),
     // A verbatim span of the approved narration, never separately written text
     // — concatenating these must reproduce the story exactly, because the
     // voiceover is generated from the whole thing in one shot.
@@ -509,6 +545,65 @@ export const scenes = sqliteTable(
     updatedAt: updatedAt(),
   },
   (t) => [unique("scenes_project_index_uq").on(t.projectId, t.index)],
+);
+
+// M9 — a scene is a span of narration; a shot is one picture covering part of
+// it. Split out rather than widened onto `scenes` because the relationship is
+// genuinely one-to-many and because the two rows answer different questions: a
+// scene owns narration (which the voiceover reproduces verbatim), a shot owns
+// a frame.
+//
+// Named `scene_shots`, not `shots`: M8's film pipeline has its own shot
+// concept and M7 already sidestepped the same collision by calling its table
+// `shot_list_items`. Three tables that all mean "shot" is bad enough without
+// two of them competing for the bare name.
+export const sceneShots = sqliteTable(
+  "scene_shots",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => scenes.id, { onDelete: "cascade" }),
+    index: integer("index").notNull(),
+
+    // Inclusive word offsets into this scene's `voiceoverScript`, NOT into the
+    // whole narration. Scene-relative means re-splitting one scene cannot
+    // renumber another, and it survives a scene's own words being re-timed.
+    //
+    // Storing a range rather than a duration is the load-bearing choice: the
+    // ~150 wpm estimate decides how many shots there are, and nothing else.
+    // Where each one actually sits comes from the aligned words it covers
+    // (`runSubtitleAlign`), so a scene that speaks slower than predicted gets
+    // longer shots rather than shots that have drifted off the audio.
+    startWord: integer("start_word").notNull(),
+    endWord: integer("end_word").notNull(),
+
+    shotType: text("shot_type", { enum: SHOT_TYPES }).notNull().default("medium"),
+    // Nullable for the same reason the scene fields are: rows are written as
+    // soon as their word range is known, then filled one at a time, so a run
+    // that dies at shot 40 of 70 resumes instead of restarting.
+    storyboard: text("storyboard"),
+    imagePrompt: text("image_prompt"),
+    // Who is in *this* frame — a subset of the scene's cast, and what decides
+    // which reference portraits condition the generation (ADR 0001).
+    characterIds: text("character_ids", { mode: "json" }).notNull().$type<string[]>().default([]),
+    imageAssetId: text("image_asset_id").references(() => assets.id),
+
+    // Filled by subtitle alignment, from the first and last word this shot
+    // covers. Null until then.
+    startMs: integer("start_ms"),
+    endMs: integer("end_ms"),
+
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique("scene_shots_scene_index_uq").on(t.sceneId, t.index),
+    index("scene_shots_project_idx").on(t.projectId),
+  ],
 );
 
 // Shared by the narrative pipeline's story_eval/story_revise loop (story.ts)
@@ -1285,6 +1380,109 @@ export const jobLogs = sqliteTable(
   (t) => [index("job_logs_job_idx").on(t.jobId)],
 );
 
+/* ------------------------------------------------------------- trace calls */
+
+export const TRACE_KINDS = ["llm", "image", "video"] as const;
+export type TraceKind = (typeof TRACE_KINDS)[number];
+
+/**
+ * One row per generation request actually sent to a provider.
+ *
+ * `job_logs` records what a stage *said* it was doing ("Generating concept
+ * with qwen3-30b"); this records what it *sent*. Those are not the same
+ * thing, and only the second one is debuggable: when a stage returns garbage
+ * the question is always whether the template was wrong, a variable was
+ * empty, the wrong provider row got resolved, or the model simply answered
+ * badly — and a log line saying "generating" distinguishes none of them.
+ *
+ * Deliberately one table across `llm`/`image`/`video` rather than three.
+ * Every kind answers the same four questions — which prompt, from which
+ * template, against which provider configuration, and what came back — and a
+ * single table is what lets one screen show a project's whole generation
+ * history in the order it happened.
+ *
+ * Rows cascade away with their job, exactly as `job_logs` do. That means
+ * "clear finished" on the Jobs screen prunes traces too, which is the only
+ * retention policy this needs: the trace of a job you have deleted is not
+ * evidence of anything.
+ */
+export const traceCalls = sqliteTable(
+  "trace_calls",
+  {
+    id: id(),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    // Denormalised from the job rather than joined: the trace screen filters
+    // and groups by both on every render, and the job row is one more table
+    // to reach through for two values that can never change after the fact.
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    stage: text("stage").notNull(),
+    kind: text("kind", { enum: TRACE_KINDS }).notNull(),
+    /** Which call on the client this was — "chat", "chatJson", "generate". */
+    operation: text("operation").notNull(),
+    /**
+     * Position within the job, from 1.
+     *
+     * A stage that calls the model once per scene produces a dozen rows a
+     * second apart, and `created_at` at millisecond resolution is not a
+     * reliable tiebreaker for ordering them.
+     */
+    sequence: integer("sequence").notNull(),
+    /** The job's attempt count when the call went out, so a retry is legible. */
+    attempt: integer("attempt").notNull().default(1),
+
+    providerId: text("provider_id"),
+    providerName: text("provider_name").notNull().default(""),
+    adapter: text("adapter").notNull().default(""),
+    model: text("model").notNull().default(""),
+    baseUrl: text("base_url").notNull().default(""),
+    /** The path under `base_url` the request went to, where one applies. */
+    requestPath: text("request_path").notNull().default(""),
+
+    /**
+     * Prompt-template keys whose rendered text appears in this request, and
+     * the variables each was rendered with.
+     *
+     * Attribution is by containment, not equality, because prompts are
+     * composed: an image prompt is `imageStyle.promptPrefix` + a rendered
+     * template + an optional redo direction + `imageStyle.promptSuffix`. The
+     * span between the affixes is the part a prompt template can change, and
+     * knowing which key owns it is the difference between editing the right
+     * template and guessing.
+     */
+    templates: text("templates", { mode: "json" })
+      .notNull()
+      .$type<{ key: string; vars: Record<string, string> }[]>()
+      .default([]),
+
+    /** The request in Viceroy's own vocabulary — messages, or an ImageRequest. */
+    request: text("request", { mode: "json" }).notNull().$type<Record<string, unknown>>().default({}),
+    /**
+     * What the adapter resolved the request into: the bound ComfyUI workflow
+     * variables, or the sd-api payload. This is the "configuration" half —
+     * steps, cfg, sampler and seed live in `providers.default_params` and in
+     * the workflow graph, never in the stage, so a request that looks right
+     * here can still have been generated at four steps.
+     */
+    resolved: text("resolved", { mode: "json" }).$type<Record<string, unknown>>(),
+
+    /** The model's raw text, before JSON extraction. Null for image/video. */
+    response: text("response"),
+    /** Token counts, byte counts — whatever the kind can say about the result. */
+    responseMeta: text("response_meta", { mode: "json" }).$type<Record<string, unknown>>(),
+
+    ok: integer("ok", { mode: "boolean" }).notNull().default(true),
+    error: text("error"),
+    durationMs: integer("duration_ms").notNull().default(0),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("trace_calls_job_idx").on(t.jobId, t.sequence),
+    index("trace_calls_project_idx").on(t.projectId, t.createdAt),
+  ],
+);
+
 export const providers = sqliteTable(
   "providers",
   {
@@ -1473,6 +1671,7 @@ export const schema = {
   assets,
   jobs,
   jobLogs,
+  traceCalls,
   providers,
   workflows,
   promptTemplates,

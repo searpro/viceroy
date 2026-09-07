@@ -103,16 +103,24 @@ export function ProjectView({ initial, basePixels }: { initial: Detail; basePixe
     setBusy(false);
   }
 
-  async function regenerateScene(
-    sceneId: string,
+  /**
+   * Re-roll part of the narrative pipeline's coverage.
+   *
+   * `scope` is what makes this one function rather than two: a `sceneId` redo
+   * re-briefs the scene and re-cuts every shot in it, a `shotId` redo touches
+   * one picture. With a shot costing minutes of generation (F30), the
+   * difference between the two is the difference between a click and an hour.
+   */
+  async function regenerateCoverage(
+    scope: { sceneId: string } | { shotId: string },
     target: "elements" | "scene_images",
-    sceneDirection: string,
+    scopeDirection: string,
   ) {
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ target, sceneId, direction: sceneDirection.trim() || undefined }),
+      body: JSON.stringify({ target, ...scope, direction: scopeDirection.trim() || undefined }),
     });
     const response = await fetch(`/api/projects/${detail.project.id}`, { cache: "no-store" });
     if (response.ok) setDetail(await response.json());
@@ -120,20 +128,33 @@ export function ProjectView({ initial, basePixels }: { initial: Detail; basePixe
   }
 
   /**
-   * Re-roll one Development-chain image — a storyboard panel, or a location or
-   * prop's concept-art plate (M7.1 PR-D0).
+   * Re-roll one Development-chain image — a storyboard panel, a location or
+   * prop's concept-art plate (M7.1 PR-D0), or a cast member's portrait
+   * (BUG-29).
    *
    * No `redoConfirmation` prompt, unlike the unscoped `regenerate` above: a
    * scoped redo skips the downstream cascade entirely, so there is nothing to
    * warn about losing. It replaces one picture and leaves the row's prompt and
    * cinematography fields alone.
+   *
+   * A cast portrait routes to "casting", *not* to `regenerateCharacter`'s
+   * "character_images": that is the narrative pipeline's stage, and on a
+   * dev-chain project it would draw the portrait from an `appearanceTag` the
+   * Development chain never populates, skip the character's reference pack
+   * entirely, and cascade-invalidate through `INVALIDATION_CHAIN` rather than
+   * replacing the one picture the user asked about.
    */
   async function regenerateDevItem(
-    scope: { panelId: string } | { locationId: string } | { propId: string },
+    scope:
+      | { panelId: string }
+      | { locationId: string }
+      | { propId: string }
+      | { characterId: string },
     itemDirection: string,
     wardrobeVariantId?: string | null,
   ) {
-    const target = "panelId" in scope ? "storyboards" : "concept_art";
+    const target =
+      "panelId" in scope ? "storyboards" : "characterId" in scope ? "casting" : "concept_art";
     setBusy(true);
     await fetch(`/api/projects/${detail.project.id}`, {
       method: "POST",
@@ -328,8 +349,9 @@ export function ProjectView({ initial, basePixels }: { initial: Detail; basePixe
         detail={detail}
         active={active}
         busy={busy}
-        onRedoPrompt={(sceneId, dir) => regenerateScene(sceneId, "elements", dir)}
-        onRedoImage={(sceneId, dir) => regenerateScene(sceneId, "scene_images", dir)}
+        onRedoScene={(sceneId, dir) => regenerateCoverage({ sceneId }, "elements", dir)}
+        onRedoShotPrompt={(shotId, dir) => regenerateCoverage({ shotId }, "elements", dir)}
+        onRedoShotImage={(shotId, dir) => regenerateCoverage({ shotId }, "scene_images", dir)}
         onGenerateMissingImages={() => regenerate("scene_images")}
         onContinue={continueProject}
         showContinue={currentPipelineStep === "scenes"}

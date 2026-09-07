@@ -3,7 +3,7 @@ import { asc, eq } from "drizzle-orm";
 import { createTestDb } from "../db/testing";
 import { seed } from "../db/seed";
 import type { Db } from "../db/client";
-import { characters, projects, scenes, subtitleCues, voiceovers } from "../db/schema";
+import { characters, projects, sceneShots, scenes, subtitleCues, voiceovers } from "../db/schema";
 import { claim, enqueue, listJobs } from "../queue";
 import { createProject } from "../projects";
 import {
@@ -233,6 +233,81 @@ describe("runSubtitleAlign", () => {
     for (let i = 1; i < rows.length; i++) {
       expect(rows[i]!.startMs!).toBeGreaterThanOrEqual(rows[i - 1]!.endMs!);
     }
+  });
+
+  // The property M9 rests on: a shot's window is measured from the words it
+  // covers, never scaled from the ~150 wpm estimate that decided how many
+  // shots there are. Getting this wrong is how the previous product shipped
+  // desynced subtitles twice (F1, F5).
+  it("times each shot from the aligned words it covers", async () => {
+    const project = await narrated();
+    // Cut each scene in half: two shots, split down the middle of its words.
+    for (const scene of db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()) {
+      const words = scene.voiceoverScript.split(/\s+/).length;
+      const middle = Math.floor(words / 2);
+      db.insert(sceneShots)
+        .values([
+          { projectId: project.id, sceneId: scene.id, index: 0, startWord: 0, endWord: middle - 1 },
+          { projectId: project.id, sceneId: scene.id, index: 1, startWord: middle, endWord: words - 1 },
+        ])
+        .run();
+    }
+
+    const job = enqueue(db, { type: "subtitle_align", projectId: project.id });
+    await runSubtitleAlign(stubContext(db, job, { transcript: heardNarration() }));
+
+    const shots = db
+      .select()
+      .from(sceneShots)
+      .where(eq(sceneShots.projectId, project.id))
+      .all()
+      .sort((a, b) => a.startMs! - b.startMs!);
+
+    expect(shots.every((shot) => shot.startMs !== null && shot.endMs !== null)).toBe(true);
+    // The transcript runs at a flat 400ms a word, so the boundaries are exact
+    // rather than approximately right.
+    expect(shots[0]!.startMs).toBe(0);
+    for (let i = 1; i < shots.length; i++) {
+      expect(shots[i]!.startMs!).toBe(shots[i - 1]!.endMs!);
+    }
+    expect(shots[shots.length - 1]!.endMs).toBe(NARRATION.split(" ").length * 400);
+  });
+
+  // Every shot's window lies inside its own scene's, or a picture is on screen
+  // over narration belonging to a different scene entirely.
+  it("keeps each shot inside its own scene's span", async () => {
+    const project = await narrated();
+    for (const scene of db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()) {
+      const words = scene.voiceoverScript.split(/\s+/).length;
+      db.insert(sceneShots)
+        .values({ projectId: project.id, sceneId: scene.id, index: 0, startWord: 0, endWord: words - 1 })
+        .run();
+    }
+
+    const job = enqueue(db, { type: "subtitle_align", projectId: project.id });
+    await runSubtitleAlign(stubContext(db, job, { transcript: heardNarration() }));
+
+    for (const scene of db.select().from(scenes).where(eq(scenes.projectId, project.id)).all()) {
+      const shots = db.select().from(sceneShots).where(eq(sceneShots.sceneId, scene.id)).all();
+      for (const shot of shots) {
+        expect(shot.startMs!).toBeGreaterThanOrEqual(scene.startMs!);
+        expect(shot.endMs!).toBeLessThanOrEqual(scene.endMs!);
+      }
+    }
+  });
+
+  // A pre-M9 project has no shots at all. Alignment must still produce cues
+  // and scene windows rather than failing over a table it finds empty.
+  it("aligns a project with no shots exactly as it always did", async () => {
+    const project = await narrated();
+    const job = enqueue(db, { type: "subtitle_align", projectId: project.id });
+    await runSubtitleAlign(stubContext(db, job, { transcript: heardNarration() }));
+
+    const rows = db.select().from(scenes).where(eq(scenes.projectId, project.id)).all();
+    expect(rows.every((s) => s.startMs !== null)).toBe(true);
+    expect(
+      db.select().from(subtitleCues).where(eq(subtitleCues.projectId, project.id)).all().length,
+    ).toBeGreaterThan(0);
   });
 
   it("passes the known duration so the drift guard can fire", async () => {

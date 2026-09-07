@@ -57,6 +57,15 @@ const NARRATIVE_STYLES = [
     ],
     targetSceneCount: 8,
     targetWordCount: 320,
+    // Stated explicitly on every built-in rather than left to the column
+    // default, because this is the knob a user reaches for first: it decides
+    // how often the picture changes, and on this hardware it is also what
+    // decides whether a project takes twenty minutes or three hours to
+    // generate (findings F12, F30). All three sit at the same values until
+    // there is a measured reason for one to differ.
+    shotTargetMs: 2500,
+    shotMinMs: 1500,
+    shotMaxMs: 3500,
   },
   {
     name: "Underdog Rise",
@@ -82,6 +91,9 @@ const NARRATIVE_STYLES = [
     ],
     targetSceneCount: 8,
     targetWordCount: 320,
+    shotTargetMs: 2500,
+    shotMinMs: 1500,
+    shotMaxMs: 3500,
   },
   {
     name: "Cautionary Tale",
@@ -106,6 +118,9 @@ const NARRATIVE_STYLES = [
     ],
     targetSceneCount: 8,
     targetWordCount: 320,
+    shotTargetMs: 2500,
+    shotMinMs: 1500,
+    shotMaxMs: 3500,
   },
 ];
 

@@ -7,7 +7,8 @@ import { ensureBrowser, renderMedia, selectComposition } from "@remotion/rendere
 import { storeAsset } from "../assets";
 import { captionStyleSchema, DEFAULT_CAPTION_STYLE, type CaptionStyle } from "../../remotion/schema";
 import type { Config } from "../config";
-import { assets, captionStyles, renders, scenes, subtitleCues, voiceovers } from "../db/schema";
+import type { Db } from "../db/client";
+import { assets, captionStyles, renders, sceneShots, scenes, subtitleCues, voiceovers } from "../db/schema";
 import {
   awaitReview,
   checkAbort,
@@ -50,6 +51,59 @@ export function resolveRenderDimensions(
   };
 }
 
+export type RenderShot = {
+  /** Staging-directory basename, without extension — also what an error names. */
+  label: string;
+  imageAssetId: string | null;
+  startMs: number | null;
+  endMs: number | null;
+};
+
+/**
+ * What goes on screen, in order — shots, or a pre-M9 project's scene stills.
+ *
+ * M9 made a scene a span of narration covered by several pictures, but
+ * migrations are append-only and a project finished before it has no shots to
+ * derive: its scenes carry the image and the timing directly. Falling back
+ * keeps that project openable and re-renderable rather than stranding it, and
+ * costs one branch — the shapes are the same three fields either way.
+ *
+ * The fallback is per project, not per scene. A half-covered project would be
+ * a bug in element extraction, and silently rendering it as a mixture would
+ * hide that behind a video that merely looks wrong.
+ */
+export function renderShots(
+  db: Db,
+  projectId: string,
+  sceneRows: (typeof scenes.$inferSelect)[],
+): RenderShot[] {
+  const rows = db.select().from(sceneShots).where(eq(sceneShots.projectId, projectId)).all();
+
+  if (rows.length === 0) {
+    return sceneRows.map((scene) => ({
+      label: `scene-${String(scene.index).padStart(2, "0")}`,
+      imageAssetId: scene.imageAssetId,
+      startMs: scene.startMs,
+      endMs: scene.endMs,
+    }));
+  }
+
+  const sceneIndexById = new Map(sceneRows.map((scene) => [scene.id, scene.index]));
+  return rows
+    .sort((a, b) => {
+      const byScene = (sceneIndexById.get(a.sceneId) ?? 0) - (sceneIndexById.get(b.sceneId) ?? 0);
+      return byScene !== 0 ? byScene : a.index - b.index;
+    })
+    .map((shot) => ({
+      label:
+        `scene-${String(sceneIndexById.get(shot.sceneId) ?? 0).padStart(2, "0")}` +
+        `-shot-${String(shot.index).padStart(2, "0")}`,
+      imageAssetId: shot.imageAssetId,
+      startMs: shot.startMs,
+      endMs: shot.endMs,
+    }));
+}
+
 const remotionEntry = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../remotion/index.ts",
@@ -86,16 +140,18 @@ export async function runRender(ctx: StageContext): Promise<void> {
 
   if (sceneRows.length === 0) throw new Error(`Project ${projectId} has no scenes`);
 
-  const untimed = sceneRows.filter((s) => s.startMs === null || s.endMs === null);
+  const shots = renderShots(ctx.db, projectId, sceneRows);
+
+  const untimed = shots.filter((shot) => shot.startMs === null || shot.endMs === null);
   if (untimed.length > 0) {
     throw new Error(
-      `${untimed.length} scene(s) have no timeline position — subtitle alignment has not run, ` +
+      `${untimed.length} shot(s) have no timeline position — subtitle alignment has not run, ` +
         `so there is nothing to say when each image should appear`,
     );
   }
-  const missingImages = sceneRows.filter((s) => !s.imageAssetId);
+  const missingImages = shots.filter((shot) => !shot.imageAssetId);
   if (missingImages.length > 0) {
-    throw new Error(`${missingImages.length} scene(s) have no image`);
+    throw new Error(`${missingImages.length} shot(s) have no image`);
   }
 
   const cues = ctx.db
@@ -114,12 +170,12 @@ export async function runRender(ctx: StageContext): Promise<void> {
   if (!audioAsset) throw new Error(`Narration asset ${voiceover.audioAssetId} is missing`);
   fs.copyFileSync(audioAsset.path, path.join(staging, "narration.wav"));
 
-  const stagedScenes = sceneRows.map((scene) => {
-    const asset = ctx.db.select().from(assets).where(eq(assets.id, scene.imageAssetId!)).get();
-    if (!asset) throw new Error(`Scene ${scene.index} references a missing image asset`);
-    const name = `scene-${String(scene.index).padStart(2, "0")}${path.extname(asset.path)}`;
+  const stagedShots = shots.map((shot) => {
+    const asset = ctx.db.select().from(assets).where(eq(assets.id, shot.imageAssetId!)).get();
+    if (!asset) throw new Error(`${shot.label} references a missing image asset`);
+    const name = `${shot.label}${path.extname(asset.path)}`;
     fs.copyFileSync(asset.path, path.join(staging, name));
-    return { src: name, startMs: scene.startMs!, endMs: scene.endMs! };
+    return { src: name, startMs: shot.startMs!, endMs: shot.endMs! };
   });
 
   const dimensions = resolveRenderDimensions(project, ctx.config);
@@ -151,7 +207,7 @@ export async function runRender(ctx: StageContext): Promise<void> {
 
     const inputProps = {
       audioSrc: "narration.wav",
-      scenes: stagedScenes,
+      shots: stagedShots,
       cues: cues.map((cue) => ({ text: cue.text, startMs: cue.startMs, endMs: cue.endMs })),
       durationMs: voiceover.durationMs,
       // Parsed, not passed through: a composition's zod schema documents
@@ -173,7 +229,7 @@ export async function runRender(ctx: StageContext): Promise<void> {
     const outputPath = path.join(staging, "video.mp4");
     ctx.log(
       `Rendering ${composition.width}x${composition.height} @ ${composition.fps}fps, ` +
-        `${composition.durationInFrames} frames`,
+        `${composition.durationInFrames} frames across ${stagedShots.length} shot(s)`,
     );
 
     await renderMedia({

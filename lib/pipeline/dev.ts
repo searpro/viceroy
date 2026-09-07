@@ -1513,6 +1513,21 @@ export async function runConceptArt(ctx: StageContext): Promise<void> {
   const jobPropId = typeof ctx.job.payload.propId === "string" ? ctx.job.payload.propId : undefined;
   const scoped = jobLocationId ?? jobPropId;
 
+  // BUG-30. A re-roll's direction is CONTENT, not rendering: "make it dusk",
+  // "more rust on the shutters" says what is physically in the plate, which is
+  // the same register as the entity's own description and Production Design
+  // Style's guidance. So it is appended to this template's output and stays
+  // *inside* Image Style's promptPrefix/promptSuffix — those are the rendering
+  // register and belong to the style, not to one job (ADR 0002, and this
+  // function's own doc comment above). Same placement and same `, `-joined
+  // shape `runCharacterImages` (images.ts) already uses for a scoped portrait
+  // redo. No scope test is needed around it the way images.ts needs one: the
+  // `pendingLocations`/`pendingProps` filters below already reduce a scoped
+  // job to the single named entity, so an unscoped whole-stage redo carrying
+  // direction applies it to every plate it draws, exactly as that stage does.
+  const direction = pendingDirection(ctx);
+  const directionPhrase = direction ? `, ${direction}` : "";
+
   const pendingLocations = locs.filter(
     (l) => !l.imageAssetId && (jobLocationId ? l.id === jobLocationId : !jobPropId),
   );
@@ -1536,6 +1551,7 @@ export async function runConceptArt(ctx: StageContext): Promise<void> {
         subjectDescription: `${location.name}, ${location.description}`,
         productionDesignGuidance: guidance,
       }) +
+      directionPhrase +
       `${imageStyle.promptSuffix}`;
 
     const bytes = await backend.generate(
@@ -1581,6 +1597,7 @@ export async function runConceptArt(ctx: StageContext): Promise<void> {
         subjectDescription: `${prop.name}, ${prop.description}`,
         productionDesignGuidance: guidance,
       }) +
+      directionPhrase +
       `${imageStyle.promptSuffix}`;
 
     const bytes = await backend.generate(
@@ -2753,6 +2770,23 @@ export async function runCasting(ctx: StageContext): Promise<void> {
     ? cast.filter((character) => character.id === jobCharacterId && !character.imageAssetId)
     : cast.filter((character) => !character.imageAssetId);
 
+  // BUG-29. A re-roll's direction is CONTENT — "older, grey at the temples"
+  // says what the person physically looks like, the same register as their
+  // own description — so it is appended to the rendered template and stays
+  // *inside* Image Style's promptPrefix/promptSuffix, which are the rendering
+  // register and belong to the style rather than to one job (ADR 0002). Same
+  // placement `runConceptArt` above and `runCharacterImages` (images.ts) use.
+  // It reaches the derived views too, not just the anchor: a scoped casting
+  // redo deletes the whole reference pack (`regenerate`, lib/projects.ts), so
+  // a direction applied only to the portrait would leave eight views
+  // describing the person the redo was asked to stop drawing. No scope test
+  // around it the way images.ts needs one — `pending` above and `packFor`
+  // below are already narrowed to the named character when the job carries
+  // one, so an unscoped whole-stage redo carrying direction applies it to the
+  // whole cast, exactly as that stage does.
+  const direction = pendingDirection(ctx);
+  const directionPhrase = direction ? `, ${direction}` : "";
+
   for (const [position, character] of pending.entries()) {
     checkAbort(ctx);
 
@@ -2774,6 +2808,7 @@ export async function runCasting(ctx: StageContext): Promise<void> {
       renderPrompt(ctx.db, "character.portrait", {
         characterDescription: visualDescription,
       }) +
+      directionPhrase +
       `${imageStyle.promptSuffix}`;
 
     ctx.log(`Generating portrait for ${character.name} (${position + 1}/${pending.length})`);
@@ -2924,6 +2959,7 @@ export async function runCasting(ctx: StageContext): Promise<void> {
           characterDescription: described,
           viewDetail: spec.detail,
         }) +
+        directionPhrase +
         `${imageStyle.promptSuffix}`;
 
       ctx.log(

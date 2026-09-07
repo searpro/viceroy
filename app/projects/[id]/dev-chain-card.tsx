@@ -10,10 +10,16 @@ import { ContinueBanner } from "./continue-banner";
 import { castingLockReason } from "./redo-warning";
 import { DEV_CHAIN_ORDER, DEV_STAGE_LABELS } from "./dev-stages";
 import { TimelineStep } from "./steps/timeline-step";
-import type { Detail } from "./detail-types";
+import { ACTIVE_JOB_STATUSES, type Detail } from "./detail-types";
 
 /** What a scoped Development-chain image redo names (M7.1 PR-D0). */
-export type DevItemScope = { panelId: string } | { locationId: string } | { propId: string };
+export type DevItemScope =
+  | { panelId: string }
+  | { locationId: string }
+  | { propId: string }
+  // A cast portrait, re-rolled through the dev chain's own "casting" stage
+  // rather than the narrative pipeline's "character_images" (BUG-29).
+  | { characterId: string };
 
 /**
  * The Development chain's review card (M7 PR1, generate/approve wiring added
@@ -136,18 +142,33 @@ function DevChainHistory({
   onPatchTimeline: (patch: Record<string, unknown>) => void;
   onPatchSegment: (segmentId: string, patch: Record<string, unknown>) => void;
 }) {
+  // A stage's own job being in flight keeps its section on screen while a
+  // redo has cleared the images that would otherwise prove the stage ran —
+  // without this, re-rolling the only cast portrait (or the only concept-art
+  // plate) makes the whole section vanish until the job lands.
+  const running = runningStages(detail);
   const byStage = new Map(detail.devArtifacts.map((row) => [row.stage, row]));
   const hasCharacters = detail.characters.length > 0;
   const hasWorld = Boolean(detail.worldBuilding?.content) || detail.locations.length > 0 || detail.props.length > 0;
   const hasContinuity = detail.continuityFacts.length > 0;
-  const hasConceptArt = [...detail.locations, ...detail.props].some((entity) => entity.imageAssetId);
+  const conceptArtSubjects = [...detail.locations, ...detail.props];
+  // The `running` half keeps the section up while a redo has cleared the only
+  // plate; the length guard stops it rendering an empty grid for a job that
+  // started before world-building produced anything to draw.
+  const hasConceptArt =
+    conceptArtSubjects.length > 0 &&
+    (conceptArtSubjects.some((entity) => entity.imageAssetId) || running.has("concept_art"));
   const hasStoryboards = detail.storyboardPanels.length > 0;
   const hasShotList = detail.shotListItems.length > 0;
   const hasPrevis = Boolean(detail.project.previsAssetId);
   const hasTimeline = Boolean(detail.timeline);
   // Same shape `hasConceptArt` uses for locations/props: a portrait, not just
-  // a cast row, is what makes this stage's own section worth showing.
-  const hasCasting = detail.characters.some((character) => character.imageAssetId);
+  // a cast row, is what makes this stage's own section worth showing — the
+  // cast rows themselves land at stage 3 (`runDevCharacters`), seventeen
+  // stages before this one.
+  const hasCasting =
+    detail.characters.length > 0 &&
+    (detail.characters.some((character) => character.imageAssetId) || running.has("casting"));
 
   const stagesWithContent = DEV_CHAIN_ORDER.filter((stage) => {
     if (stage === "characters") return hasCharacters;
@@ -210,11 +231,21 @@ function DevChainHistory({
               ) : stage === "continuity" ? (
                 <ContinuitySection detail={detail} onResolveContinuityFact={onResolveContinuityFact} />
               ) : stage === "concept_art" ? (
-                <ConceptArtSection detail={detail} busy={busy} onRedo={onRedoDevItem} />
+                <ConceptArtSection
+                  detail={detail}
+                  busy={busy}
+                  generating={running.has("concept_art")}
+                  onRedo={onRedoDevItem}
+                />
               ) : stage === "storyboards" ? (
-                <StoryboardsSection detail={detail} busy={busy} onRedo={onRedoDevItem} />
+                <StoryboardsSection
+                  detail={detail}
+                  busy={busy}
+                  generating={running.has("storyboards")}
+                  onRedo={onRedoDevItem}
+                />
               ) : stage === "shot_list" ? (
-                <ShotListSection detail={detail} />
+                <ShotListSection detail={detail} generating={running.has("shot_list")} />
               ) : stage === "previs" ? (
                 <PrevisSection detail={detail} />
               ) : stage === "timeline" ? (
@@ -225,7 +256,13 @@ function DevChainHistory({
                   onPatchSegment={onPatchSegment}
                 />
               ) : stage === "casting" ? (
-                <CastingSection detail={detail} onUnlockCasting={onUnlockCasting} />
+                <CastingSection
+                  detail={detail}
+                  busy={busy}
+                  generating={running.has("casting")}
+                  onUnlockCasting={onUnlockCasting}
+                  onRedo={onRedoDevItem}
+                />
               ) : (
                 <StageContent
                   content={byStage.get(stage)?.content ?? ""}
@@ -337,6 +374,49 @@ function WorldBuildingSection({ detail }: { detail: Detail }) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Which stages have a queued or running job right now.
+ *
+ * Read off `detail.jobs`, whose `type` is the stage name (`enqueue` in
+ * lib/projects.ts sets `type: input.target`). Deliberately stage-level rather
+ * than per-entity: the job payload that names the scoped location/prop/
+ * character is not serialized to the client, and telling "being redrawn" from
+ * "never drawn" does not need that precision.
+ */
+function runningStages(detail: Detail): Set<string> {
+  return new Set(
+    detail.jobs.filter((job) => ACTIVE_JOB_STATUSES.has(job.status)).map((job) => job.type),
+  );
+}
+
+/**
+ * What a thumbnail shows in place of an image it does not have.
+ *
+ * A scoped redo nulls the row's asset pointer *before* the job runs
+ * (`regenerate`, lib/projects.ts), so "no image" covers two different states
+ * and they must not look alike: a re-roll that renders as "not yet generated"
+ * — or, when the grid filtered these rows out entirely, as the tile silently
+ * disappearing — reads as the picture having been destroyed rather than
+ * redrawn. Same pulsing-amber idiom the jobs bar and the nav already use for
+ * work in flight.
+ */
+function MissingImage({
+  generating,
+  label = "not yet generated",
+}: {
+  generating: boolean;
+  /** Overridden where the grid already had its own wording for an empty tile. */
+  label?: string;
+}) {
+  if (!generating) return <span className="text-xs text-white/40">{label}</span>;
+  return (
+    <span className="flex items-center gap-2 text-xs text-amber-300">
+      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-300" />
+      generating
+    </span>
   );
 }
 
@@ -478,10 +558,12 @@ function RerollControl({
 function ConceptArtSection({
   detail,
   busy,
+  generating,
   onRedo,
 }: {
   detail: Detail;
   busy: boolean;
+  generating: boolean;
   onRedo: (scope: DevItemScope, direction: string) => void;
 }) {
   // Tagged on merge: a scoped redo has to name `locationId` or `propId`
@@ -489,7 +571,7 @@ function ConceptArtSection({
   const entities = [
     ...detail.locations.map((entity) => ({ entity, scope: { locationId: entity.id } as DevItemScope })),
     ...detail.props.map((entity) => ({ entity, scope: { propId: entity.id } as DevItemScope })),
-  ].filter(({ entity }) => entity.imageAssetId);
+  ];
 
   const aspect = aspectCss(detail.project.aspectRatio, detail.project.format);
 
@@ -497,12 +579,19 @@ function ConceptArtSection({
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
       {entities.map(({ entity, scope }) => (
         <figure key={entity.id} className="space-y-1.5">
-          <Frame aspect={aspect}>
-            <img
-              src={`/api/assets/${entity.imageAssetId}`}
-              alt={entity.name}
-              className="h-full w-full object-cover"
-            />
+          {/* Plates without an image are shown rather than filtered out: the
+              filter that used to drop them also dropped the one being
+              re-rolled, so a re-roll looked like the plate had been deleted. */}
+          <Frame aspect={aspect} className={entity.imageAssetId ? "" : "flex items-center justify-center"}>
+            {entity.imageAssetId ? (
+              <img
+                src={`/api/assets/${entity.imageAssetId}`}
+                alt={entity.name}
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <MissingImage generating={generating} />
+            )}
           </Frame>
           <figcaption className="text-xs text-white/60">{entity.name}</figcaption>
           <RerollControl busy={busy} onRedo={(direction) => onRedo(scope, direction)} />
@@ -520,10 +609,12 @@ function ConceptArtSection({
 function StoryboardsSection({
   detail,
   busy,
+  generating,
   onRedo,
 }: {
   detail: Detail;
   busy: boolean;
+  generating: boolean;
   onRedo: (scope: DevItemScope, direction: string, wardrobeVariantId?: string | null) => void;
 }) {
   // Labelled by character, since a variant named "Field kit" says nothing on
@@ -547,7 +638,7 @@ function StoryboardsSection({
                 className="h-full w-full object-cover"
               />
             ) : (
-              <span className="text-xs text-white/40">not yet generated</span>
+              <MissingImage generating={generating} />
             )}
           </Frame>
           <figcaption className="text-xs text-white/60">
@@ -576,7 +667,7 @@ function StoryboardsSection({
 // keyframe/motion two-register split surfaced as two separate, truncated
 // lines rather than one — the acceptance bar this stage exists to clear is
 // that the two registers stay visibly distinct, never baked into one field.
-function ShotListSection({ detail }: { detail: Detail }) {
+function ShotListSection({ detail, generating }: { detail: Detail; generating: boolean }) {
   const items = [...detail.shotListItems].sort(compareByScene);
   const aspect = aspectCss(detail.project.aspectRatio, detail.project.format);
   return (
@@ -591,7 +682,7 @@ function ShotListSection({ detail }: { detail: Detail }) {
                 className="h-full w-full object-cover"
               />
             ) : (
-              <span className="text-xs text-white/40">no keyframe</span>
+              <MissingImage generating={generating} label="no keyframe" />
             )}
           </Frame>
           <figcaption className="text-xs text-white/60">
@@ -649,12 +740,22 @@ function PrevisSection({ detail }: { detail: Detail }) {
 // `castingLockReason`'s message, nothing more.
 function CastingSection({
   detail,
+  busy,
+  generating,
   onUnlockCasting,
+  onRedo,
 }: {
   detail: Detail;
+  busy: boolean;
+  generating: boolean;
   onUnlockCasting: (characterId: string) => void;
+  onRedo: (scope: DevItemScope, direction: string) => void;
 }) {
-  const cast = detail.characters.filter((character) => character.imageAssetId);
+  // Not filtered to those with a portrait, unlike before: a redo clears
+  // `imageAssetId` first, so filtering here removed the very portrait the
+  // user had just asked to re-roll (and, for a one-character project, the
+  // whole section with it).
+  const cast = detail.characters;
   return (
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
       {cast.map((character) => {
@@ -664,12 +765,19 @@ function CastingSection({
             {/* Square, not the project's shape: a cast portrait is reference
                 material generated at `REFERENCE_IMAGE_*` (512x512) and never
                 reaches a frame — see that env var's own comment in config.ts. */}
-            <Frame aspect="1 / 1">
-              <img
-                src={`/api/assets/${character.imageAssetId}`}
-                alt={character.name}
-                className="h-full w-full object-cover"
-              />
+            <Frame
+              aspect="1 / 1"
+              className={character.imageAssetId ? "" : "flex items-center justify-center"}
+            >
+              {character.imageAssetId ? (
+                <img
+                  src={`/api/assets/${character.imageAssetId}`}
+                  alt={character.name}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <MissingImage generating={generating} />
+              )}
             </Frame>
             <figcaption className="text-xs text-white/60">{character.name}</figcaption>
             <span
@@ -685,7 +793,13 @@ function CastingSection({
                 {character.voiceDesignNotes}
               </p>
             )}
-            {lockReason && (
+            {/* The second half of "unlock, then redo" (`unlockCasting`'s own
+                doc comment, lib/projects.ts). Only one of the two shows at a
+                time, and the re-roll is the one gated on being unlocked:
+                `regenerate()` hard-refuses a locked character's portrait redo
+                server-side, so offering the control while locked would be a
+                button whose only outcome is an error (BUG-29). */}
+            {lockReason ? (
               <div>
                 <p className="text-[11px] text-amber-300">{lockReason}</p>
                 <button
@@ -695,6 +809,11 @@ function CastingSection({
                   Unlock
                 </button>
               </div>
+            ) : (
+              <RerollControl
+                busy={busy}
+                onRedo={(direction) => onRedo({ characterId: character.id }, direction)}
+              />
             )}
           </figure>
         );

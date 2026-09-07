@@ -17,6 +17,22 @@ const STORY_VARS = [
   { name: "sentenceCount", description: "How many numbered sentences there are" },
   { name: "sceneText", description: "The narration span belonging to this scene" },
   { name: "sceneDescription", description: "One-line summary of what this scene shows" },
+  {
+    name: "visualBrief",
+    description:
+      "The scene's look in prose — place, time of day, light, palette, materials. Every shot of the scene is written against it, which is what stops them disagreeing about where they are",
+  },
+  { name: "shotText", description: "The narration span belonging to this one shot" },
+  {
+    name: "shotType",
+    description:
+      "The coverage this shot is assigned: establishing, wide, medium, close_up, over_shoulder, insert or detail",
+  },
+  {
+    name: "priorShots",
+    description:
+      "The shots already written for this scene, so the next one does not repeat a framing the viewer has just seen",
+  },
   { name: "characters", description: "The cast, as name + appearance lines" },
   {
     name: "sceneGuidance",
@@ -497,8 +513,8 @@ Respond with a single JSON object, no prose around it:
   {
     key: "elements.scene",
     section: "Elements",
-    label: "Visualise a scene",
-    description: "Turns one scene's narration into a storyboard and an image prompt.",
+    label: "Brief a scene's look",
+    description: "Writes the scene's visual brief — the look every shot of it is drawn against.",
     variables: pick(
       "sceneText",
       "sceneDescription",
@@ -508,7 +524,11 @@ Respond with a single JSON object, no prose around it:
       "direction",
       "groundingInstruction",
     ),
-    template: `Design a single still image for one scene of a narrated video.
+    template: `Establish the look of one scene of a narrated video.
+
+This scene is covered by several images, not one. You are not writing any of
+them — you are writing the brief they are all drawn against, so that they read
+as one place rather than several.
 
 What the narrator says over this scene:
 {{sceneText}}
@@ -522,8 +542,8 @@ Cast (use these appearance descriptions verbatim if the character appears):
 The world this story takes place in:
 {{sceneGuidance}}
 
-How the finished image is rendered — the prompt you write must agree with this,
-not argue with it:
+How the finished images are rendered — the brief you write must agree with
+this, not argue with it:
 {{imageStyleGuidance}}
 {{groundingInstruction}}
 {{direction}}
@@ -531,29 +551,138 @@ not argue with it:
 Respond with a single JSON object, no prose around it:
 
 {
-  "storyboard": "<what the viewer sees: subject, action, setting, camera framing>",
-  "imagePrompt": "<the generation prompt: comma-separated visual phrases. State only what IS in the frame — never copy a negation like 'no X', 'without X' or 'not X' out of the narration above, even if the narration itself uses one>",
+  "storyboard": "<what happens in this scene, one line>",
+  "visualBrief": "<the look of the place, 40-70 words of plain prose>",
   "characters": ["<names from the cast who appear, or empty>"]
 }
 
-Rules for "imagePrompt":
-- describe only what is visible in one frozen moment
-- no narrative, no cause and effect, no words like "after" or "then"
+The "visualBrief" is the important field. Write it as ordinary English
+sentences, not as a list of tags. Cover, in this order:
+
+- **where this is** — the room or place, its size, its condition, what it is
+  made of
+- **when it is** — time of day, and how you can tell
+- **the light** — where it comes from, how hard or soft it is, what colour it
+  is, what it does to the surfaces it lands on
+- **the palette and the air** — the two or three colours that dominate, and
+  whether the air is clear, dusty, smoky, humid
+
+Rules:
+- describe the place, not the story. No cause and effect, no "after", no
+  "then", nothing about what anyone decides or feels
+- **state only what IS there.** Never write "no X", "without X" or "not X" —
+  there is no negation in an image generator, so "no windows" asks for windows
+- **never write a person's name** anywhere in the brief. The generator paints
+  a name it is given as literal text into the picture
+- **never name the frame shape.** No "9:16", no "vertical composition", no
+  "portrait orientation", no "tall frame" — the shape comes from the output
+  size, not from words
+
+Put the names of the characters who appear in the "characters" array. That is
+what the array is for — the brief itself never names anyone.`,
+  },
+  {
+    key: "elements.shot",
+    section: "Elements",
+    label: "Write one shot's image prompt",
+    description: "Turns one shot of a scene into a prose image-generation prompt.",
+    variables: pick(
+      "visualBrief",
+      "shotText",
+      "sceneText",
+      "shotType",
+      "characters",
+      "sceneGuidance",
+      "imageStyleGuidance",
+      "priorShots",
+      "direction",
+      "groundingInstruction",
+    ),
+    template: `Write the image prompt for ONE shot of a scene.
+
+The scene is covered by several shots. This is one of them. Its coverage has
+already been decided for you and is not yours to change:
+
+**Shot type: {{shotType}}**
+
+- establishing — the place itself, wide, taking in the whole space
+- wide — the figures small in their surroundings, the space still readable
+- medium — a person from about the waist up, the space behind them soft
+- close_up — a face filling much of the frame
+- over_shoulder — past one person's shoulder onto what they are looking at
+- insert — a hand, an object being handled, a screen, a page. **No face**
+- detail — a texture or a small part of the world, held close. **No face**
+
+The look of this scene, which this shot must agree with:
+{{visualBrief}}
+
+What the narrator says over THIS shot:
+{{shotText}}
+
+The whole scene, for context — do not illustrate all of it, only the line
+above:
+{{sceneText}}
+
+Cast (use these appearance descriptions verbatim if the character appears):
+{{characters}}
+
+The world this story takes place in:
+{{sceneGuidance}}
+
+How the finished image is rendered — the prompt you write must agree with
+this, not argue with it:
+{{imageStyleGuidance}}
+{{priorShots}}
+{{groundingInstruction}}
+{{direction}}
+
+Respond with a single JSON object, no prose around it:
+
+{
+  "storyboard": "<what the viewer sees in this shot, one line>",
+  "imagePrompt": "<the generation prompt: 60-100 words of plain prose>",
+  "characters": ["<names from the cast visible in THIS shot, or empty>"]
+}
+
+Write "imagePrompt" as ordinary English sentences — full sentences, not a
+comma-separated list of tags. Say all four of these, in this order:
+
+1. **Who or what is in the frame, and how they look.** Paste the cast
+   appearance description in verbatim, then say the thing a tag list cannot:
+   their **expression** and their **posture**. A set jaw, a mouth slightly
+   open, eyes fixed on something off to one side, shoulders dropped.
+2. **What they are doing**, frozen at one instant. One hand halfway to a
+   handle. Weight already shifted onto the front foot.
+3. **The light.** Where it comes from, whether it is hard or soft, what colour
+   it is, and what it does — which side of the face it lands on, what it
+   glints off, where it leaves shadow.
+4. **The background, and how deep it goes.** What is behind the subject, how
+   far away it is, and whether it is sharp or falling out of focus. Then the
+   camera: the shot size above, the angle it is taken from, and how the lens
+   renders it.
+
+Rules:
+- **one frozen moment.** No narrative, no cause and effect, no "after",
+  "then", "as", "while", "before". A picture cannot show a sequence
 - **never write a person's name.** Describe them by their appearance
-  description instead, pasted in verbatim. The image generator renders names
+  description instead, pasted in verbatim. The image generator renders a name
   as literal text painted into the picture — a bag labelled "HAL GRIFFIN"
 - **state only what IS in the frame.** Never write "no X", "without X" or
   "not X": there is no negation here, so "no fantasy elements" asks for
-  fantasy elements
-- keep the subject centred with vertical headroom, so it reads well once
-  cropped to a tall frame. **Never write the aspect ratio, or the words
-  "9:16", "vertical composition", "portrait orientation" or "tall frame"
-  themselves** — the frame shape comes from the image generator's output
-  size, not from words in the prompt, so naming it is not describing the
-  image, it is restating this rule
+  fantasy elements. Say what the empty space contains instead — bare wall,
+  open sky, dark water
+- **do not repeat a framing the previous shots already used.** This shot has
+  been given a different coverage for a reason
+- keep the subject centred with headroom above them, so the frame reads well
+  once cropped tall. **Never write the aspect ratio, or the words "9:16",
+  "vertical composition", "portrait orientation" or "tall frame"** — the
+  shape comes from the generator's output size, not from words in the prompt,
+  so naming it is not describing the image, it is restating this rule
 
-Put the names of the characters who appear in the "characters" array. That is
-what the array is for — the prompt itself describes them without naming them.`,
+Put the names of the characters visible in THIS shot in the "characters"
+array — not everyone in the scene. An insert of a hand on a doorknob has an
+empty array even if two people are in the room, and that is correct: it is
+what tells the pipeline this frame needs no reference portrait.`,
   },
   {
     key: "character.portrait",

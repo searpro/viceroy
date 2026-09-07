@@ -10,6 +10,7 @@ import {
   projects,
   props,
   renders,
+  sceneShots,
   scenes,
   shotListItems,
   storyboardPanels,
@@ -67,8 +68,34 @@ export function nextStep(db: Db, projectId: string): NextStep {
   if (sceneRows.length === 0) {
     return { kind: "run", type: "elements", reason: "no scenes have been extracted" };
   }
-  if (sceneRows.some((scene) => !scene.imagePrompt)) {
-    return { kind: "run", type: "elements", reason: "some scenes have no image prompt" };
+  // Two shapes are legal here. A project visualised before M9 has a scene-level
+  // `imagePrompt` and no `visualBrief`; one visualised after has the reverse,
+  // plus a row in `scene_shots` per picture. Either counts as "this scene has
+  // been visualised" — the alternative is re-running element extraction on
+  // every finished project the day M9 landed.
+  if (sceneRows.some((scene) => !scene.visualBrief && !scene.imagePrompt)) {
+    return { kind: "run", type: "elements", reason: "some scenes have not been visualised" };
+  }
+
+  const shotRows = db.select().from(sceneShots).where(eq(sceneShots.projectId, projectId)).all();
+  const coveredScenes = new Set(shotRows.map((shot) => shot.sceneId));
+
+  // A scene with no shots still needs covering — unless it is a pre-M9 project
+  // that already has every one of its single stills, which is left exactly as
+  // it is. Covering it would throw away pictures that already exist.
+  //
+  // Deliberately narrow: an *intact* pre-M9 project is preserved, and one that
+  // has lost an image is upgraded to shots instead, because at that point
+  // there is nothing left to preserve. That keeps this the only place in the
+  // pipeline that has to know the old shape — `runSceneImages` never sees it,
+  // and only `renderShots` needs a fallback, for viewing and re-rendering a
+  // finished project.
+  const legacy = sceneRows.every((scene) => !coveredScenes.has(scene.id) && scene.imageAssetId);
+  if (!legacy && sceneRows.some((scene) => !coveredScenes.has(scene.id))) {
+    return { kind: "run", type: "elements", reason: "some scenes have no shots" };
+  }
+  if (shotRows.some((shot) => !shot.imagePrompt)) {
+    return { kind: "run", type: "elements", reason: "some shots have no image prompt" };
   }
 
   const cast = db.select().from(characters).where(eq(characters.projectId, projectId)).all();
@@ -76,8 +103,11 @@ export function nextStep(db: Db, projectId: string): NextStep {
     return { kind: "run", type: "character_images", reason: "some characters have no portrait" };
   }
 
-  if (sceneRows.some((scene) => !scene.imageAssetId)) {
-    return { kind: "run", type: "scene_images", reason: "some scenes have no image" };
+  const imageless = legacy
+    ? sceneRows.some((scene) => !scene.imageAssetId)
+    : shotRows.some((shot) => !shot.imageAssetId);
+  if (imageless) {
+    return { kind: "run", type: "scene_images", reason: "some shots have no image" };
   }
 
   const voiceover = db.select().from(voiceovers).where(eq(voiceovers.projectId, projectId)).get();
@@ -86,7 +116,10 @@ export function nextStep(db: Db, projectId: string): NextStep {
   }
 
   const cues = db.select().from(subtitleCues).where(eq(subtitleCues.projectId, projectId)).all();
-  if (cues.length === 0 || sceneRows.some((scene) => scene.startMs === null)) {
+  const untimed = legacy
+    ? sceneRows.some((scene) => scene.startMs === null)
+    : shotRows.some((shot) => shot.startMs === null);
+  if (cues.length === 0 || untimed) {
     return { kind: "run", type: "subtitle_align", reason: "captions have not been aligned" };
   }
 
@@ -104,6 +137,10 @@ export function nextStep(db: Db, projectId: string): NextStep {
   // clicking Continue, where nothing else would re-enqueue the render.
   const newestInput = Math.max(
     ...sceneRows.map((scene) => scene.updatedAt.getTime()),
+    // A re-rolled shot is a changed input to the render exactly as a re-rolled
+    // scene was — its scene row is not touched, so without this a one-shot redo
+    // would report `complete` and hand back the previous video.
+    ...shotRows.map((shot) => shot.updatedAt.getTime()),
     voiceover.updatedAt.getTime(),
     ...cues.map((cue) => cue.createdAt.getTime()),
   );

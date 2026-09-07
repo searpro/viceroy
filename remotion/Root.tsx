@@ -13,7 +13,7 @@ export const FPS = 30;
  */
 const PLACEHOLDER: StoryVideoProps = {
   audioSrc: "narration.wav",
-  scenes: [],
+  shots: [],
   cues: [],
   durationMs: 1000,
   captionStyle: DEFAULT_CAPTION_STYLE,

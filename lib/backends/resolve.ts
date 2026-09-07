@@ -2,13 +2,16 @@ import type { Config } from "../config";
 import { createComfyClient } from "../comfy/client";
 import type { Db } from "../db/client";
 import type { WorkflowRole } from "../db/schema";
-import { resolveProvider } from "../pipeline/context";
+import { resolveProvider, type LlmProviderRef } from "../pipeline/context";
 import {
   createSdApi,
   LlmClient,
   OPENAI_COMPATIBLE_CHAT_PATH,
+  SD_API_CHAT_PATH,
+  type ChatClient,
   type SdApi,
 } from "../sdapi";
+import { NO_TRACE, tracingChatClient, tracingImageBackend, tracingVideoBackend, type TraceSink } from "../trace";
 import { resolveWorkflow } from "../workflows";
 import { comfyImageBackend } from "./comfy-image";
 import { comfyVideoBackend } from "./comfy-video";
@@ -23,8 +26,25 @@ import type { ImageBackend, VideoBackend } from "./types";
  * is what the old `resolveSdApi` special case in the worker did for image
  * providers specifically, generalised now that it is no longer a special case.
  */
-export function resolveImageBackend(db: Db, config: Config, base?: SdApi): ImageBackend {
+export function resolveImageBackend(
+  db: Db,
+  config: Config,
+  base?: SdApi,
+  sink: TraceSink = NO_TRACE,
+): ImageBackend {
   const provider = resolveProvider(db, "image");
+  // Wrapped here rather than at the worker's `ctx.imageBackend` because this
+  // is the only place that holds the provider row the backend was built from.
+  // Doing it a layer up would mean resolving the same row a second time and
+  // hoping the two agreed.
+  const trace = (backend: ImageBackend): ImageBackend =>
+    tracingImageBackend(backend, sink, {
+      id: provider.id,
+      name: provider.name,
+      adapter: provider.adapter,
+      model: provider.model,
+      baseUrl: provider.baseUrl,
+    });
 
   if (provider.adapter === "comfyui") {
     const client = createComfyClient({
@@ -33,11 +53,13 @@ export function resolveImageBackend(db: Db, config: Config, base?: SdApi): Image
       service: provider.name,
       timeoutMs: config.sdApiTimeoutMs,
     });
-    return comfyImageBackend({
-      client,
-      provider,
-      workflowFor: (role) => resolveWorkflow(db, provider.id, role),
-    });
+    return trace(
+      comfyImageBackend({
+        client,
+        provider,
+        workflowFor: (role) => resolveWorkflow(db, provider.id, role),
+      }),
+    );
   }
 
   // Reuse the worker's long-lived client when this provider is the same host
@@ -51,7 +73,7 @@ export function resolveImageBackend(db: Db, config: Config, base?: SdApi): Image
           timeoutMs: config.sdApiTimeoutMs,
         });
 
-  return sdApiImageBackend(sdApi, provider);
+  return trace(sdApiImageBackend(sdApi, provider));
 }
 
 /**
@@ -75,11 +97,7 @@ export function resolveImageBackend(db: Db, config: Config, base?: SdApi): Image
  * gets the plain top-level chat-completions path instead of sd-api's own
  * `/v1/llm` reverse-proxy namespace.
  */
-export function resolveLlmClient(
-  provider: { baseUrl: string; apiKey: string | null },
-  config: Config,
-  base: SdApi,
-): LlmClient {
+export function buildLlmClient(provider: LlmProviderRef, config: Config, base: SdApi): LlmClient {
   if (provider.baseUrl.replace(/\/$/, "") === config.sdApiUrl) {
     return base.llm;
   }
@@ -91,7 +109,41 @@ export function resolveLlmClient(
   return new LlmClient(sdApi.http, OPENAI_COMPATIBLE_CHAT_PATH);
 }
 
-export function resolveVideoBackend(db: Db, config: Config): VideoBackend {
+/**
+ * `buildLlmClient`, plus the trace record.
+ *
+ * Split in two so the routing above stays directly assertable: BUG-28's
+ * regression test reaches past `LlmClient`'s type for the host and path it
+ * ended up bound to, and a decorated client has neither. Stages take this
+ * one; nothing but the test takes the other.
+ */
+export function resolveLlmClient(
+  provider: LlmProviderRef,
+  config: Config,
+  base: SdApi,
+  sink: TraceSink = NO_TRACE,
+): ChatClient {
+  const local = provider.baseUrl.replace(/\/$/, "") === config.sdApiUrl;
+
+  return tracingChatClient(buildLlmClient(provider, config, base), sink, {
+    provider: {
+      id: provider.id ?? null,
+      name: provider.name ?? "",
+      model: provider.model ?? "",
+      baseUrl: provider.baseUrl,
+    },
+    // Recorded because it is the difference this function exists to make, and
+    // it is invisible from anywhere else: the same provider row talking to the
+    // wrong one of these two paths is exactly BUG-28's failure.
+    requestPath: local ? SD_API_CHAT_PATH : OPENAI_COMPATIBLE_CHAT_PATH,
+  });
+}
+
+export function resolveVideoBackend(
+  db: Db,
+  config: Config,
+  sink: TraceSink = NO_TRACE,
+): VideoBackend {
   const provider = resolveProvider(db, "video");
 
   if (provider.adapter !== "comfyui") {
@@ -112,9 +164,19 @@ export function resolveVideoBackend(db: Db, config: Config): VideoBackend {
     timeoutMs: config.sdApiTimeoutMs,
   });
 
-  return comfyVideoBackend({
-    client,
-    provider,
-    workflowFor: (role: WorkflowRole) => resolveWorkflow(db, provider.id, role),
-  });
+  return tracingVideoBackend(
+    comfyVideoBackend({
+      client,
+      provider,
+      workflowFor: (role: WorkflowRole) => resolveWorkflow(db, provider.id, role),
+    }),
+    sink,
+    {
+      id: provider.id,
+      name: provider.name,
+      adapter: provider.adapter,
+      model: provider.model,
+      baseUrl: provider.baseUrl,
+    },
+  );
 }

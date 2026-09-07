@@ -11,6 +11,7 @@ import {
   evaluations,
   projects,
   renders,
+  sceneShots,
   scenes,
   shotListItems,
   storyboardPanels,
@@ -91,12 +92,26 @@ function buildUpTo(projectId: string, upTo: string) {
     db.insert(characters)
       .values({ projectId, name: "Hal", description: "d", appearanceTag: "a man" })
       .run();
-    db.insert(scenes)
+    const scene = db
+      .insert(scenes)
       .values({
         projectId,
         index: 0,
         description: "s",
         voiceoverScript: "One. Two.",
+        visualBrief: "a brief",
+      })
+      .returning()
+      .all()[0]!;
+    // M9: a scene is a span of narration covered by shots, and it is the shots
+    // that carry the prompt, the picture and the timeline position.
+    db.insert(sceneShots)
+      .values({
+        projectId,
+        sceneId: scene.id,
+        index: 0,
+        startWord: 0,
+        endWord: 1,
         imagePrompt: "a prompt",
       })
       .run();
@@ -108,9 +123,9 @@ function buildUpTo(projectId: string, upTo: string) {
       .run();
   }
   if (has("scene_images")) {
-    db.update(scenes)
+    db.update(sceneShots)
       .set({ imageAssetId: imageAsset().id })
-      .where(eq(scenes.projectId, projectId))
+      .where(eq(sceneShots.projectId, projectId))
       .run();
   }
   if (has("voiceover")) {
@@ -132,6 +147,10 @@ function buildUpTo(projectId: string, upTo: string) {
   if (has("subtitle_align")) {
     const scene = db.select().from(scenes).where(eq(scenes.projectId, projectId)).get()!;
     db.update(scenes).set({ startMs: 0, endMs: 1000 }).where(eq(scenes.id, scene.id)).run();
+    db.update(sceneShots)
+      .set({ startMs: 0, endMs: 1000 })
+      .where(eq(sceneShots.projectId, projectId))
+      .run();
     db.insert(subtitleCues)
       .values({ projectId, sceneId: scene.id, index: 0, text: "One.", startMs: 0, endMs: 1000 })
       .run();
@@ -171,16 +190,62 @@ describe("nextStep", () => {
   it("goes back for an image that was deleted, ignoring the stage label", () => {
     const project = newProject();
     buildUpTo(project.id, "done");
-    db.update(scenes).set({ imageAssetId: null }).where(eq(scenes.projectId, project.id)).run();
+    db.update(sceneShots).set({ imageAssetId: null }).where(eq(sceneShots.projectId, project.id)).run();
     db.update(projects).set({ stage: "complete" }).where(eq(projects.id, project.id)).run();
 
     expect(nextStep(db, project.id)).toMatchObject({ kind: "run", type: "scene_images" });
   });
 
-  it("re-extracts when a scene lost its image prompt", () => {
+  it("re-extracts when a shot lost its image prompt", () => {
     const project = newProject();
     buildUpTo(project.id, "character_images");
-    db.update(scenes).set({ imagePrompt: null }).where(eq(scenes.projectId, project.id)).run();
+    db.update(sceneShots).set({ imagePrompt: null }).where(eq(sceneShots.projectId, project.id)).run();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "run", type: "elements" });
+  });
+
+  it("re-extracts when a scene has no shots covering it", () => {
+    const project = newProject();
+    buildUpTo(project.id, "character_images");
+    db.delete(sceneShots).where(eq(sceneShots.projectId, project.id)).run();
+    expect(nextStep(db, project.id)).toMatchObject({ kind: "run", type: "elements" });
+  });
+
+  // A project finished before M9 has a scene-level prompt, still and timing,
+  // and no shots at all. Nothing about it should be re-derived: the shots
+  // cannot be recovered without discarding the pictures it already has.
+  it("leaves a pre-M9 project alone rather than re-covering it", () => {
+    const project = newProject();
+    // Everything but the render, so the project can be reshaped into its
+    // pre-M9 form before the video is recorded — mutating a scene after the
+    // render row exists would trip the "older than its inputs" check instead.
+    buildUpTo(project.id, "render");
+    const scene = db.select().from(scenes).where(eq(scenes.projectId, project.id)).get()!;
+    db.delete(sceneShots).where(eq(sceneShots.projectId, project.id)).run();
+    db.update(scenes)
+      .set({ visualBrief: null, imagePrompt: "a prompt", imageAssetId: imageAsset().id })
+      .where(eq(scenes.id, scene.id))
+      .run();
+    db.insert(renders)
+      .values({ projectId: project.id, width: 1080, height: 1920, captionStyle: {}, status: "ready" })
+      .run();
+
+    expect(nextStep(db, project.id).kind).toBe("complete");
+  });
+
+  // The rule is narrow on purpose: a pre-M9 project is preserved exactly as
+  // long as it is intact. The moment it needs image work done again there is
+  // nothing left to preserve, so it is upgraded to M9 coverage rather than
+  // redrawn as a single still.
+  it("upgrades a pre-M9 project to shots once its still goes missing", () => {
+    const project = newProject();
+    buildUpTo(project.id, "done");
+    const scene = db.select().from(scenes).where(eq(scenes.projectId, project.id)).get()!;
+    db.delete(sceneShots).where(eq(sceneShots.projectId, project.id)).run();
+    db.update(scenes)
+      .set({ visualBrief: null, imagePrompt: "a prompt", imageAssetId: null })
+      .where(eq(scenes.id, scene.id))
+      .run();
+
     expect(nextStep(db, project.id)).toMatchObject({ kind: "run", type: "elements" });
   });
 

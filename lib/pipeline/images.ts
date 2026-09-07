@@ -1,6 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import { storeAsset } from "../assets";
-import { characters, projects, scenes } from "../db/schema";
+import { characters, projects, sceneShots, scenes } from "../db/schema";
 import { renderPrompt } from "../prompts";
 import { projectAspect, sourceImageFor } from "../resolution";
 import { enqueue } from "../queue";
@@ -83,18 +83,65 @@ export function negativePromptFor(
 }
 
 /**
- * Stage 6 — one image per scene.
+ * Wrap a shot's prose prompt in the image style's rendering register.
  *
- * Each scene is generated with the reference portraits of the characters who
- * appear in it, which is what holds a face steady between frames. See
- * docs/adr/0001; measured cost is about +11 s per frame.
+ * The wrapper is comma-separated tags and stays that way: it is shared with
+ * the character portraits and with every Development-chain image stage, all of
+ * which still speak tags, and it is a *register* — grade, stock, lighting
+ * quality — which tags express perfectly well. M9 changed the format of the
+ * body, not of the frame around it.
+ *
+ * The only thing that had to give is the seam. A prose prompt ends in a full
+ * stop, and appending ", desaturated colour, 35mm" to that yields ". ,", so
+ * the trailing stop is dropped where a suffix follows and the register reads
+ * as a continuation of the sentence instead of debris after it. The stored
+ * prompt keeps its punctuation; this is only how it is composed.
+ */
+export function composeShotPrompt(
+  style: { promptPrefix: string; promptSuffix: string },
+  prompt: string,
+  direction: string,
+): string {
+  const tail = `${direction}${style.promptSuffix}`;
+  const body = tail ? prompt.trim().replace(/[.\s]+$/, "") : prompt;
+  return `${style.promptPrefix}${body}${tail}`;
+}
+
+/**
+ * How many reference portraits one generation may carry, whatever the
+ * workflow advertises.
+ *
+ * Measured, not chosen: reference conditioning costs about 130s each and
+ * sd-api's default 600s `SD_JOB_TIMEOUT_MS` hard-fails at around five (finding
+ * F30). M7.1 PR-A2 settled on the same three for storyboard panels.
+ */
+const REFERENCE_BUDGET = 3;
+
+/**
+ * Stage 6 — one image per shot.
+ *
+ * Until M9 this was one image per *scene*, held for the scene's whole
+ * narration span — routinely fifteen to twenty-five seconds of a frame with
+ * nothing moving but the Ken Burns drift, which is past the point a short-form
+ * viewer stops watching. A scene is now covered by several shots and this
+ * stage draws each of them.
+ *
+ * Each shot is generated with the reference portraits of the characters *in
+ * that shot*, which is what holds a face steady between frames. See
+ * docs/adr/0001. A shot with nobody in it — an insert of a hand on a handle, a
+ * detail of a wall — carries no reference and costs about 51s instead of about
+ * 142s (findings F12, F30). That is not an optimisation bolted on afterwards:
+ * it is why `elements.shot` is told to put only the visible cast in its
+ * `characters` array.
  *
  * Serial by necessity: image generation is the only CPU-bound stage on this
- * hardware (finding F9), measured at ~65 s per 432x768 frame, and running two
- * at once just splits the same cores.
+ * hardware (finding F9), and running two at once just splits the same cores.
+ * With references on every shot a 180s narration is hours rather than minutes
+ * of work here, which makes the resumability below the difference between a
+ * retry and a restart — a failure at shot sixty costs one frame.
  *
- * Resumable — a scene that already has an image is skipped, so a failure eight
- * minutes in costs one frame rather than all of them.
+ * A project that finished before M9 has no shots to draw and keeps its
+ * scene-level stills; nothing here regenerates them.
  */
 export async function runSceneImages(ctx: StageContext): Promise<void> {
   const projectId = requireProjectId(ctx.job);
@@ -105,65 +152,98 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
   const sourceSize = sourceImageFor(ctx.config, projectAspect(project));
   const imageProvider = resolveProvider(ctx.db, "image");
 
-  const all = ctx.db
+  const sceneRows = ctx.db
     .select()
     .from(scenes)
     .where(eq(scenes.projectId, projectId))
     .orderBy(asc(scenes.index))
     .all();
 
-  if (all.length === 0) throw new Error(`Project ${projectId} has no scenes to illustrate`);
+  if (sceneRows.length === 0) throw new Error(`Project ${projectId} has no scenes to illustrate`);
 
   const cast = ctx.db.select().from(characters).where(eq(characters.projectId, projectId)).all();
   const backend = ctx.imageBackend();
   const refByCharacter = await filterLiveRefs(backend, cast, ctx.log);
   const refCapacity = backend.referenceCapacity();
 
-  const pending = all.filter((scene) => !scene.imageAssetId);
-  if (pending.length === 0) {
-    ctx.log("Every scene already has an image");
-  }
-
-  // A per-scene redo clears just that scene's image before enqueueing, so
-  // extra direction is scoped to it rather than leaking into a bulk run.
+  // A per-shot redo clears just that shot's image before enqueueing, so extra
+  // direction is scoped to it rather than leaking into a bulk run. `sceneId`
+  // scopes to every shot of one scene; both are also matched per row below,
+  // because a run that died partway leaves other shots imageless too and they
+  // get picked up by the same pass.
   const jobDirection = typeof ctx.job.payload.direction === "string" ? ctx.job.payload.direction.trim() : "";
   const jobSceneId = typeof ctx.job.payload.sceneId === "string" ? ctx.job.payload.sceneId : undefined;
+  const jobShotId = typeof ctx.job.payload.shotId === "string" ? ctx.job.payload.shotId : undefined;
 
-  for (const [position, scene] of pending.entries()) {
+  const sceneById = new Map(sceneRows.map((scene) => [scene.id, scene]));
+  const all = ctx.db
+    .select()
+    .from(sceneShots)
+    .where(eq(sceneShots.projectId, projectId))
+    .all()
+    .sort((a, b) => {
+      const byScene = sceneById.get(a.sceneId)!.index - sceneById.get(b.sceneId)!.index;
+      return byScene !== 0 ? byScene : a.index - b.index;
+    });
+
+  if (all.length === 0) {
+    throw new Error(
+      `Project ${projectId} has scenes but no shots — element extraction has not covered them, ` +
+        `so there is nothing to draw`,
+    );
+  }
+
+  const pending = all.filter((shot) => !shot.imageAssetId);
+  if (pending.length === 0) {
+    ctx.log("Every shot already has an image");
+  }
+
+  for (const [position, shot] of pending.entries()) {
     checkAbort(ctx);
-    if (!scene.imagePrompt) throw new Error(`Scene ${scene.index} has no image prompt`);
+    const scene = sceneById.get(shot.sceneId)!;
+    if (!shot.imagePrompt) {
+      throw new Error(`Scene ${scene.index + 1} shot ${shot.index + 1} has no image prompt`);
+    }
 
     const base = position / pending.length;
     const share = 1 / pending.length;
 
-    const wanted = scene.characterIds
+    const wanted = shot.characterIds
       .map((id) => refByCharacter.get(id))
       .filter((name): name is string => Boolean(name));
 
     // A workflow exposes a fixed number of reference slots, and a crowded
-    // scene can want more faces than it has holes for. Dropping the extras is
+    // shot can want more faces than it has holes for. Dropping the extras is
     // a visible quality loss rather than a silent one, so it is logged as a
     // warning and left recoverable — failing the whole render would make any
-    // provider with fewer slots than the busiest scene unusable.
-    const refs = wanted.slice(0, refCapacity);
+    // provider with fewer slots than the busiest shot unusable.
+    //
+    // `REFERENCE_BUDGET` is the second ceiling and the one that usually bites:
+    // references cost ~130s each and sd-api's own 600s SD_JOB_TIMEOUT_MS
+    // hard-fails at about five of them (F30), so a shot is capped well under
+    // that regardless of how many slots the workflow advertises. Same budget
+    // M7.1 PR-A2 measured for storyboard panels.
+    const refs = wanted.slice(0, Math.min(refCapacity, REFERENCE_BUDGET));
     if (wanted.length > refs.length) {
       ctx.log(
-        `Scene ${scene.index + 1} has ${wanted.length} character reference(s) but ` +
-          `${backend.label} exposes ${refCapacity} slot(s) — generating with the first ${refs.length}`,
+        `Scene ${scene.index + 1} shot ${shot.index + 1} has ${wanted.length} character reference(s) ` +
+          `but only ${refs.length} can be used — generating with the first ${refs.length}`,
         "warn",
       );
     }
 
-    const direction = jobDirection && (!jobSceneId || jobSceneId === scene.id) ? `, ${jobDirection}` : "";
+    const scoped = (!jobShotId || jobShotId === shot.id) && (!jobSceneId || jobSceneId === scene.id);
+    const direction = jobDirection && scoped ? `, ${jobDirection}` : "";
 
     ctx.log(
-      `Generating image for scene ${scene.index + 1}/${all.length}` +
+      `Generating scene ${scene.index + 1} shot ${shot.index + 1} (${shot.shotType}), ` +
+        `${position + 1}/${pending.length}` +
         (refs.length > 0 ? ` with ${refs.length} character reference(s)` : ""),
     );
 
     const bytes = await backend.generate(
       {
-        prompt: `${imageStyle.promptPrefix}${scene.imagePrompt}${direction}${imageStyle.promptSuffix}`,
+        prompt: composeShotPrompt(imageStyle, shot.imagePrompt, direction),
         negativePrompt: negativePromptFor(imageProvider, imageStyle) ?? "",
         width: sourceSize.width,
         height: sourceSize.height,
@@ -181,18 +261,18 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
       bytes,
       mimeType: "image/png",
       projectId,
-      label: `scene-${String(scene.index).padStart(2, "0")}`,
-      meta: { sceneId: scene.id, prompt: scene.imagePrompt },
+      label: `scene-${String(scene.index).padStart(2, "0")}-shot-${String(shot.index).padStart(2, "0")}`,
+      meta: { sceneId: scene.id, shotId: shot.id, prompt: shot.imagePrompt },
     });
 
-    ctx.db.update(scenes).set({ imageAssetId: asset.id }).where(eq(scenes.id, scene.id)).run();
+    ctx.db.update(sceneShots).set({ imageAssetId: asset.id }).where(eq(sceneShots.id, shot.id)).run();
     ctx.progress(base + share);
   }
 
   // See the note in `runElements`: a scoped redo is not the project reaching
   // this stage, so it must not move `stage` back to it.
-  if (!jobSceneId) setStage(ctx.db, projectId, "scene_images");
-  ctx.log(`All ${all.length} scene image(s) ready`);
+  if (!jobSceneId && !jobShotId) setStage(ctx.db, projectId, "scene_images");
+  ctx.log(`All ${all.length} shot image(s) ready`);
 
   const current = ctx.db.select().from(projects).where(eq(projects.id, projectId)).get()!;
   if (current.mode === "manual") {
@@ -200,10 +280,10 @@ export async function runSceneImages(ctx: StageContext): Promise<void> {
     ctx.log("Stopping for image review (manual mode)");
     return;
   }
-  // A `sceneId`-scoped job is a "redo image" click on one scene, not the
+  // A scoped job is a "redo image" click on one shot or one scene, not the
   // stage clearing its own pending list — advancing past it would fire
   // voiceover generation for a click that only asked for one frame (BUG-6).
-  if (jobSceneId) return;
+  if (jobSceneId || jobShotId) return;
   enqueue(ctx.db, { type: "voiceover", projectId });
 }
 

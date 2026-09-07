@@ -2573,6 +2573,78 @@ describe("Preproduction stage 20 (M7 PR12 — casting)", () => {
     expect(cleared.imageAssetId).toBeNull();
     expect(cleared.castingLockedAt).toBeNull();
   });
+
+  // BUG-29. The Casting section had no direction input at all, so nothing ever
+  // reached this stage's payload and the gap was invisible; the moment the UI
+  // offers one, a stage that ignores it is a control that silently does
+  // nothing — the same defect BUG-30 fixed in `runConceptArt`.
+  it("applies an unlocked character's re-roll direction to the portrait and every derived view", async () => {
+    const project = await runThroughApprovedProductionDesignForCasting();
+    const imageStyle = db
+      .select()
+      .from(imageStyles)
+      .where(eq(imageStyles.id, db.select().from(projects).where(eq(projects.id, project.id)).get()!.imageStyleId!))
+      .get()!;
+
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+        llm: [{ json: { voice: "dry, unhurried" } }],
+      }),
+    );
+    const reyna = db.select().from(characters).where(eq(characters.projectId, project.id)).get()!;
+
+    // The two-step the UI now offers: unlock, then redo.
+    unlockCasting(db, project.id, reyna.id);
+    const job = regenerate(db, project.id, {
+      target: "casting",
+      characterId: reyna.id,
+      direction: "grey at the temples, a healed scar across the left brow",
+    });
+
+    const prompts: string[] = [];
+    await runCasting(
+      stubContext(db, job, {
+        images: [Buffer.from("redone-bytes")],
+        onImageRequest: (r) => prompts.push(r.prompt as string),
+      }),
+    );
+
+    // The anchor plus its whole reference pack — the redo deleted both, so a
+    // direction that stopped at the portrait would leave the views drawing the
+    // face this re-roll exists to replace.
+    expect(prompts.length).toBeGreaterThan(1);
+    for (const prompt of prompts) {
+      // Content register, not rendering: the direction sits with the subject
+      // description, still wrapped by Image Style's prefix/suffix (ADR 0002).
+      expect(prompt.startsWith(imageStyle.promptPrefix)).toBe(true);
+      expect(prompt.endsWith(`, grey at the temples, a healed scar across the left brow${imageStyle.promptSuffix}`)).toBe(
+        true,
+      );
+    }
+
+    expect(
+      db.select().from(characters).where(eq(characters.id, reyna.id)).get()!.imagePrompt,
+    ).toContain("a healed scar across the left brow");
+  });
+
+  it("leaves the prompts alone when a casting job carries no direction", async () => {
+    const project = await runThroughApprovedProductionDesignForCasting();
+    const prompts: string[] = [];
+    await runCasting(
+      stubContext(db, enqueue(db, { type: "casting", projectId: project.id }), {
+        images: [Buffer.from("portrait-bytes")],
+        llm: [{ json: { voice: "dry, unhurried" } }],
+        onImageRequest: (r) => prompts.push(r.prompt as string),
+      }),
+    );
+
+    // No dangling `, ` where an empty direction would have gone — these go
+    // straight to a diffusion model as comma-separated phrases (ADR 0002).
+    for (const prompt of prompts) {
+      expect(prompt).not.toContain(", ,");
+    }
+  });
 });
 
 describe("Preproduction stage 21 (M7 PR13 — production plan)", () => {
@@ -3094,6 +3166,68 @@ describe("scoped image redos (M7.1 PR-D0)", () => {
     expect(requests).toHaveLength(1);
     expect(db.select().from(locations).where(eq(locations.id, location.id)).get()!.imageAssetId).not.toBeNull();
     expect(db.select().from(props).where(eq(props.id, prop.id)).get()!.imageAssetId).toBeNull();
+  });
+
+  // BUG-30. The direction reached the job payload all along; the stage never
+  // read it, so a re-rolled plate came back identical to the one it replaced.
+  it("runConceptArt applies a scoped re-roll's direction to the plate, inside the rendering wrapper", async () => {
+    const project = await setupThroughConceptArt();
+    const projectRow = db.select().from(projects).where(eq(projects.id, project.id)).get()!;
+    const imageStyle = db.select().from(imageStyles).where(eq(imageStyles.id, projectRow.imageStyleId!)).get()!;
+    const location = db.select().from(locations).where(eq(locations.projectId, project.id)).get()!;
+
+    async function rerollLocation(direction?: string): Promise<string> {
+      db.update(locations).set({ imageAssetId: null }).where(eq(locations.id, location.id)).run();
+      const prompts: string[] = [];
+      await runConceptArt(
+        stubContext(
+          db,
+          enqueue(db, {
+            type: "concept_art",
+            projectId: project.id,
+            payload: { locationId: location.id, ...(direction ? { direction } : {}) },
+          }),
+          { images: [Buffer.from("relocation-bytes")], onImageRequest: (r) => prompts.push(r.prompt as string) },
+        ),
+      );
+      expect(prompts).toHaveLength(1);
+      return prompts[0]!;
+    }
+
+    const undirected = await rerollLocation();
+    const directed = await rerollLocation("dusk after a rainstorm, wet cobbles");
+
+    expect(directed).toContain("dusk after a rainstorm, wet cobbles");
+    // Content register, not rendering: the direction sits with the location's
+    // own description, still wrapped by Image Style's prefix/suffix — the same
+    // split `runCharacterImages` applies to a scoped portrait redo (ADR 0002).
+    expect(directed.startsWith(imageStyle.promptPrefix)).toBe(true);
+    expect(directed.endsWith(imageStyle.promptSuffix)).toBe(true);
+    expect(directed).toBe(
+      undirected.replace(imageStyle.promptSuffix, `, dusk after a rainstorm, wet cobbles${imageStyle.promptSuffix}`),
+    );
+  });
+
+  it("runConceptArt applies a scoped re-roll's direction to a prop plate too", async () => {
+    const project = await setupThroughConceptArt();
+    const prop = db.select().from(props).where(eq(props.projectId, project.id)).get()!;
+    db.update(props).set({ imageAssetId: null }).where(eq(props.id, prop.id)).run();
+
+    const prompts: string[] = [];
+    await runConceptArt(
+      stubContext(
+        db,
+        enqueue(db, {
+          type: "concept_art",
+          projectId: project.id,
+          payload: { propId: prop.id, direction: "heavily tarnished, one tool missing" },
+        }),
+        { images: [Buffer.from("reprop-bytes")], onImageRequest: (r) => prompts.push(r.prompt as string) },
+      ),
+    );
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]!).toContain("heavily tarnished, one tool missing");
   });
 
   it("runConceptArt leaves the stage's approval alone on a scoped redo", async () => {
