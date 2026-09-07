@@ -4,6 +4,27 @@ A story-to-video pipeline. One line of an idea goes in; a rendered short film co
 
 The interesting part isn't the films. It's what it takes to make a twenty-stage generative pipeline survive contact with reality: jobs that fail halfway, GPUs that disappear, models that return something unusable, and a run you want to resume tomorrow rather than restart.
 
+![Viceroy — idea to MP4](docs/media/pipeline.png)
+
+---
+
+## Screenshots
+
+Running locally against a seeded database. The inference backends are not connected in these
+shots, so the generated content is empty — the point here is the shape of the app, not its output.
+
+| New project | Project stages |
+| --- | --- |
+| ![New project](docs/media/new-project.png) | ![Project stages](docs/media/project-stages.png) |
+
+| Prompt templates | Styles |
+| --- | --- |
+| ![Prompt templates](docs/media/prompt-templates.png) | ![Styles](docs/media/styles.png) |
+
+Every prompt the pipeline sends is an editable template with a declared variable list, and every
+style carries its own evaluation checklist — the two screens above are where a run is actually
+tuned.
+
 ---
 
 ## The pipeline
